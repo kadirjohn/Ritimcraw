@@ -20,15 +20,18 @@ class LibraryRowModelTest {
         height: Int = 0,
         durationUs: Long = 0L,
         access: Access = Access.OK,
+        kind: SourceKind = SourceKind.MCRAW,
+        displayName: String = "",
     ) = MediaSource(
         id = "abc123",
         uri = "content://clip/1",
         fingerprint = "f",
-        kind = SourceKind.MCRAW,
+        kind = kind,
         access = access,
         width = width,
         height = height,
         durationUs = durationUs,
+        displayName = displayName,
     )
 
     // ---- durationText ----
@@ -169,5 +172,89 @@ class LibraryRowModelTest {
         // "clip..MP4" and "a__b": every separator is a wrap opportunity.
         assertEquals("clip${zwsp}.${zwsp}.MP4", LibraryRowModel.displayWrapName("clip..MP4"))
         assertEquals("a_${zwsp}_${zwsp}b", LibraryRowModel.displayWrapName("a__b"))
+    }
+
+    // ---- withoutExtension / listDisplayName (owner request 2026-11-26:
+    // the list row shows the name WITHOUT the extension) ----
+
+    @Test
+    fun without_extension_strips_only_the_last_extension() {
+        assertEquals("sunset", LibraryRowModel.withoutExtension("sunset.mcraw"))
+        // Double extensions: only the LAST one goes.
+        assertEquals("clip.x", LibraryRowModel.withoutExtension("clip.x.mcraw"))
+        assertEquals("clip", LibraryRowModel.withoutExtension("clip.mp4"))
+    }
+
+    @Test
+    fun without_extension_keeps_names_with_no_real_extension() {
+        // No dot, a BARE dot, a TRAILING dot: the name carries no
+        // extension — unchanged ("clip." keeps its dot: its extension
+        // is empty, the name part is "clip.").
+        assertEquals("clip", LibraryRowModel.withoutExtension("clip"))
+        assertEquals(".", LibraryRowModel.withoutExtension("."))
+        assertEquals("clip.", LibraryRowModel.withoutExtension("clip."))
+        // ".mcraw" as the WHOLE name is all extension: stripping yields
+        // the empty string (the caller falls back to the full name).
+        assertEquals("", LibraryRowModel.withoutExtension(".mcraw"))
+    }
+
+    @Test
+    fun without_extension_is_code_point_safe() {
+        // A surrogate pair right before the dot: the cut is a char index
+        // AFTER the pair, so the emoji survives intact.
+        assertEquals("🎥", LibraryRowModel.withoutExtension("🎥.mcraw"))
+        assertEquals("a🎥b", LibraryRowModel.withoutExtension("a🎥b.MP4"))
+    }
+
+    @Test
+    fun list_display_name_strips_the_extension_for_display_only() {
+        // The DISPLAY copy loses the extension; the record keeps it (the
+        // badge carries the format, the grid keeps the full name).
+        assertEquals("sunset", LibraryRowModel.listDisplayName(source(displayName = "sunset.mcraw")))
+        assertEquals("IMG_1234", LibraryRowModel.listDisplayName(source(displayName = "IMG_1234.MP4")))
+    }
+
+    @Test
+    fun list_display_name_falls_back_when_nothing_usable_remains() {
+        // A name that was ONLY the extension: the row never shows a
+        // blank line — the FULL name keeps the row real (the badge
+        // carries the format either way).
+        assertEquals(".mcraw", LibraryRowModel.listDisplayName(source(displayName = ".mcraw")))
+        // The id fallback also flows through when the record was never
+        // named at all (displayName blank -> displayOrId = id).
+        assertEquals("abc123", LibraryRowModel.listDisplayName(source(displayName = "")))
+    }
+
+    // ---- kindBadge (owner request 2026-11-26: blue MCRAW / gray MP4) ----
+
+    @Test
+    fun badge_is_derived_from_the_kind_not_the_name() {
+        // A RENAMED mcraw ("sunset", no extension at all) keeps its
+        // MCRAW badge — the kind is the record's own classification.
+        assertEquals(
+            LibraryRowModel.Badge(LibraryRowModel.BadgeStyle.HIGHLIGHTED, "MCRAW"),
+            LibraryRowModel.kindBadge(source(kind = SourceKind.MCRAW, displayName = "sunset")),
+        )
+        assertEquals(
+            LibraryRowModel.Badge(LibraryRowModel.BadgeStyle.NEUTRAL, "MP4"),
+            LibraryRowModel.kindBadge(source(kind = SourceKind.ENCODED, displayName = "clip.mp4")),
+        )
+    }
+
+    @Test
+    fun badge_text_is_never_localized() {
+        // The badge token is the file's own format name, the app's
+        // "never localized" convention for file-derived text.
+        val tr = LibraryRowModel.kindBadge(source(kind = SourceKind.MCRAW))
+        assertEquals("MCRAW", tr?.text)
+    }
+
+    @Test
+    fun extension_of_matches_the_last_extension_lowercased() {
+        assertEquals("mcraw", LibraryRowModel.extensionOf("sunset.mcraw"))
+        assertEquals("mp4", LibraryRowModel.extensionOf("clip.X.MP4"))
+        assertEquals("", LibraryRowModel.extensionOf("clip"))
+        assertEquals("", LibraryRowModel.extensionOf("clip."))
+        assertEquals("", LibraryRowModel.extensionOf(""))
     }
 }
