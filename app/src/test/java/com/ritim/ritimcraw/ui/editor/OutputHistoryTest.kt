@@ -129,4 +129,116 @@ class OutputHistoryTest {
         assertFalse(NodeOutputOps.isValueEdit(d, NodeOutputOps.setDisplay(d, 2)))
         assertFalse(NodeOutputOps.isValueEdit(d, NodeOutputOps.setMode(d, OutputTransformV2.MODE_LEGACY)))
     }
+
+    // ---- C3 gap fill (night 2026-11-26): mixed sequences, bounds, rapid edits ----
+
+    @Test
+    fun a_mode_switch_between_slider_frames_is_its_own_step_and_redo_ends_in_null() {
+        val start = drt(1)
+        val h = GradeHistory(g0, node, start)
+        // frames of one drag, never settled (the screen closes the step after a 600 ms pause)
+        h.recordOutput(NodeOutputOps.setLook(start, 2), GradeHistory.OUTPUT_GESTURE)
+        h.recordOutput(NodeOutputOps.setLook(start, 3), GradeHistory.OUTPUT_GESTURE)
+        // a mode switch MID-drag: discrete (isValueEdit is false on the real screen) -> its own closed step
+        val switched = NodeOutputOps.setMode(NodeOutputOps.setLook(start, 3), OutputTransformV2.MODE_LEGACY)
+        h.recordOutput(switched)
+        // the drag resumes on the switched card (a value edit again)
+        val resumed = NodeOutputOps.setGrey(switched, 12f)
+        h.recordOutput(resumed, GradeHistory.OUTPUT_GESTURE)
+        h.settle()
+        // undo applies the PREVIOUS state each step: the resumed drag, the switch (pre-switch drag
+        // endpoint: opendrt, look 3), the drag, the initial. Redo walks them forward and ENDS in null.
+        assertEquals(switched, h.undoSnapshot()!!.output)
+        assertEquals(NodeOutputOps.setLook(start, 3), h.undoSnapshot()!!.output)
+        assertEquals(start, h.undoSnapshot()!!.output)
+        assertNull(h.undoSnapshot())
+        assertEquals(NodeOutputOps.setLook(start, 3), h.redoSnapshot()!!.output)
+        assertEquals(switched, h.redoSnapshot()!!.output)
+        assertEquals(resumed, h.redoSnapshot()!!.output)
+        assertNull(h.redoSnapshot())
+        assertFalse(h.canRedo)
+    }
+
+    @Test
+    fun undo_at_the_bottom_keeps_redo_for_the_output_group() {
+        val h = GradeHistory(g0, node, o0)
+        h.recordOutput(drt(2))
+        assertEquals(o0, h.undoSnapshot()!!.output)
+        assertFalse(h.canUndo)
+        assertTrue(h.canRedo) // the bottom's null did not touch the redo stack
+        assertNull(h.undoSnapshot())
+        assertTrue(h.canRedo)
+        assertEquals(drt(2), h.redoSnapshot()!!.output)
+        assertFalse(h.canRedo) // redo at the end: null and disabled
+        assertNull(h.redoSnapshot())
+    }
+
+    @Test
+    fun edits_without_a_settle_coalesce_across_drag_boundaries() {
+        // The screen closes an output step after a 600 ms PAUSE (ClipEditorScreen's
+        // outputSettleJob), not on DragStopped: two quick drags inside the pause are
+        // ONE undo step. GradeHistory's contract is cause + settle, and this pins it:
+        // frames with no intervening settle merge; a discrete edit between them splits.
+        val a = drt(2)
+        val b = drt(3)
+        val c = drt(4)
+        val h = GradeHistory(g0, node, o0)
+        h.recordOutput(a, GradeHistory.OUTPUT_GESTURE)
+        h.recordOutput(b, GradeHistory.OUTPUT_GESTURE)
+        h.recordOutput(c, GradeHistory.OUTPUT_GESTURE) // a "second drag" 100 ms later: still open -> replaced
+        assertEquals(o0, h.undoSnapshot()!!.output) // ONE step crosses both drags
+        assertFalse(h.canUndo)
+        assertEquals(c, h.redoSnapshot()!!.output)
+        // the same shape with a discrete edit in the middle: three separate states to walk back
+        val h2 = GradeHistory(g0, node, o0)
+        h2.recordOutput(a, GradeHistory.OUTPUT_GESTURE)
+        val switched = NodeOutputOps.setMode(a, OutputTransformV2.MODE_LEGACY)
+        h2.recordOutput(switched) // discrete mid-flight: pushes, never coalesces
+        h2.recordOutput(b, GradeHistory.OUTPUT_GESTURE)
+        assertEquals(switched, h2.undoSnapshot()!!.output) // undo the second burst
+        assertEquals(a, h2.undoSnapshot()!!.output) // undo the switch
+        assertEquals(o0, h2.undoSnapshot()!!.output) // undo the first burst
+        assertNull(h2.undoSnapshot())
+    }
+
+    @Test
+    fun open_gestures_of_all_three_groups_interleave_and_each_undo_restores_the_triple() {
+        // The three-group transition: an output drag in flight, a NEW NODE landing
+        // mid-drag, grade slider frames (a different cause), then the output drag
+        // continuing. Each undo restores the exact (grade, nodes, output) triple.
+        val nodes0 = listOf(GradeNodeV2(sat = 1.2f))
+        val nodes1 = nodes0 + GradeNodeV2(sat = 1.5f)
+        val h = GradeHistory(g0, nodes0, o0)
+        h.recordOutput(drt(2), GradeHistory.OUTPUT_GESTURE)
+        h.recordOutput(drt(3), GradeHistory.OUTPUT_GESTURE)
+        h.recordNodes(nodes1) // the node add carries the DRAGGED output (drt(3)) with it
+        h.record(GradeK(exposureEv = 0.4f), GradeHistory.SLIDER_GESTURE)
+        h.record(GradeK(exposureEv = 0.5f), GradeHistory.SLIDER_GESTURE)
+        h.recordOutput(drt(4), GradeHistory.OUTPUT_GESTURE) // the top's cause differs: pushes
+        h.settle()
+        var s = h.undoSnapshot()!! // undo the resumed output frame: the grade entry's endpoint
+        assertEquals(GradeK(exposureEv = 0.5f), s.grade); assertEquals(nodes1, s.nodes); assertEquals(drt(3), s.output)
+        s = h.undoSnapshot()!! // undo the coalesced grade drag: the node-add state
+        assertEquals(g0, s.grade); assertEquals(nodes1, s.nodes); assertEquals(drt(3), s.output)
+        s = h.undoSnapshot()!! // undo the node add: the output drag's endpoint rides
+        assertEquals(g0, s.grade); assertEquals(nodes0, s.nodes); assertEquals(drt(3), s.output)
+        s = h.undoSnapshot()!! // undo the output drag: the initial triple
+        assertEquals(g0, s.grade); assertEquals(nodes0, s.nodes); assertEquals(o0, s.output)
+        assertNull(h.undoSnapshot())
+    }
+
+    @Test
+    fun overflow_drops_the_oldest_state_and_keeps_the_newest_output() {
+        val h = GradeHistory(g0, node, o0)
+        val over = GradeHistory.MAX_ENTRIES + 4
+        repeat(over) { i ->
+            h.recordOutput(OutputTransformV2(opendrt = OpenDrtParamsV2(grey = (i + 1).toFloat())))
+        }
+        assertEquals(104f, h.undoSnapshot()!!.output.opendrt.grey, 0f) // the newest-but-one state
+        var last: OutputTransformV2? = null
+        repeat(GradeHistory.MAX_ENTRIES - 2) { last = h.undoSnapshot()!!.output }
+        assertEquals(OpenDrtParamsV2(grey = 5f), last!!.opendrt) // the OLDEST SURVIVING output (r5)
+        assertNull(h.undoSnapshot()) // the initial state fell off the bottom
+        assertFalse(h.canUndo)
+    }
 }
