@@ -881,6 +881,30 @@ class SourceRepositoryTest {
         )
     }
 
+    @Test
+    fun rename_keeps_inner_spacing_and_the_extension_verbatim() {
+        // Main's rename seam (the folder-import dialog applies editedName
+        // here; feat-rename-clips' ClipNameRules wraps the same idea on its
+        // branch): the name is the user's own text — INNER spacing is kept
+        // exactly, the extension (if any) rides along as typed, and no
+        // length limit exists on main. Pinned so the branch's future
+        // NAME_MAX clamp lands as a conscious CHANGE, not an accident.
+        val file = projectFile()
+        val repo = SourceRepository(FakeResolver("clip".toByteArray()), file)
+        val imported = repo.import("content://clip/1")
+
+        val renamed = repo.rename(imported.id, "  Sunset  Trip.raw  ")
+
+        assertEquals("Sunset  Trip.raw", renamed?.displayName)
+        // A name differing only in INNER spacing is a REAL change: the
+        // collapse-to-single-spaces normalizer does not exist on main,
+        // and re-storing "sunset  trip" keeps its double space verbatim.
+        assertEquals("sunset  trip", repo.rename(imported.id, "sunset  trip")?.displayName)
+        // The unbounded-length seam on main: a 300-char name stores as-is.
+        val long = "n".repeat(300)
+        assertEquals(long, repo.rename(imported.id, long)?.displayName)
+    }
+
     private fun projectFile(): File = File(tmp.root, "project.json")
 
     /** A minimal record for the cadence tests (only id + status matter). */
