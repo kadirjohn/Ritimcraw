@@ -1346,7 +1346,7 @@ fun ClipEditorScreen(
         // there). In memory only, deliberately: process death empties it
         // while GradeStore keeps the grade itself, so the honest
         // post-death state is "nothing to undo" (GradeHistory KDoc).
-        val gradeHistory = remember(sourceId) { GradeHistory(initialGrade, nodes) }
+        val gradeHistory = remember(sourceId) { GradeHistory(initialGrade, nodes, output) }
 
         // ---- Preview + transport bookkeeping (all keyed to the clip) ----
         var frame by remember(sourceId) { mutableStateOf<PreviewFrame?>(null) }
@@ -1919,16 +1919,29 @@ fun ClipEditorScreen(
             )
         }
 
+        // Output card slider drags merge into one step; this job closes the step once the edits pause.
+        var outputSettleJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
+
         /**
-         * F1-8d: an Output card edit — the screen's output state + the putOutput seam + the re-render,
-         * the applyNodesEdit shape. The grade's undo history does NOT record it (the history's Snapshot
-         * carries grade + nodes; the output rides only the v2 record whose wire the render sites read per
-         * request, and output edits are mode/param switches, not drags). A cheaper take-back for a stray
-         * mode switch is a conscious F1-8f decision (the design's undo-integration slice), not smuggled in.
+         * F1-8d/F1-8f: an Output card edit: the screen's output state + the putOutput seam + the re-render
+         * + the undo history (the history Snapshot carries the output group). A slider-type edit (only
+         * look/tonescale/cwp/cwpLimit/grey moved) merges into one step under OUTPUT_GESTURE, closed after a
+         * 600 ms pause like the node sliders; mode/display switches are discrete steps of their own.
          */
         fun applyOutputEdit(o: com.ritim.ritimcraw.data.grade2.OutputTransformV2) {
+            val valueEdit = NodeOutputOps.isValueEdit(output, o)
             output = o
             onOutputChange(o)
+            gradeHistory.recordOutput(o, if (valueEdit) GradeHistory.OUTPUT_GESTURE else null)
+            outputSettleJob?.cancel()
+            if (valueEdit) {
+                outputSettleJob = scope.launch {
+                    kotlinx.coroutines.delay(600)
+                    gradeHistory.settle()
+                }
+            } else {
+                gradeHistory.settle()
+            }
             requestRender(
                 positionFrame, grade, PreviewTiers.PAUSED_MAX_DIM,
                 cached = true, followUpMaxDim = PreviewTiers.SOURCE_MAX_DIM,
@@ -1938,8 +1951,17 @@ fun ClipEditorScreen(
         /** Applies an undo/redo snapshot (grade AND node chain) without recording. */
         fun applyRestoredSnapshot(snap: GradeHistory.Snapshot) {
             nodeSettleJob?.cancel()
+            outputSettleJob?.cancel()
             grade = snap.grade
             onGradeChange(snap.grade)
+            if (snap.output != output) {
+                output = snap.output
+                onOutputChange(snap.output)
+                requestRender(
+                    positionFrame, grade, PreviewTiers.PAUSED_MAX_DIM,
+                    cached = true, followUpMaxDim = PreviewTiers.SOURCE_MAX_DIM,
+                )
+            }
             if (snap.nodes != nodes) {
                 nodes = snap.nodes
                 onNodesChange(snap.nodes)

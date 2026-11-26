@@ -81,6 +81,15 @@ object NodeOutputOps {
     fun setDisplay(o: OutputTransformV2, display: Int): OutputTransformV2 =
         drt(o, o.opendrt.copy(display = display.coerceIn(0, DISPLAY_MAX)))
 
+    /**
+     * F1-8f undo grouping: true when [after] differs from [before] only in the OpenDRT slider fields (look,
+     * tonescale, cwp, cwpLimit, grey) with the mode, display and legacy branch unchanged: those frames of one
+     * drag merge into one history step. A mode or display switch is a discrete step.
+     */
+    fun isValueEdit(before: OutputTransformV2, after: OutputTransformV2): Boolean =
+        before.mode == after.mode && before.legacy == after.legacy &&
+            before.opendrt.display == after.opendrt.display
+
     // ---- readouts ----
 
     /** The grey readout, e.g. "10.0 nit"; locale-independent (Locale.ROOT, the project's own rule). */

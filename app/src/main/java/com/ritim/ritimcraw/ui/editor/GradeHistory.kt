@@ -5,6 +5,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.ritim.ritimcraw.data.GradeK
 import com.ritim.ritimcraw.data.grade2.GradeNodeV2
+import com.ritim.ritimcraw.data.grade2.OutputTransformV2
 
 /**
  * The grade undo/redo history (feature N7): a bounded stack of immutable
@@ -57,7 +58,11 @@ import com.ritim.ritimcraw.data.grade2.GradeNodeV2
  * without the screen keeping mirrors in sync. The class is otherwise
  * plain Kotlin and JVM-tested headless.
  */
-class GradeHistory(initial: GradeK, initialNodes: List<GradeNodeV2> = emptyList()) {
+class GradeHistory(
+    initial: GradeK,
+    initialNodes: List<GradeNodeV2> = emptyList(),
+    initialOutput: OutputTransformV2 = OutputTransformV2(),
+) {
 
     companion object {
         /**
@@ -70,6 +75,9 @@ class GradeHistory(initial: GradeK, initialNodes: List<GradeNodeV2> = emptyList(
 
         /** The cause token for node-slider drags (merged into one step, closed by [settle]). */
         val NODE_GESTURE = Any()
+
+        /** The cause token for Output card slider drags (F1-8f; merged into one step, closed by [settle]). */
+        val OUTPUT_GESTURE = Any()
 
         /**
          * Capacity: 101 entries INCLUDING the initial bottom state — the
@@ -97,12 +105,18 @@ class GradeHistory(initial: GradeK, initialNodes: List<GradeNodeV2> = emptyList(
     private data class Entry(
         val grade: GradeK,
         val nodes: List<GradeNodeV2>,
+        val output: OutputTransformV2,
         val cause: Any?,
         val open: Boolean,
     )
 
     /** One restorable editor state: the GradeK and the clip's node chain (the nodes ride the history since F1-8a). */
-    data class Snapshot(val grade: GradeK, val nodes: List<GradeNodeV2>)
+    data class Snapshot(
+        val grade: GradeK,
+        val nodes: List<GradeNodeV2>,
+        /** F1-8f: the clip's output group (mode, legacy, opendrt) rides the history too. */
+        val output: OutputTransformV2 = OutputTransformV2(),
+    )
 
     /** The history shape captured at the first touch of a possible double-tap. */
     private data class Base(val size: Int, val grade: GradeK)
@@ -110,7 +124,7 @@ class GradeHistory(initial: GradeK, initialNodes: List<GradeNodeV2> = emptyList(
     private var base: Base? = null
     private var inReset = false
 
-    private var entries by mutableStateOf(listOf(Entry(initial, initialNodes, cause = null, open = false)))
+    private var entries by mutableStateOf(listOf(Entry(initial, initialNodes, initialOutput, cause = null, open = false)))
     private var redoEntries by mutableStateOf(listOf<Entry>())
 
     /** Whether an undo would produce a grade (UI gating). */
@@ -128,7 +142,8 @@ class GradeHistory(initial: GradeK, initialNodes: List<GradeNodeV2> = emptyList(
      */
     fun record(grade: GradeK, cause: Any? = null) {
         if (inReset) collapseToBase()
-        push(grade, entries.lastOrNull()?.nodes ?: emptyList(), cause)
+        val top = entries.lastOrNull()
+        push(grade, top?.nodes ?: emptyList(), top?.output ?: OutputTransformV2(), cause)
     }
 
     /**
@@ -137,19 +152,28 @@ class GradeHistory(initial: GradeK, initialNodes: List<GradeNodeV2> = emptyList(
      */
     fun recordNodes(nodes: List<GradeNodeV2>, cause: Any? = null) {
         val top = entries.lastOrNull() ?: return
-        push(top.grade, nodes, cause)
+        push(top.grade, nodes, top.output, cause)
     }
 
-    private fun push(grade: GradeK, nodes: List<GradeNodeV2>, cause: Any?) {
+    /**
+     * F1-8f: records an Output card edit (grade and nodes stay what the top says). Same coalescing rules: a
+     * slider drag passes [OUTPUT_GESTURE] and merges into one step; mode/display switches pass null.
+     */
+    fun recordOutput(output: OutputTransformV2, cause: Any? = null) {
+        val top = entries.lastOrNull() ?: return
+        push(top.grade, top.nodes, output, cause)
+    }
+
+    private fun push(grade: GradeK, nodes: List<GradeNodeV2>, output: OutputTransformV2, cause: Any?) {
         val top = entries.lastOrNull()
         when {
-            top != null && top.grade == grade && top.nodes == nodes -> return
+            top != null && top.grade == grade && top.nodes == nodes && top.output == output -> return
             cause != null && top != null && top.cause == cause && top.open -> {
-                entries = entries.dropLast(1) + Entry(grade, nodes, cause, open = true)
+                entries = entries.dropLast(1) + Entry(grade, nodes, output, cause, open = true)
             }
             else -> {
                 if (redoEntries.isNotEmpty()) redoEntries = emptyList()
-                entries = (entries + Entry(grade, nodes, cause, open = cause != null))
+                entries = (entries + Entry(grade, nodes, output, cause, open = cause != null))
                     .takeLast(MAX_ENTRIES)
             }
         }
@@ -227,7 +251,7 @@ class GradeHistory(initial: GradeK, initialNodes: List<GradeNodeV2> = emptyList(
         val popped = entries.last()
         entries = entries.dropLast(1)
         redoEntries = redoEntries + popped.copy(open = false)
-        return entries.last().let { Snapshot(it.grade, it.nodes) }
+        return entries.last().let { Snapshot(it.grade, it.nodes, it.output) }
     }
 
     /**
@@ -242,6 +266,6 @@ class GradeHistory(initial: GradeK, initialNodes: List<GradeNodeV2> = emptyList(
         val popped = redoEntries.lastOrNull() ?: return null
         redoEntries = redoEntries.dropLast(1)
         entries = entries + popped.copy(open = false)
-        return Snapshot(popped.grade, popped.nodes)
+        return Snapshot(popped.grade, popped.nodes, popped.output)
     }
 }
