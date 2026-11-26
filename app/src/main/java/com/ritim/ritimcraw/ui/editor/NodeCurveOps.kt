@@ -57,7 +57,10 @@ object NodeCurveOps {
     private fun snap(v: Float): Float = (v / SNAP_STEP).roundToInt() * SNAP_STEP + 0f // + 0f: -0.0 -> 0.0
 
     /** Clamps to 0..1 and snaps to the grid; keeps -0.0 away (+0f). */
-    private fun clamp01(v: Float): Float = snap(v.coerceIn(0f, 1f)) + 0f
+    private fun clamp01(v: Float): Float = snap(finiteOrZero(v).coerceIn(0f, 1f)) + 0f
+
+    /** NaN / +-Inf from a bad pointer event become 0 (same guard as NodeWheelOps), never an exception. */
+    private fun finiteOrZero(v: Float): Float = if (v.isNaN() || v.isInfinite()) 0f else v
 
     // ---- point edits (the design's acceptance: "nokta ekle/sürükle/sil") ----
 
@@ -106,7 +109,7 @@ object NodeCurveOps {
                     // A degenerate slot (neighbours on adjacent lattice cells): pin exactly between them.
                     (pts[index - 1].first + pts[index + 1].first) / 2f
                 } else {
-                    snap(x.coerceIn(0f, 1f)).coerceIn(lo, hi)
+                    snap(finiteOrZero(x).coerceIn(0f, 1f)).coerceIn(lo, hi)
                 }
                 pts[index] = cx + 0f to clamp01(y)
             }

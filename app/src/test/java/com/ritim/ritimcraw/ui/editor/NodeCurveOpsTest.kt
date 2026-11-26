@@ -600,4 +600,24 @@ class NodeCurveOpsTest {
         assertEquals(0f to 0f, pts[0])                 // black point untouched
         assertEquals(1f to 1f, pts[2])                // white point untouched — the device repro fixed
     }
+
+    @Test fun nanAndInfiniteInputsNeverThrowAndStayInRange() {
+        // Night C3 finding, fixed: a bad pointer event used to throw out of roundToInt(NaN).
+        val bad = listOf(Float.NaN, Float.POSITIVE_INFINITY, Float.NEGATIVE_INFINITY)
+        for (v in bad) {
+            val added = NodeCurveOps.addPoint(neutral, NodeCurveId.Y, v, v)
+            val moved = NodeCurveOps.setPointAt(added, NodeCurveId.Y, 0, v, v)
+            for (n in listOf(added, moved)) {
+                for ((px, py) in NodeCurveOps.points(n, NodeCurveId.Y)) {
+                    assertTrue("x in 0..1: $px", px in 0f..1f)
+                    assertTrue("y in 0..1: $py", py in 0f..1f)
+                }
+            }
+        }
+        val three = NodeCurveOps.addPoint(neutral, NodeCurveId.Y, 0.5f, 0.5f)
+        val dragged = NodeCurveOps.setPointAt(three, NodeCurveId.Y, 1, Float.NaN, Float.NaN)
+        val pts = NodeCurveOps.points(dragged, NodeCurveId.Y)
+        assertEquals(3, pts.size)
+        assertTrue(pts[0].first < pts[1].first && pts[1].first < pts[2].first)
+    }
 }
