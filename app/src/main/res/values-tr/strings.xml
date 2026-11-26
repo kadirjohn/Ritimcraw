@@ -99,7 +99,7 @@
     <!-- 2026-11-13 editor panel segmentation plan: the Frame tab's
          Crop | Stabilize sub-tabs. -->
     <string name="editor_frame_subtab_crop">Kırpma</string>
-    <string name="editor_frame_subtab_stabilize">Stabilize</string>
+    <string name="editor_frame_subtab_stabilize">Sabitleme</string>
     <!-- The Stabilize body's expandable gyro/sync/probe section (plan);
          the Show/Hide pair follows the scope/zebra affordance idiom. -->
     <string name="editor_stabilization_advanced_show">Jiro ve senkronizasyon ayrıntılarını göster</string>
