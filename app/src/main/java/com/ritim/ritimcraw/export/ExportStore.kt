@@ -70,6 +70,47 @@ class ExportStore(private val file: File) {
         synchronized(lock) { write(emptyList()) }
     }
 
+    /**
+     * Removes the given jobs from the queue by id (owner request
+     * 2026-11-26: swipe/select delete of individual export rows).
+     *
+     * Mirrors [clear] PER ROW — and ONLY that: the job RECORD leaves the
+     * queue; the output file under files/exports/&lt;jobId&gt;/ and the
+     * published media-store row are never touched, exactly like a
+     * clear-all (which "clears job history only — never the output
+     * files on disk"). Deletion is IRREVERSIBLE with no undo: a true
+     * undo would need position-true re-insertion, which this
+     * append-only store cannot do without re-architecting (the owner
+     * did not ask for one).
+     *
+     * LIVE-SAFETY: the two live states (QUEUED/RUNNING) are never
+     * removed — a live job can only be cancelled (the queue owns its
+     * lifetime; deleting a live row would orphan the encoder). The UI
+     * gates deletable rows first ([ExportRowModel.isDeletable]), but
+     * the store repeats the rule at the write, under its lock: a race
+     * (a retry flipping a selected row live between the check and the
+     * delete) can never remove a live row. Unknown or already-deleted
+     * ids are no-ops; the file is written only when a row actually
+     * left (an unchanged queue is not rewritten).
+     *
+     * @return how many rows were removed.
+     */
+    fun delete(ids: Set<String>): Int {
+        if (ids.isEmpty()) return 0
+        synchronized(lock) {
+            val jobs = load().toMutableList()
+            val before = jobs.size
+            jobs.removeAll { job ->
+                job.id in ids &&
+                    job.state != State.QUEUED &&
+                    job.state != State.RUNNING
+            }
+            if (jobs.size == before) return 0
+            write(jobs)
+            return before - jobs.size
+        }
+    }
+
     // ---- persistence ----
 
     private fun load(): List<ExportJob> {
