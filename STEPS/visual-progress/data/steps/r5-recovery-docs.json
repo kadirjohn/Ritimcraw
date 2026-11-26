@@ -1,0 +1,31 @@
+{
+ "id": "r5-recovery-docs",
+ "title": "recovery plan results, gpu cost options, hr tools guide",
+ "date": "2026-11-26",
+ "status": "done",
+ "commit": {
+  "hash": "714a75a",
+  "date": "2026-11-26",
+  "merge_subject": "docs: recovery plan results and hr tools"
+ },
+ "tests": "doc-only; step JSON validated by build-data.py; no code behavior changed (comment fixes only, in df2413e)",
+ "description": "The recovery plan document now carries the measured results (M0 night-clip findings, per-frame per-channel clip levels, M1 synthetic errors, K=4 headroom cap, device parity, the missed +16/+46 ms GPU cost target) and a GPU cost design note: pass-by-pass memory-traffic arithmetic at 4K derived from the shipped RECOVERY_* shaders and recoveryDraw (about 1 GB/frame), three options to reach the 10 ms target (multi-tap single pass; coarser level grid; half-res levels, both owner decisions), and a morning measurement plan using the existing debug.ritim.rectime property. docs/HR_TOOLS.md documents the four hr_measure/hr_levels/hr_headroom/hr_trace desktop tools and their HR_K/HR_CROP/HR_BOX/HR_LUM environment flags. Stale stage-15 knee comments (0.75/0.40 era) and the parcel field count (30, not 29) were corrected across code comments.",
+ "added": [
+  "docs/HR_TOOLS.md",
+  "GPU cost design note (traffic table, three options with savings arithmetic, morning measurement plan)",
+  "Measured-results sections in docs/HIGHLIGHT_RECOVERY_PLAN.md (M0/M1/M3, K=4, cost miss)"
+ ],
+ "removed": [],
+ "changed": [
+  "docs/HIGHLIGHT_RECOVERY_PLAN.md rewritten: plan kept, results integrated, status line lists merge commits",
+  "docs/EFFECT_TEMPLATES.md stage-15 cites updated (Develop.cpp 1380-1420, knee 0.18, uniform 447)",
+  "stale knee comments fixed: HighlightsCurveKeyIgnoredTest, RenderBackendTest, RenderBackend, EffectRegistry, hr_trace",
+  "parcel count 29 -> 30 in GradeParcel.kt header, GradeParcel.h fold, Mp4Exporter, NativeSource, GpuPreviewSession and five test doc comments"
+ ],
+ "files": [
+  {"path": "docs/HIGHLIGHT_RECOVERY_PLAN.md", "change": "M"},
+  {"path": "docs/HR_TOOLS.md", "change": "A"},
+  {"path": "docs/EFFECT_TEMPLATES.md", "change": "M"}
+ ],
+ "sources": []
+}

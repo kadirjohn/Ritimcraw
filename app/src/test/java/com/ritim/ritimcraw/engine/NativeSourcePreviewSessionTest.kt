@@ -176,7 +176,7 @@ class NativeSourcePreviewSessionTest {
         // GRADE PARCEL (commit a + b): the preview render door's signature
         // lock — 21 parameters: sessionHandle, clipHandle, frameIndex,
         // maxDim (the four plumbing values) + gradeParcel (the ONE flat
-        // FloatArray carrying all 29 scalar grade fields — the layout is
+        // FloatArray carrying all 30 scalar grade fields — the layout is
         // GENERATED from tools/gen-grade-parcel.py's schema, both sides of
         // the seam; GradeParcelTest cross-checks the committed C++ header's
         // constexpr slots against the Kotlin offsets) + the seven LUT

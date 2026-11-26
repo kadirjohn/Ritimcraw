@@ -10,7 +10,7 @@ import org.junit.Test
 import org.junit.rules.TemporaryFolder
 
 /**
- * The highlights curve is not versioned: the stage-15 knee is 0.40 for every record. A stored
+ * The highlights curve is not versioned: the stage-15 knee is 0.18 for every record. A stored
  * "highlightsCurve" key (written by the short-lived versioning) is ignored on read and never written.
  */
 class HighlightsCurveKeyIgnoredTest {

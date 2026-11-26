@@ -268,7 +268,7 @@ internal object NativeMp4Session : Mp4Session {
         }
         return NativeSource.jniExportFrameParcel(
             handle, frameIndex,
-            // GRADE PARCEL (commit b): the 29 scalar fields cross as ONE
+            // GRADE PARCEL (commit b): the 30 scalar fields cross as ONE
             // packet (encoded here per call — the CPU session's own seam,
             // one call per frame; the encode loop's export-grade parcel is
             // the GPU twins' packet). The bridge decodes once and folds
@@ -454,7 +454,7 @@ interface GpuDevelop {
 
     /**
      * Renders one frame; null on failure (the session latches unhealthy).
-     * GRADE PARCEL (commit b): the 29 scalar grade fields cross as ONE
+     * GRADE PARCEL (commit b): the 30 scalar grade fields cross as ONE
      * flat FloatArray — GradeParcel.encode(grade), the GENERATED slot
      * layout (tools/gen-grade-parcel.py is the single source of truth for
      * both sides of the seam). The parcel is the dispatcher's ONE
@@ -498,7 +498,7 @@ interface GpuDevelop {
      * thread). 0 is the byte-identical upright copy. False names the
      * step in [lastDetail].
      *
-     * GRADE PARCEL (commit b): the 29 scalar grade fields cross as ONE
+     * GRADE PARCEL (commit b): the 30 scalar grade fields cross as ONE
      * flat FloatArray — GradeParcel.encode(grade), the GENERATED slot
      * layout (tools/gen-grade-parcel.py is the single source of truth for
      * both sides of the seam), built once per export before the frame

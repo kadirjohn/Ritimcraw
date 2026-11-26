@@ -56,8 +56,10 @@ The highlights port crossed exactly these seams, in this order:
    grade stays byte-identical. TODAY this is also one slot in
    `engine/GradeParcel.kt` (the `SLOT_*` constants + the pack/unpack
    pair) — the parcel is how the value crosses.
-2. **CPU stage** — `core/src/Develop.cpp`, `developCpu` (710), the
-   24-stage contract. Stage 15 lives at 1038-1074: knee 0.75, the
+2. **CPU stage** — `core/src/Develop.cpp`, `developCpu`, the
+   24-stage contract. Stage 15 lives at 1380-1420: knee 0.18 (history
+   0.75 → 0.40, then 0.18 merged `b884460`; the curve versioning was
+   removed in `6b62faa`), the
    monotone shoulder `shoulder = knee + span*(t/(1+t))` with
    `s = -highlights/100`, uniform gain `newMx/mx`. The CPU stage is
    the reference implementation the GPU must match.
@@ -78,7 +80,7 @@ The highlights port crossed exactly these seams, in this order:
 6. **Dispatch sites** — `GpuDevelop` + `NativeGpuDevelop` + both
    `Mp4Exporter` dispatch sites thread the grade value verbatim.
 7. **Shader uniform** — `app/src/main/java/com/ritim/ritimcraw/engine/GlesShaderSources.kt`:
-   `uHighlights` (uniform declared at 444), and the GLSL block placed
+   `uHighlights` (uniform declared at 447), and the GLSL block placed
    at the exact contract position — for stage 15 that is between
    stage-14 exposure and stage-23 tonemap (order 14 → 15 → 23 → OETF
    in the fused pass; the validator locks this four-block order).
@@ -92,11 +94,14 @@ The highlights port crossed exactly these seams, in this order:
    needs NO runtime fallback leg — its only hardware fact is the
    float-FBO every fragment draw already rides.
 10. **Registry row** — `engine/EffectRegistry.kt`: the new row citing
-    both live sites (CPU `Develop.cpp:1038-1074`, GPU
+    both live sites (CPU `Develop.cpp:1380-1420`, GPU
     `DEVELOP_FRAGMENT_POST behind uHighlights`). The cross-check test
     fails without it.
 
 ### 1.2 The GLSL block (the actual port, verbatim from 0efcc75)
+
+Historical text — the 0efcc75 block had `knee = 0.75`; the shipped knee
+is 0.18 today (2026-11-26); nothing else in the block changed.
 
 ```glsl
 if (uHighlights != 0.0) {

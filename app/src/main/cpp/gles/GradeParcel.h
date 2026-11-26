@@ -250,7 +250,10 @@ inline void applyGradeToRequest(const DevelopGrade& grade, RequestT* req) {
 }
 
 // Folds the decoded grade onto a rawedit::Grade (the CPU export path's
-// developCpu input). ALL 29 schema fields copy by name - the temporal pair
+// developCpu input). ALL 30 parcel fields copy by name (the 29 generator-
+// schema fields plus the hand-added highlightRecovery, slot 29 - the
+// generator's SCHEMA is not yet extended, so gen-grade-parcel.py --check
+// fails on main until it is) - the temporal pair
 // included (rawedit::Grade carries them so the whole grade pipeline
 // transports the controls; the bridge consumes the temporal stage on the
 // CFA before developCpu, exactly as the flat path's gradeFromKotlin always

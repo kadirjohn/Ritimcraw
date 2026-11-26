@@ -6,7 +6,7 @@
 // truth — see the Kotlin doc for why raw knobs, not compiled packs).
 //
 // A hand-written mirror PAIR (the NodeParcel.h mechanism): the GRADE
-// parcel's generator owns the 29 scalar slots only, so this pair is
+// parcel's generator owns the 30 scalar slots only, so this pair is
 // locked together by NodeChainWireTest's committed-header cross-check
 // (the NodeParcelTest pattern).
 //

@@ -434,7 +434,7 @@ class RenderBackendTest {
     @Test
     fun highlights_grade_covers_the_fragment_path() {
         // Stage 15 is ported into the fragment pass (the CPU stage-15
-        // shoulder — knee 0.75, the monotone shoulder, the uniform gain —
+        // shoulder — knee 0.18, the monotone shoulder, the uniform gain —
         // behind uHighlights), so a highlights-only grade — the owner's
         // routine recovery shape — is NOT an uncovered-stage fallback
         // anymore: gates green -> the fragment leg runs. Both directions

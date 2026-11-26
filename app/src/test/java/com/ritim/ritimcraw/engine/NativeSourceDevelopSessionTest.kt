@@ -235,7 +235,7 @@ class NativeSourceDevelopSessionTest {
         // GRADE PARCEL (commit a + b): the readback render door's signature
         // lock — 13 parameters: sessionHandle, clipHandle, frameIndex (the
         // three plumbing values) + gradeParcel (the ONE flat FloatArray
-        // carrying all 29 scalar grade fields — the layout is GENERATED
+        // carrying all 30 scalar grade fields — the layout is GENERATED
         // from tools/gen-grade-parcel.py's schema, the single source of
         // truth for both sides of the seam; GradeParcelTest cross-checks
         // the committed C++ header's constexpr slots against the Kotlin
