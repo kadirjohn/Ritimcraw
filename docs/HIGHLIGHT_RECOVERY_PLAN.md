@@ -264,3 +264,15 @@ clock still misses the 10 ms gate, propose option 3 to the owner
    - Joint two-channel estimate (each clipped channel from the reference, then made consistent with the pair's own ratio c1/c2, geometric-mean level; CPU + GPU composite): R/G 0.0089 (passes), B/G 0.0270 (fails, was 0.0170), linear error 0.0216.
    - Joint estimate with green anchored (pairs that contain G keep G's independent level): R/G 0.0293, B/G 0.0252 (worse); anchoring only the (R,G) pair: identical to the geometric-mean variant (that pair does not occur in this band, the band is (G,B)/(R,B) pixels).
    The experiment is saved as `docs/recovery-joint-estimate-experiment.patch` (CPU `recoverClippedHighlights`, the GLSL composite and its validator strings). Not applied. Next idea: weight the pair ratio against the independent ratios by their measurement support instead of a fixed geometric mean.
+
+## Perf queue (2026-11-27, owner decision: park, return to the roadmap)
+
+Done and merged: **early exit** (`perf: skip stage 3 and recovery on unclipped frames`): when no channel reaches its clip threshold stage 3 and Recovery are skipped, bit-identical (sweep digests 65/65 on frames 0 and 100, 65 cases <= 1 LSB on the unclipped frame 1555). 3840x2160 PRE (steady state, median): 50.0 ms -> 26.2 ms on an unclipped frame; clipped frames unchanged. Measured with `RecoveryBench` (debug, marker file `files/recbench`, run from the debug sweep button, `setprop debug.ritim.rectime 1`; `debug.ritim.recnoexit 1` disables the exit for same-build A/B).
+
+Measured breakdown on a clipped 4K frame (steady state): default PRE (Neutral stage 3 on) ~49 ms, `hr-off` PRE ~30-35 ms, Recovery chain 38-42 ms (levels 1.1, pre 15-17, pyramid 17-22 of which BLOCK0 15-19, composite 6.5-9). Finding: Recovery is NOT more expensive than the default Neutral chain on a clipped frame; the earlier "+16/+46 ms" was measured against a Neutral-off baseline. The 4K numbers affect the paused full-resolution frame and export, not playback (playback runs the small tier at ~20 ms/frame).
+
+Queued, not to be done now:
+1. **Normalised-CFA pre-pass.** Write the stage-1/2 normalised value and the clip flag of every site ONCE into an intermediate (R/RG32F), so the demosaic, stage 3 (`hrAt`, which recomputes its 2x2 cell for every one of the 9 taps of every output pixel) and the Recovery PRE read plain texels. Same float expressions, so it should stay bit-identical; expected ~15-20 ms off a clipped 4K frame for Neutral and ~10 ms for Recovery's PRE.
+2. **BLOCK0 / BLOCK_UP MRT merge.** One draw with 6 attachments instead of two 3-attachment draws (needs `GL_MAX_DRAW_BUFFERS >= 6`, query at runtime, keep the two-draw path as fallback; registration gains two shader strings). Saves one `texB` sweep, ~5-8 ms of the 15-19 ms BLOCK0.
+3. **Recovery preview-tier gap** (-2 EV, 15-18/255 on the binned tiers): carry the clip mask through the binning or run Recovery on the GPU at preview quality (budget: the pre-pass above first).
+4. Recovery joint two-channel estimate (weighted): see the Queue section above; removes the `should_fail` marker when it holds.
