@@ -106,6 +106,7 @@ class ProjectSafetyTest {
         GyroFolderStore(projectFile()).put("content://folder/other")
         ImportFolderStore(projectFile()).put("content://folder/other")
         SystemMonitorStore(projectFile()).put(false)
+        ScrubFramesStore(projectFile()).put(true)
 
         // Suppressed writes left NO temp file behind, either.
         assertNull(File(tmp.root, "project.json.tmp").let { if (it.exists()) it else null })

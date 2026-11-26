@@ -204,6 +204,14 @@ class ScrubFrames(
         if (id != null && src != null) retarget(id, src, index)
     }
 
+    /**
+     * Stands the background walk DOWN without clearing the cached frames (playback start: the decoder
+     * and the engine are needed for the picture being played — Klipp's ScrubFrames.paused-flag semantics,
+     * expressed as a plain cancel: the next [onScrub]/[onRelease] retarget resumes the walk around the new
+     * center, and the frames already cached keep serving when scrubbing resumes).
+     */
+    fun standDown() { filler.cancel() }
+
     private fun retarget(id: String, src: ScrubFrameSource, index: Int) =
         filler.retarget(id, src, index, ScrubFrameFiller.strideFor(src.frameCount, budgetFrames), budgetFrames)
 

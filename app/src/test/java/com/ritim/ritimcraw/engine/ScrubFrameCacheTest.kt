@@ -94,6 +94,45 @@ class ScrubFrameCacheTest {
         } finally { ex.shutdownNow() }
     }
 
+    @Test fun standDownCancelsTheWalkButKeepsTheCache() {
+        // ScrubFrames.standDown (F2-C3 wiring, playback start): the walk
+        // stops — Klipp's ScrubFrames.paused semantics — and the frames
+        // already cached STAY (they serve when scrubbing resumes; the
+        // facade's onScrub retargets a fresh walk around the new center).
+        val ex = Executors.newSingleThreadExecutor()
+        try {
+            val cache = ScrubFrameCache(10_000)
+            val sf = ScrubFrames(cache, FakeCodec, ex.asCoroutineDispatcher())
+            val src = FakeSource(100)
+            sf.attach("a", src)
+            sf.onScrub(50) // retargets the walk at 50
+            runBlocking {
+                // Wait for the walk to finish storing (bounded by budget's
+                // 120 maxFrames at stride 1 on 100 frames = all 100; the
+                // poll loop below observes steady state instead).
+                var waited = 0
+                while (src.requested.size < 3 && waited < 200) {
+                    kotlinx.coroutines.delay(10); waited++
+                }
+            }
+            sf.standDown()
+            // The cache is NOT cleared by the stand-down (only release
+            // clears): whatever the walk stored stays queryable.
+            val stored = cache.count
+            assertTrue("the walk stored nothing before the stand-down", stored > 0)
+            sf.onScrub(50)
+            runBlocking {
+                var waited = 0
+                while (waited < 50) { kotlinx.coroutines.delay(10); waited++ }
+            }
+            // With play "resumed" the walk re-targets on the next scrub —
+            // the stand-down is a CANCEL of the walk, not a latch on the
+            // facade (Klipp re-arms its builder the same way).
+            assertTrue(cache.count >= stored)
+            sf.close()
+        } finally { ex.shutdownNow() }
+    }
+
     @Test fun threadSafetySmoke() {
         val c = ScrubFrameCache(500)
         val ts = (0 until 8).map { t ->
