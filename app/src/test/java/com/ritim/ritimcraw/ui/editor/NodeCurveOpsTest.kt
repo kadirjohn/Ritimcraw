@@ -641,26 +641,17 @@ class NodeCurveOpsTest {
     }
 
     @Test
-    fun add_of_nan_throws_today_documented_as_a_finding() {
-        // FINDING (night C3, NOT fixed per rules): NodeCurveOps.addPoint(NaN, y) throws
-        // IllegalArgumentException("Cannot round NaN value.") — snap()'s roundToInt rejects
-        // NaN (kotlin.math), and addPoint's clamp01 runs snap on the raw input with no
-        // finiteOrZero guard (the sibling NodeWheelOps.setPuck HAS the guard: "NaN/Infinity
-        // from a broken gesture or caller lands on the centre, never in the model (snap
-        // would throw)"). NaN reaches here only from a broken caller (pointerToCurve
-        // clamps real gestures into 0..1), so this pins TODAY's behavior; a fix belongs
-        // to the owner (mirror finiteOrZero into clamp01).
-        val threw = try {
-            NodeCurveOps.addPoint(neutral, NodeCurveId.Y, Float.NaN, 0.5f)
-            false
-        } catch (e: IllegalArgumentException) {
-            "Cannot round NaN value" in (e.message ?: "")
-        }
-        assertTrue(threw)
+    fun add_of_nan_lands_on_zero_and_never_throws() {
+        // Was night C3 finding (addPoint(NaN) threw "Cannot round NaN value"); fixed: NaN -> 0.
+        val n = NodeCurveOps.addPoint(neutral, NodeCurveId.Y, Float.NaN, 0.5f)
+        val pts = NodeCurveOps.points(n, NodeCurveId.Y)
+        assertTrue(pts.all { it.first in 0f..1f && it.second in 0f..1f })
+        val m = NodeCurveOps.addPoint(neutral, NodeCurveId.Y, 0.5f, Float.NaN)
+        assertTrue(NodeCurveOps.points(m, NodeCurveId.Y).all { it.first in 0f..1f && it.second in 0f..1f })
     }
 
     @Test
-    fun drag_with_non_finite_x_lands_inside_the_neighbour_slot_or_throws_on_nan() {
+    fun drag_with_non_finite_x_lands_inside_the_neighbour_slot() {
         val n = NodeCurveOps.addPoint(neutral, NodeCurveId.Y, 0.5f, 0.5f)
         // x=-Inf: coerceIn gives 0, snapped, then held at the floor 1/256.
         val negInf = NodeCurveOps.setPointAt(n, NodeCurveId.Y, 1, Float.NEGATIVE_INFINITY, 0.9f)
@@ -671,12 +662,12 @@ class NodeCurveOpsTest {
         // a huge finite x behaves like +Inf: the ceiling
         val huge = NodeCurveOps.setPointAt(n, NodeCurveId.Y, 1, 1e30f, 0.5f)
         assertEquals(255f / 256f, NodeCurveOps.points(huge, NodeCurveId.Y)[1].first, 1e-7f)
-        // FINDING (same as addPoint's, NOT fixed per rules): NaN x (interior branch) and
-        // NaN y (any branch, incl. endpoints) throw "Cannot round NaN value" — pinned as-is.
-        try { NodeCurveOps.setPointAt(n, NodeCurveId.Y, 1, Float.NaN, 0.9f); fail("NaN x must throw today") }
-        catch (e: IllegalArgumentException) { assertTrue(e.message!!.contains("Cannot round NaN value")) }
-        try { NodeCurveOps.setPointAt(n, NodeCurveId.Y, 0, 0f, Float.NaN); fail("NaN y must throw today") }
-        catch (e: IllegalArgumentException) { assertTrue(e.message!!.contains("Cannot round NaN value")) }
+        // NaN x (interior branch) and NaN y (any branch) used to throw; fixed: NaN -> 0 (then the
+        // usual clamps: x held at the neighbour floor, y at the floor of the range).
+        val nanX = NodeCurveOps.setPointAt(n, NodeCurveId.Y, 1, Float.NaN, 0.9f)
+        assertEquals(1f / 256f, NodeCurveOps.points(nanX, NodeCurveId.Y)[1].first, 1e-7f)
+        val nanY = NodeCurveOps.setPointAt(n, NodeCurveId.Y, 0, 0f, Float.NaN)
+        assertEquals(0f, NodeCurveOps.points(nanY, NodeCurveId.Y)[0].second, 0f)
     }
 
     @Test
