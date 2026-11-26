@@ -1152,6 +1152,18 @@ fun AppNav(
                 .openFileDescriptor(Uri.parse(first.uri), "r")
                 ?.detachFd() ?: -1
             if (fd >= 0) GradeParitySweep.run(fd)
+            // Clipped-highlight parity (Formula X, 2026-11-26): the same sweep on a frame that HAS clipped
+            // cells, so stage 3 / Recovery GPU = CPU is checked on real clipped pixels. Debug-only; runs when
+            // the library holds the owner's highlight_pembe clip (frame 100, the frame its magenta was measured on).
+            val clipped = sources.firstOrNull {
+                it.access == Access.OK && it.displayName.contains("pembe", ignoreCase = true)
+            }
+            if (clipped != null) {
+                val clippedFd = context.contentResolver
+                    .openFileDescriptor(Uri.parse(clipped.uri), "r")
+                    ?.detachFd() ?: -1
+                if (clippedFd >= 0) GradeParitySweep.run(clippedFd, frameIndex = 100)
+            }
             // The A2 crop sweep (guide A2): the window pass's crop leg —
             // same DEBUG-only, failure-soft shape as the grade sweep,
             // its own fd (the grade sweep closed its descriptor).

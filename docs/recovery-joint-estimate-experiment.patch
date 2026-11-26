@@ -1,0 +1,130 @@
+diff --git a/app/src/main/java/com/ritim/ritimcraw/engine/GlesShaderSources.kt b/app/src/main/java/com/ritim/ritimcraw/engine/GlesShaderSources.kt
+index 1e1539db..45f3848d 100644
+--- a/app/src/main/java/com/ritim/ritimcraw/engine/GlesShaderSources.kt
++++ b/app/src/main/java/com/ritim/ritimcraw/engine/GlesShaderSources.kt
+@@ -1625,11 +1625,36 @@ void main() {
+         else r = (v.r >= v.b) ? (cf[0] ? 2 : 0) : (cf[2] ? 0 : 2);
+         float vr = v[r];
+         vec3 o = v;
++        vec3 rhoV = vec3(-1.0);
++        for (int c = 0; c < 3; ++c) {
++            if (cf[c]) rhoV[c] = ratioFor(g, c, r);
++        }
++        vec3 est = vec3(-1.0);
++        for (int c = 0; c < 3; ++c) {
++            if (cf[c] && rhoV[c] > 0.0) est[c] = vr * rhoV[c];
++        }
++        if (nc == 2) {
++            // Joint estimate (CPU twin): the two clipped channels, each from the reference, made consistent with
++            // their own measured ratio c1/c2; in the (R,G) pair green keeps its own level, the other pairs keep
++            // their geometric-mean level.
++            int c1 = cf[0] ? 0 : 1;
++            int c2 = cf[2] ? 2 : 1;
++            float rho12 = ratioFor(g, c1, c2);
++            if (rhoV[c1] > 0.0 && rhoV[c2] > 0.0 && rho12 > 0.0) {
++                if (c2 == 1) {
++                    est[c1] = est[1] * rho12;
++                } else {
++                    float gm = vr * sqrt(rhoV[c1] * rhoV[c2]);
++                    float s12 = sqrt(rho12);
++                    est[c1] = gm * s12;
++                    est[c2] = gm / s12;
++                }
++            }
++        }
+         for (int c = 0; c < 3; ++c) {
+             if (!cf[c]) continue;
+-            float rho = ratioFor(g, c, r);
+-            if (rho > 0.0) {
+-                float e = max(v[c], vr * rho);  // the clipped value is a lower bound
++            if (est[c] > 0.0) {
++                float e = max(v[c], est[c]);  // the clipped value is a lower bound
+                 if (v[c] > 0.0) e = min(e, 4.0 * v[c]);  // headroom cap K = 4 (CPU kRecoveryHeadroom)
+                 o[c] = e;
+             }
+diff --git a/app/src/main/java/com/ritim/ritimcraw/engine/GlesShaderValidator.kt b/app/src/main/java/com/ritim/ritimcraw/engine/GlesShaderValidator.kt
+index 3c59238b..248b3353 100644
+--- a/app/src/main/java/com/ritim/ritimcraw/engine/GlesShaderValidator.kt
++++ b/app/src/main/java/com/ritim/ritimcraw/engine/GlesShaderValidator.kt
+@@ -367,7 +367,12 @@ object GlesShaderValidator {
+         recoveryRequire(s, out, "if (s.x >= 117964.8 && s.z > 0.0) return s.y / s.z;", "scale 4 support")
+         recoveryRequire(s, out, "if (!cf[1]) r = 1;", "reference channel: green when it is unclipped")
+         recoveryRequire(s, out, "else r = (v.r >= v.b) ? (cf[0] ? 2 : 0) : (cf[2] ? 0 : 2);", "reference channel when green is clipped")
+-        recoveryRequire(s, out, "float e = max(v[c], vr * rho);", "estimate = ref x ratio, never below the clipped value")
++        recoveryRequire(s, out, "if (cf[c] && rhoV[c] > 0.0) est[c] = vr * rhoV[c];", "estimate = ref x ratio")
++        recoveryRequire(s, out, "est[c1] = est[1] * rho12;", "(R,G) pair: green keeps its level, red follows R/G")
++        recoveryRequire(s, out, "float gm = vr * sqrt(rhoV[c1] * rhoV[c2]);", "(G,B), (R,B) pairs: geometric-mean level (the CPU's gm)")
++        recoveryRequire(s, out, "est[c1] = gm * s12;", "ratio c1/c2 applied to the level")
++        recoveryRequire(s, out, "est[c2] = gm / s12;", "ratio c1/c2 applied to the level")
++        recoveryRequire(s, out, "float e = max(v[c], est[c]);", "never below the clipped value")
+         recoveryRequire(s, out, "if (v[c] > 0.0) e = min(e, 4.0 * v[c]);", "headroom cap K = 4 (the CPU's kRecoveryHeadroom)")
+         recoveryRequire(s, out, "v = vec3(m);", "all three clipped: neutral at the lowest channel")
+         // A dynamic index into a sampler array is invalid on Adreno ES 3.00: every level is one
+diff --git a/core/src/Develop.cpp b/core/src/Develop.cpp
+index f618908b..17f9e77d 100644
+--- a/core/src/Develop.cpp
++++ b/core/src/Develop.cpp
+@@ -949,6 +949,11 @@ void recoverClippedHighlights(ImageF& img, const ImageF& clipMask, const Recover
+                     else r = (img.rgb[i * 3 + 0] >= img.rgb[i * 3 + 2]) ? (cf[0] ? 2 : 0) : (cf[2] ? 0 : 2);
+                     for (int c = 0; c < 3; ++c)
+                         if (cf[c]) mine[c * 3 + r].push_back(static_cast<uint32_t>(i));
++                    if (nc == 2) {
++                        // Joint estimate (owner decision 2026-11-26): the pair's own ratio c1/c2 is read at this pixel too.
++                        const int c1 = cf[0] ? 0 : 1, c2 = cf[2] ? 2 : 1;
++                        mine[c1 * 3 + c2].push_back(static_cast<uint32_t>(i));
++                    }
+                 }
+             std::lock_guard<std::mutex> lk(mergeMu);
+             chunks.emplace(y0, std::move(mine));
+@@ -1016,17 +1021,45 @@ void recoverClippedHighlights(ImageF& img, const ImageF& clipMask, const Recover
+                     else r = (px[0] >= px[2]) ? (cf[0] ? 2 : 0) : (cf[2] ? 0 : 2);
+                     const float vr = px[r];
+                     float out[3] = {px[0], px[1], px[2]};
+-                    for (int c = 0; c < 3; ++c) {
+-                        if (!cf[c]) continue;
+-                        const PairRatios& pr = pair[c][r];
++                    const auto lookup = [&](int c, int rr) {
++                        const PairRatios& pr = pair[c][rr];
+                         float rho = -1.0f;
+                         if (!pr.idx.empty()) {
+-                            size_t& cur = cursor[c][r];
++                            size_t& cur = cursor[c][rr];
+                             while (cur < pr.idx.size() && pr.idx[cur] < i) ++cur;
+                             if (cur < pr.idx.size() && pr.idx[cur] == i) rho = pr.rho[cur];
+                         }
+-                        if (rho <= 0.0f) continue;
+-                        const float est = vr * rho;
++                        return rho;
++                    };
++                    float rhoV[3] = {-1.0f, -1.0f, -1.0f};
++                    for (int c = 0; c < 3; ++c)
++                        if (cf[c]) rhoV[c] = lookup(c, r);
++                    float estV[3] = {-1.0f, -1.0f, -1.0f};
++                    for (int c = 0; c < 3; ++c)
++                        if (cf[c] && rhoV[c] > 0.0f) estV[c] = vr * rhoV[c];
++                    if (nc == 2) {
++                        // Two clipped channels are estimated TOGETHER: each from the reference, then the pair is
++                        // made consistent with its own measured ratio c1/c2 (from neighbours where both are
++                        // unclipped), so independent ratio noise no longer shows up as a hue error between the
++                        // two clipped channels. In the (R,G) pair green (referenced to the unclipped blue, the
++                        // best-measured ratio) keeps its own level; the other pairs keep their geometric-mean level.
++                        const int c1 = cf[0] ? 0 : 1, c2 = cf[2] ? 2 : 1;
++                        const float rho12 = lookup(c1, c2);
++                        if (rhoV[c1] > 0.0f && rhoV[c2] > 0.0f && rho12 > 0.0f) {
++                            if (c2 == 1) {
++                                estV[c1] = estV[1] * rho12;            // (R,G): green keeps its level, red follows R/G
++                            } else {
++                                const float gm = vr * std::sqrt(rhoV[c1] * rhoV[c2]);   // (G,B), (R,B): geometric-mean level
++                                const float s12 = std::sqrt(rho12);
++                                estV[c1] = gm * s12;
++                                estV[c2] = gm / s12;
++                            }
++                        }
++                    }
++                    for (int c = 0; c < 3; ++c) {
++                        if (!cf[c]) continue;
++                        if (estV[c] <= 0.0f) continue;
++                        const float est = estV[c];
+                         if (sink != nullptr && px[c] > 0.0f && est > px[c]) {
+                             sink->ratio.push_back(est / px[c]);
+                             sink->refFrac.push_back(vr / params.refLevel[r]);

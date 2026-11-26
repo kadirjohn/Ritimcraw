@@ -254,3 +254,13 @@ clock still misses the 10 ms gate, propose option 3 to the owner
 5. Owner smoke items: the Recovery button has never been pressed on
    device (on/off, second press restores previous mode, no slider
    change).
+
+## Queue (2026-11-26, owner decisions)
+
+1. **Preview-tier gap (accepted for now).** On the binned preview tiers (finger down / released / playing) Recovery is replaced by the stage-3 cell cap applied BEFORE binning; paused / zoomed (stride 1) runs the real Recovery. At -2 EV the paused frame is ~15-18/255 brighter and more saturated in clipped areas. Permanent fix, either: carry the clip mask through the binning (so Recovery can run on the binned frame), or run Recovery on the GPU at preview quality (full-resolution Recovery on every scrub frame costs ~40 ms on the phone).
+2. **Recovery >= Neutral on the 2-channel-clipped band (OPEN).** After stage 3 moved to Formula X (ceiling = lowest post-WB level among the clipped channels, `fix: stage 3 caps the cell to the clipped ceiling`) Neutral's hue error on the 2-channels-clipped band fell to 0.0174 and Recovery's `hueRG` (0.0293) is above it, so `core/tests/test_highlight_recovery.cpp:159` fails (kept unchanged, owner rule). Measured with `build/desktop/test_highlight_recovery` ("M1 [2 channels clipped]"):
+   - baseline: Neutral hue R/G 0.0174, B/G 0.0174; Recovery hue R/G 0.0293, B/G 0.0170; linear error Neutral 0.3747, Recovery 0.0228.
+   - X in Recovery's no-support fallback: no change (the fallback is not reached in this scene).
+   - Joint two-channel estimate (each clipped channel from the reference, then made consistent with the pair's own ratio c1/c2, geometric-mean level; CPU + GPU composite): R/G 0.0089 (passes), B/G 0.0270 (fails, was 0.0170), linear error 0.0216.
+   - Joint estimate with green anchored (pairs that contain G keep G's independent level): R/G 0.0293, B/G 0.0252 (worse); anchoring only the (R,G) pair: identical to the geometric-mean variant (that pair does not occur in this band, the band is (G,B)/(R,B) pixels).
+   The experiment is saved as `docs/recovery-joint-estimate-experiment.patch` (CPU `recoverClippedHighlights`, the GLSL composite and its validator strings). Not applied. Next idea: weight the pair ratio against the independent ratios by their measurement support instead of a fixed geometric mean.
