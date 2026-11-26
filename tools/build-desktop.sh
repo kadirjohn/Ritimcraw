@@ -42,7 +42,7 @@ done
 
 echo "== building rawedit core =="
 CORE_OBJS=()
-for src in Source.cpp Develop.cpp Transfer.cpp DngWriter.cpp Gyro.cpp Orientation.cpp OrientationEstimate.cpp Thumbnail.cpp Lut.cpp Color.cpp ColorModel.cpp OpenDrt.cpp OpenDrtAsync.cpp Sync.cpp OpticalSync.cpp Temporal.cpp Stabilization.cpp Warp.cpp RawStats.cpp Parallel.cpp ImageStab.cpp ImageStabSource.cpp; do
+for src in Source.cpp Develop.cpp Transfer.cpp DngWriter.cpp DngSequenceWriter.cpp WavWriter.cpp Gyro.cpp Orientation.cpp OrientationEstimate.cpp Thumbnail.cpp Lut.cpp Color.cpp ColorModel.cpp OpenDrt.cpp OpenDrtAsync.cpp Sync.cpp OpticalSync.cpp Temporal.cpp Stabilization.cpp Warp.cpp RawStats.cpp Parallel.cpp ImageStab.cpp ImageStabSource.cpp; do
   obj="$BUILD/core_${src%.cpp}.o"
   "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" -c "$ROOT/core/src/$src" -o "$obj"
   CORE_OBJS+=("$obj")
@@ -98,6 +98,14 @@ echo "== building tests =="
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_transfer"
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_dng.cpp" \
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_dng"
+# test_dng_sequence: the CinemaDNG sequence export core (night E-D3,
+# docs/CINEMADNG_EXPORT_PLAN.md R1-2/R1-3/R1-4) — the optional TimeCodes
+# (51043) / FrameRate (51044) tags with the byte-identical default, the
+# SMPTE helpers, the sequence writer's partial-result/cancel/naming
+# contracts, and the WAV writer's header/range/saturation math.
+# Synthetic only, no cwd needs.
+"$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_dng_sequence.cpp" \
+  "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_dng_sequence"
 # test_lut runs from the repo root so it finds the vendor cube fixture.
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_lut.cpp" \
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_lut"
@@ -345,6 +353,8 @@ echo "== running test_transfer =="
 (cd "$ROOT" && "$BUILD/test_transfer")
 echo "== running test_dng =="
 "$BUILD/test_dng"
+echo "== running test_dng_sequence =="
+"$BUILD/test_dng_sequence"
 echo "== running test_lut =="
 (cd "$ROOT" && "$BUILD/test_lut")
 echo "== running test_highlight_recovery =="
