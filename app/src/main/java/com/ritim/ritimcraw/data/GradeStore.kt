@@ -284,8 +284,27 @@ class GradeStore(private val file: File) {
                 nodes = old.nodes,
                 output = fresh.output.copy(mode = old.output.mode, opendrt = old.output.opendrt),
                 transform = old.transform,
+                // D1: a GradeK cannot express the RAW Levels override (it
+                // is not a slider), so a slider move must not erase it —
+                // the same preservation the node chain gets.
+                develop = fresh.develop.copy(rawLevels = old.develop.rawLevels),
             )
             put(sourceId, merged)
+        }
+    }
+
+    /**
+     * The D1 RAW Levels write (owner request: the per-clip reversible
+     * override, docs/DCG_PLAN.md D1). [rawLevels] null IS the revert
+     * ("metadata'ya dön"): the stored record's develop group drops the
+     * override and the clip resolves from metadata again. Everything
+     * else of the clip's record (nodes, output, transform, sliders) is
+     * kept — the putNodes discipline, not a wipe.
+     */
+    fun putRawLevels(sourceId: String, rawLevels: RawLevels?) {
+        synchronized(lock) {
+            val base = getV2(sourceId) ?: get(sourceId).toClipGradeV2()
+            put(sourceId, base.copy(develop = base.develop.copy(rawLevels = rawLevels)))
         }
     }
 
