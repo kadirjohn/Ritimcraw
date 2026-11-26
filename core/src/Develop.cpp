@@ -1403,41 +1403,38 @@ ImageF developCpu(const uint16_t* cfa, const FrameInfo& info, const RawMeta& met
                 const int x1 = std::min(x0 + 1, static_cast<int>(w) - 1);
                 const int y1 = std::min(y0 + 1, static_cast<int>(h) - 1);
 
-                float minV[3] = {-1.0f, -1.0f, -1.0f};
+                // Formula X (owner decision 2026-11-26): the ceiling comes from the CLIPPED channels only.
+                float minClipV[3] = {-1.0f, -1.0f, -1.0f};  // lowest level among a colour's CLIPPED sites
                 bool clipped[3] = {false, false, false};
-                bool present[3] = {false, false, false};
                 for (int yy = y0; yy <= y1; ++yy) {
                     for (int xx = x0; xx <= x1; ++xx) {
                         const int color = layout.cell[yy & 1][xx & 1];
                         const size_t site = static_cast<size_t>(yy) * w + xx;
-                        const float v = norm[site];
-                        present[color] = true;
-                        if (minV[color] < 0.0f || v < minV[color])
-                            minV[color] = v;
-                        if (preClip[site])
+                        if (preClip[site]) {
+                            const float v = norm[site];
                             clipped[color] = true;
+                            if (minClipV[color] < 0.0f || v < minClipV[color])
+                                minClipV[color] = v;
+                        }
                     }
                 }
 
-                // Ceiling from colors that still have unclipped sites.
+                // Only cells with at least one clipped site are capped; unclipped cells stay bit-identical.
+                // The ceiling is the lowest post-WB level among the CLIPPED colours (a clipped channel
+                // carries no information above its own clip level), and EVERY site of the cell is capped
+                // to it: when green clips first (smallest WB gain), the unclipped red/blue that sit above
+                // green's clip level are brought down to it (neutral highlight, no magenta), while a
+                // channel already below the ceiling is never touched (a saturated yellow lamp keeps its
+                // low blue; a light whose only clipped channel is red stays red).
+                if (!(clipped[0] || clipped[1] || clipped[2]))
+                    continue;
                 float ceiling = -1.0f;
                 for (int c = 0; c < 3; ++c) {
-                    if (!present[c] || clipped[c])
+                    if (!clipped[c])
                         continue;
-                    const float level = minV[c] * gain[c];
+                    const float level = minClipV[c] * gain[c];
                     if (ceiling < 0.0f || level < ceiling)
                         ceiling = level;
-                }
-                // Every color clipped: fall back to the lowest level overall
-                // (uniform fully-clipped patches stay at 1.0).
-                if (ceiling < 0.0f) {
-                    for (int c = 0; c < 3; ++c) {
-                        if (!present[c])
-                            continue;
-                        const float level = minV[c] * gain[c];
-                        if (ceiling < 0.0f || level < ceiling)
-                            ceiling = level;
-                    }
                 }
                 if (ceiling < 0.0f)
                     continue;
@@ -1445,8 +1442,6 @@ ImageF developCpu(const uint16_t* cfa, const FrameInfo& info, const RawMeta& met
                 for (int yy = y0; yy <= y1; ++yy) {
                     for (int xx = x0; xx <= x1; ++xx) {
                         const size_t idx = static_cast<size_t>(yy) * w + xx;
-                        if (!preClip[idx])
-                            continue; // unclipped sites keep their real level
                         const float cap = ceiling / gain[wbIndex(layout.cell[yy & 1][xx & 1])];
                         if (norm[idx] > cap)
                             norm[idx] = cap;
