@@ -53,3 +53,38 @@ D0: richer raw diagnostics in the RAW scope plus a JVM test on the pure statisti
 
 - The vivo forum claim (white 4095 declared, ~4860 real, LYT-901; 8692 for LYT-818) is a report item ("reported"), not a documented spec, and does not match our Xiaomi files (declared 16383 with a ~0.9984 plateau).
 - Parity and rounding: the report's note that CPU and GPU may differ at 16-bit rounding ties on repeated dark codes is consistent with the runtime gate decision (gate checks `maxDiffLsb <= 1`; the 0.01% share stays in the device suites).
+
+## 7. D3 decision and implementation (2026-11-26): the Highlights knee follows the clip
+
+Owner decision: the knee is no longer the fixed 0.18; it is the start of the clip's own top ~15% of linear luma after Gain, bounded.
+
+- **Value:** `knee = clamp(P85_unitGain * 2^gainEv, 0.02, 0.18)`. P85 is the 85th percentile of Rec.709 luma of the neutral-graded develop (stages 1-13) pooled over 8 evenly spaced frames (binned to 480 px long edge). Gain is a uniform scale, so the post-Gain percentile equals `P85 * 2^ev`: a Gain change re-derives the knee with no re-measurement, and nothing is per-frame (no flicker on playback).
+- **Upper bound = the legacy 0.18**: a clip whose top 15% already starts above 0.18 is bit-identical to before (unmeasured ref = 0 is bit-identical too: tests `unset_ref_and_clamped_ref_are_bit_identical_to_the_legacy_knee`).
+- **Stored** per clip as `highlightKneeRef` in the grade record (v1 JSON and v2 `develop`; omitted when 0), applied silently by the editor (no undo step), parcel slot 38 (SLOT_COUNT 39), one `uHighlightKneeRef` uniform; the shader computes `clamp(ref * uExposure, 0.02, 0.18)` with the same `uExposure` stage 14 multiplies by, so CPU and GPU use the same number. Core: `highlightKnee`, `measureHighlightKneeRef` (Thumbnail.h), tool `hk_measure`.
+- **Golden changes:** the grade parcel wire lock (`LegacyGradeWireLockTest`) gains one slot (38, default 0.0); the shader contract tests (`GlesShaderValidator*`) pin the new knee line. No pixel golden changes: unset ref reproduces the old output bit for bit.
+- **Not covered:** exports of a clip that was never opened keep the legacy knee (no stored ref yet); encoded (Mi-Log/mp4) clips have no RAW develop and keep it too. GPU-vs-CPU parity sweep with a measured ref was not run on the device.
+
+Measured (`hk_measure`, CPU, tonemap off, /255 Rec.709, brightest 5% / 0.5% selected on the Highlights=0 output, mean of 3 frames; OLD = fixed 0.18, NEW = adaptive):
+
+| Clip (Gain) | ref P85 | knee | H-100 top5% OLD -> NEW | H-100 top0.5% OLD -> NEW | H+100 top5% OLD -> NEW |
+|---|---|---|---|---|---|
+| DCG 57 s (+1.7 EV) | 0.00817 | 0.0266 | -0.27 -> -3.32 | -2.63 -> -9.67 | +0.15 -> +3.03 |
+| 24 mm clip24b (0) | 0.0624 | 0.0607 | -11.84 -> -20.53 | -39.77 -> -50.07 | +9.75 -> +16.47 |
+| yavas_pan (0) | 0.2526 | 0.18 | -14.96 (unchanged) | -19.89 (unchanged) | +13.20 (unchanged) |
+| 24 mm 261110_004150 (0) | 0.3051 | 0.18 | -10.36 (unchanged) | -12.70 (unchanged) | +9.62 (unchanged) |
+
+DCG moves ~12x (top 5%) and ~3.7x (top 0.5%) more than before but is still below the bright normal clips (-10 .. -15 for the top 5%): the threshold now fits the clip, but the shoulder's span above it (1 - knee) is unchanged, so a dark clip's compression stays small in absolute terms. Scaling the span to the clip is the next lever if that is not enough.
+
+### 7a. Follow-up the same day: the shoulder runs on the clip-normalised scale
+
+Owner test on the device: with only the threshold lowered the DCG clip's Highlights -100 still barely moved (measured -3.3/255 in the brightest 5%, the bright normal clips -10 .. -15). The cause is the shoulder's span (1 - knee), unchanged in absolute terms. Fix: the stage keeps the legacy shape (knee 0.18, span 0.82) but runs on `mx * k`, `k = 0.18 / clipKnee >= 1`, and the gain is `newMx / mx` on that scale; i.e. a dark clip is treated as if its own P85 sat at 0.18. `k` is exactly 1 (a literal 1.0 in GLSL, `0.18f/0.18f` in C++) for an unmeasured ref or a clip at the legacy knee, so those clips stay bit-identical. Exponent variants measured: k^1 (chosen), k^0.75 (DCG -9.1, clip24b -34.9, an arbitrary exponent, rejected).
+
+Measured (`hk_measure`, /255, brightest 5% / 0.5%, mean of 3 frames), k^1:
+
+| Clip (Gain) | knee | H-100 top5% | H-100 top0.5% | H+100 top5% |
+|---|---|---|---|---|
+| DCG 57 s (+1.7 EV) | 0.0266 | -0.27 -> -16.32 | -2.63 -> -37.79 | +0.15 -> +12.82 |
+| 24 mm clip24b (0) | 0.0607 | -11.84 -> -44.38 | -39.77 -> -94.43 | +9.75 -> +29.80 |
+| yavas_pan (0) | 0.18 | -14.96 unchanged | -19.89 unchanged | +13.20 unchanged |
+
+clip24b has genuinely bright content (P99 0.50), so normalising by its P85 makes -100 the strongest of all clips. If that is too strong the lever is one line (an exponent on `k`).

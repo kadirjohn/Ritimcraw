@@ -1,5 +1,7 @@
 #include <rawedit/Thumbnail.h>
 
+#include <cmath>
+
 #include <algorithm>
 #include <vector>
 
@@ -122,6 +124,32 @@ ImageF developThumbnail(const uint16_t* cfa, const FrameInfo& info,
     smallInfo.height = outH;
     img = developCpu(small.data(), smallInfo, meta, grade, lut, binding, rawLevels);
     return img;
+}
+
+float measureHighlightKneeRef(Source& src, int frames, int maxDim) {
+    const size_t fc = src.frameCount();
+    if (fc == 0 || frames < 1) return 0.0f;
+    const int n = static_cast<int>(std::min<size_t>(static_cast<size_t>(frames), fc));
+    const RawMeta meta = src.rawMeta();
+    std::vector<float> pool;
+    for (int i = 0; i < n; ++i) {
+        const size_t fi = n == 1 ? fc / 2
+            : static_cast<size_t>(static_cast<double>(i) * static_cast<double>(fc - 1) /
+                                  static_cast<double>(n - 1) + 0.5);
+        auto dec = src.readFrame(fi);
+        if (!dec.isOk()) continue;
+        const FrameInfo info = src.frameInfo(fi);
+        int stride = 1;
+        const long long longEdge = std::max<long long>(info.width, info.height);
+        while (maxDim > 0 && longEdge / stride > maxDim && stride < 64) ++stride;
+        const Grade neutral;  // stages 1-13 only
+        const ImageF img = developThumbnail(dec.value->data(), info, meta, neutral, stride);
+        if (img.w == 0 || img.h == 0) continue;
+        appendLumaSamples(img, 1, pool);
+    }
+    if (pool.empty()) return 0.0f;
+    const float ref = lumaQuantile(pool, kHighlightKneePercentile);
+    return (std::isfinite(ref) && ref > 0.0f) ? ref : 0.0f;
 }
 
 } // namespace rawedit

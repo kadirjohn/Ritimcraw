@@ -397,6 +397,7 @@ class NativeSource private constructor(
             rawLevelsClipR: Float,
             rawLevelsClipG: Float,
             rawLevelsClipB: Float,
+            highlightKneeRef: Float,
         ): IntArray?
 
         /**
@@ -468,6 +469,7 @@ class NativeSource private constructor(
             rawLevelsClipR: Float,
             rawLevelsClipG: Float,
             rawLevelsClipB: Float,
+            highlightKneeRef: Float,
         ): IntArray?
 
         /** rawedit::ErrorCode of the last failed preview call (0 ok, 1 truncated, 2 badHeader, 3 ioError, 4 unsupported). */
@@ -489,6 +491,9 @@ class NativeSource private constructor(
          * session's engine thread like every preview call.
          */
         @JvmStatic private external fun nativeRawHistogram(handle: Long, frameIndex: Int): IntArray?
+
+        /** D3: the clip's luma P85 at unit gain (> 0), 0 = nothing measurable, -1 = error. Engine thread only. */
+        @JvmStatic private external fun nativeMeasureHighlightKnee(handle: Long): Float
 
         // ---- DNG export JNI (decode frame -> writeCfaDng to a staging path) ----
 
@@ -1576,6 +1581,8 @@ class NativeSource private constructor(
              * resolves by.
              */
             rawLevels: RawLevels? = null,
+            /** D3: the clip's luma P85 at unit gain (0 = unmeasured = the legacy knee 0.18, bit-identical). */
+            highlightKneeRef: Float = 0f,
         ): IntArray? = nativePreviewRender(
             handle, frameIndex,
             exposureEv, highlights, tempK, tint,
@@ -1596,6 +1603,7 @@ class NativeSource private constructor(
             rawLevels?.blackB ?: -1f,
             rawLevels?.clipR ?: -1f, rawLevels?.clipG ?: -1f,
             rawLevels?.clipB ?: -1f,
+            highlightKneeRef,
         )
 
         /** JNI bridge: cached interactive render; see nativePreviewSessionRenderCached. */
@@ -1654,6 +1662,8 @@ class NativeSource private constructor(
              * ([jniPreviewRender]'s own doc).
              */
             rawLevels: RawLevels? = null,
+            /** D3: the clip's luma P85 at unit gain (0 = unmeasured = the legacy knee 0.18, bit-identical). */
+            highlightKneeRef: Float = 0f,
         ): IntArray? = nativePreviewSessionRenderCached(
             handle, frameIndex,
             exposureEv, highlights, tempK, tint,
@@ -1674,6 +1684,7 @@ class NativeSource private constructor(
             rawLevels?.blackB ?: -1f,
             rawLevels?.clipR ?: -1f, rawLevels?.clipG ?: -1f,
             rawLevels?.clipB ?: -1f,
+            highlightKneeRef,
         )
 
         /** JNI bridge: rawedit::ErrorCode of the last failed preview call. */
@@ -1681,6 +1692,9 @@ class NativeSource private constructor(
 
         /** JNI bridge: pipeline stage of the last failed preview call. */
         internal fun jniPreviewErrorStage(): Int = nativePreviewErrorStage()
+
+        /** JNI bridge: see nativeMeasureHighlightKnee (engine thread only). */
+        internal fun jniMeasureHighlightKnee(handle: Long): Float = nativeMeasureHighlightKnee(handle)
 
         /** JNI bridge: see nativeRawHistogram (engine thread only). */
         internal fun jniRawHistogram(handle: Long, frameIndex: Int): IntArray? =

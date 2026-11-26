@@ -131,6 +131,14 @@ interface EditorPreviewSession : AutoCloseable {
             )
         )
 
+    /**
+     * D3 (adaptive Highlights knee): the clip's luma P85 at unit gain, measured ONCE per clip over
+     * 8 sample frames (the value stored in `GradeK.highlightKneeRef`). The DEFAULT is an honest
+     * failure: an encoded clip's Highlights stage keeps the legacy knee (it has no RAW develop).
+     */
+    suspend fun measureHighlightKneeRef(): Result<Float> =
+        Result.failure(UnsupportedOperationException("highlight knee: clip has no RAW sensor data"))
+
     /** ptsUs of frame [index] for the transport's timeline; -1 when unavailable. */
     suspend fun framePtsUs(index: Int): Long
 

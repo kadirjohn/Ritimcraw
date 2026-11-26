@@ -680,11 +680,21 @@ object GlesShaderValidator {
         }
         if (!s.contains("const float knee = 0.18;")) {
             out += "missing the stage-15 knee " +
-                "(`const float knee = 0.18;` — the CPU stage-15 shoulder start)"
+                "(`const float knee = 0.18;` — the shoulder keeps the legacy 0.18 on the clip-normalised max)"
         }
         if (!s.contains("const float span = 1.0 - knee;")) {
             out += "missing the stage-15 span " +
                 "(`const float span = 1.0 - knee;` — the CPU's 1 - knee)"
+        }
+        if (!s.contains(
+                "float kScale = uHighlightKneeRef > 0.0\n" +
+                    "            ? 0.18 / clamp(uHighlightKneeRef * uExposure, 0.02, 0.18) : 1.0;",
+            )
+        ) {
+            out += "missing the stage-15 clip scale " +
+                "(`float kScale = uHighlightKneeRef > 0.0 ? 0.18 / clamp(uHighlightKneeRef * uExposure, " +
+                "0.02, 0.18) : 1.0;` — core: kScale = kHighlightKneeMax / highlightKnee(ref, gainScale); " +
+                "unmeasured is a literal 1.0)"
         }
         if (!s.contains("float s = -uHighlights / 100.0;")) {
             out += "missing the stage-15 strength " +
@@ -692,10 +702,10 @@ object GlesShaderValidator {
                 "recovery/lift direction; a dropped minus flips recovery " +
                 "into lift)"
         }
-        if (!s.contains("float mx = max(c.r, max(c.g, c.b));")) {
+        if (!s.contains("float mx = kScale * max(c.r, max(c.g, c.b));")) {
             out += "missing the stage-15 max " +
-                "(`float mx = max(c.r, max(c.g, c.b));` — the CPU's per-pixel " +
-                "channel max)"
+                "(`float mx = kScale * max(c.r, max(c.g, c.b));` — the CPU's per-pixel " +
+                "channel max on the clip-normalised scale)"
         }
         if (!s.contains("if (mx > knee) {")) {
             out += "missing the stage-15 knee test " +

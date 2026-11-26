@@ -114,6 +114,10 @@ echo "== building tests =="
 # "Measure" candidate generator's gates. Pure logic, no cwd needs.
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_raw_levels.cpp" \
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_raw_levels"
+# test_highlight_knee: D3 adaptive Highlights knee (owner decision 2026-11-26) — knee clamp/legacy/gain
+# re-derivation, P85 helpers, bit-identity of the unset/clamped knee. Pure logic, no cwd needs.
+"$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_highlight_knee.cpp" \
+  "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_highlight_knee"
 # test_gyro runs from the repo root so it finds the STEPS/media/test fixture.
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_gyro.cpp" \
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_gyro"
@@ -155,6 +159,10 @@ echo "== building tests =="
 # channels really clip (raw code pile-up vs metadata white, stage-3 detection hits/misses) on a real frame.
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/hr_measure.cpp" \
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/hr_measure"
+# hk_measure <clip.mcraw> [gainEv] [frames] — D3 adaptive Highlights knee: clip luma P85 + Highlights +-100
+# change of the brightest 5% / 0.5% (old fixed knee vs the measured one). Run by hand, not a test.
+"$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/hk_measure.cpp" \
+  "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/hk_measure"
 # hr_levels <clip.mcraw> [step] — recoveryClipLevels over a frame sweep (per-camera verification).
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/hr_levels.cpp" \
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/hr_levels"
@@ -345,6 +353,8 @@ echo "== running test_recovery_clip_levels =="
 "$BUILD/test_recovery_clip_levels"
 echo "== running test_raw_levels =="
 "$BUILD/test_raw_levels"
+echo "== running test_highlight_knee =="
+"$BUILD/test_highlight_knee"
 echo "== running test_gyro =="
 (cd "$ROOT" && "$BUILD/test_gyro")
 echo "== running test_orientation =="

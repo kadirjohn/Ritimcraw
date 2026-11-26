@@ -528,7 +528,7 @@ struct GpuDevelopPipeline::Impl {
     GLint cfaLoc = -1, sizeLoc = -1, cellLoc = -1, blackLoc = -1, rangeLoc = -1,
           hasShadingLoc = -1, shadingLoc = -1, shadingSizeLoc = -1, hrLoc = -1,
           hrGainLoc = -1, wbLoc = -1, camLoc = -1, hasProfileLoc = -1,
-          exposureLoc = -1, highlightsLoc = -1,
+          exposureLoc = -1, highlightsLoc = -1, highlightKneeRefLoc = -1,
           blackPointLoc = -1, whitePointLoc = -1, shadowsLoc = -1,
           midtonesLoc = -1, contrastLoc = -1, wbManualLoc = -1, tempKLoc = -1,
           tintLoc = -1, wheelShadowXLoc = -1, wheelShadowYLoc = -1,
@@ -922,6 +922,7 @@ bool GpuDevelopPipeline::Impl::init(
     postSizeLoc = glGetUniformLocation(postProgram, "uSize");
     exposureLoc = glGetUniformLocation(postProgram, "uExposure");
     highlightsLoc = glGetUniformLocation(postProgram, "uHighlights");
+    highlightKneeRefLoc = glGetUniformLocation(postProgram, "uHighlightKneeRef");
     blackPointLoc = glGetUniformLocation(postProgram, "uBlackPoint");
     whitePointLoc = glGetUniformLocation(postProgram, "uWhitePoint");
     shadowsLoc = glGetUniformLocation(postProgram, "uShadows");
@@ -2052,6 +2053,7 @@ GpuDevelopPipeline::DrawResult GpuDevelopPipeline::Impl::draw(
     glUniform2i(postSizeLoc, static_cast<GLint>(w), static_cast<GLint>(h));
     glUniform1f(exposureLoc, exposure);
     glUniform1f(highlightsLoc, req.highlights);  // raw; the shader computes s
+    glUniform1f(highlightKneeRefLoc, req.highlightKneeRef);  // D3 knee ref (0 = legacy 0.18); -1 loc is ignored by GL
     // The ten pointwise stages' raw grade values (each 0.0f is the CPU's
     // own neutral skip) + the two hoisted int gates.
     glUniform1f(blackPointLoc, req.blackPoint);
@@ -2946,7 +2948,7 @@ uint64_t gradeProbeHash(const DevelopFrameRequest& r) {
         r.highlightRecovery ? 1.0f : 0.0f,
         r.wheelShadowX, r.wheelShadowY, r.wheelMidX, r.wheelMidY,
         r.wheelHighX, r.wheelHighY, r.splitShadowHue, r.splitHighlightHue,
-        r.splitBalance,
+        r.splitBalance, r.highlightKneeRef,
     };
     uint64_t h = 1469598103934665603ull;
     for (float f : v) {

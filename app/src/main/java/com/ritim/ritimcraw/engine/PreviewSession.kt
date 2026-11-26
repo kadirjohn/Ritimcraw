@@ -188,6 +188,7 @@ class PreviewSession private constructor(
                 // F1-6: the v2 node chain's wire (null = the legacy fast
                 // path, byte-identical — the K2 lock).
                 chainWire,
+                highlightKneeRef = args.highlightKneeRef,
             )
         )
     }
@@ -279,6 +280,7 @@ class PreviewSession private constructor(
                                     // F1-6: the v2 chain's wire (null = the
                                     // legacy fast path).
                                     chainWire,
+                                    highlightKneeRef = args.highlightKneeRef,
                                 )
                             )
                         }
@@ -296,6 +298,37 @@ class PreviewSession private constructor(
                         )
                     )
                 )
+            }
+        }
+    }
+
+    /**
+     * D3: the once-per-clip luma P85 for the adaptive Highlights knee. Runs on the engine thread like
+     * every native call (it reads 8 frames from the Source, so it queues behind a render, never
+     * races one). A failed or empty measurement is a failure: the caller keeps the legacy knee.
+     */
+    override suspend fun measureHighlightKneeRef(): Result<Float> {
+        if (!SessionRules.isActive(opened = true, closed = closed.get())) {
+            return Result.failure(IllegalStateException("session closed"))
+        }
+        return suspendCoroutine { cont ->
+            try {
+                engine.execute {
+                    val outcome: Result<Float> = try {
+                        if (closed.get()) {
+                            Result.failure(IllegalStateException("session closed"))
+                        } else {
+                            val v = NativeSource.jniMeasureHighlightKnee(handle)
+                            if (v > 0f && v.isFinite()) Result.success(v)
+                            else Result.failure(IllegalStateException("highlight knee: no measurement ($v)"))
+                        }
+                    } catch (t: Throwable) {
+                        Result.failure(t)
+                    }
+                    cont.resume(outcome)
+                }
+            } catch (e: RejectedExecutionException) {
+                cont.resume(Result.failure(e))
             }
         }
     }

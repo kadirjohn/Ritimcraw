@@ -96,4 +96,13 @@ bool reduceCfaBinned(const uint16_t* cfa, uint32_t width, uint32_t height,
 uint32_t thumbnailWidth(uint32_t width, int strideEvery);
 uint32_t thumbnailHeight(uint32_t height, int strideEvery);
 
+// D3 (adaptive Highlights knee): the clip's luma P85 at UNIT gain, measured ONCE per clip.
+// `frames` evenly spaced frames (first..last) are decoded, developed with a NEUTRAL grade
+// (stages 1-13 only, tonemap off, default RAW levels) on a CFA binned so the long edge is
+// <= maxDim, every pixel's Rec.709 luma pooled, and the kHighlightKneePercentile quantile
+// of the pool returned. This is the value stored in Grade::highlightKneeRef.
+// Returns the ref (> 0), or 0 when nothing could be measured (no frames / decode failure /
+// an all-black pool) -- the caller then keeps the legacy fixed knee.
+float measureHighlightKneeRef(Source& src, int frames = 8, int maxDim = 480);
+
 } // namespace rawedit

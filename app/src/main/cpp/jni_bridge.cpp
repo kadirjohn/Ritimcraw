@@ -1647,7 +1647,8 @@ rawedit::Grade gradeFromKotlin(float exposureEv, float highlights, float tempK, 
                                float wheelMidX, float wheelMidY,
                                float wheelHighX, float wheelHighY,
                                float splitShadowHue, float splitHighlightHue,
-                               float splitBalance) {
+                               float splitBalance,
+                               float highlightKneeRef = 0.0f) {
     rawedit::Grade g;
     g.exposureEv = exposureEv;
     g.highlights = highlights;
@@ -1680,6 +1681,7 @@ rawedit::Grade gradeFromKotlin(float exposureEv, float highlights, float tempK, 
     g.splitShadowHue = splitShadowHue;
     g.splitHighlightHue = splitHighlightHue;
     g.splitBalance = splitBalance;
+    g.highlightKneeRef = highlightKneeRef;  // D3 (0 = unmeasured = legacy knee 0.18)
     return g;
 }
 
@@ -2575,7 +2577,8 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewRender(
         jfloatArray chainWire,
         jfloat rawLevelsWhite, jfloat rawLevelsBlackR, jfloat rawLevelsBlackGr,
         jfloat rawLevelsBlackGb, jfloat rawLevelsBlackB,
-        jfloat rawLevelsClipR, jfloat rawLevelsClipG, jfloat rawLevelsClipB) {
+        jfloat rawLevelsClipR, jfloat rawLevelsClipG, jfloat rawLevelsClipB,
+        jfloat highlightKneeRef) {
     gLastErrorCode = 0;
     gLastErrorStage = kStageFrameRead;
     // 0. Resolve the stage-24 LUT first (COL-07): a parse failure fails the
@@ -2641,7 +2644,7 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewRender(
                                              wheelMidX, wheelMidY,
                                              wheelHighX, wheelHighY,
                                              splitShadowHue, splitHighlightHue,
-                                             splitBalance),
+                                             splitBalance, highlightKneeRef),
                              chain.get(), lut, binding, stab.input, maxDim,
                              rawLevelsFromArgs(rawLevelsWhite, rawLevelsBlackR,
                                                rawLevelsBlackGr, rawLevelsBlackGb,
@@ -2693,7 +2696,8 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderCached(
         jfloatArray chainWire,
         jfloat rawLevelsWhite, jfloat rawLevelsBlackR, jfloat rawLevelsBlackGr,
         jfloat rawLevelsBlackGb, jfloat rawLevelsBlackB,
-        jfloat rawLevelsClipR, jfloat rawLevelsClipG, jfloat rawLevelsClipB) {
+        jfloat rawLevelsClipR, jfloat rawLevelsClipG, jfloat rawLevelsClipB,
+        jfloat highlightKneeRef) {
     gLastErrorCode = 0;
     gLastErrorStage = kStageFrameRead;
     // 0. Resolve the stage-24 LUT first (COL-07): a parse failure fails the
@@ -2770,7 +2774,7 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderCached(
                                              wheelMidX, wheelMidY,
                                              wheelHighX, wheelHighY,
                                              splitShadowHue, splitHighlightHue,
-                                             splitBalance),
+                                             splitBalance, highlightKneeRef),
                              chain.get(), lut, binding, stab.input, maxDim,
                              rawLevelsFromArgs(rawLevelsWhite, rawLevelsBlackR,
                                                rawLevelsBlackGr, rawLevelsBlackGb,
@@ -2851,6 +2855,34 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderCached(
 // reads nativePreviewErrorCode/Stage/LastError). An invalid handle, a
 // missing frame or a decode failure returns nullptr; the UI shows the
 // RAW mode empty, never fabricated data.
+
+// D3 (adaptive Highlights knee): the clip's luma P85 at unit gain, measured ONCE per clip (core
+// measureHighlightKneeRef: 8 evenly spaced frames, binned thumbnail develop with a neutral grade,
+// pooled P85). Returns the ref (> 0), 0 when nothing could be measured, -1 on a bad handle / error.
+// Engine thread only; reads frames straight from the Source (never touches the interactive cache).
+JNIEXPORT jfloat JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativeMeasureHighlightKnee(
+        JNIEnv*, jclass, jlong handle) {
+    gLastErrorCode = 0;
+    gLastErrorStage = kStageFrameRead;
+    if (handle <= 0 || handle > kMaxSources) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageFrameRead,
+                 "invalid clip handle (recovery: reopen the clip)");
+        return -1.0f;
+    }
+    rawedit::Source* s = sourceFor(handle);
+    if (!s) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageFrameRead, gLastError);
+        return -1.0f;
+    }
+    try {
+        return rawedit::measureHighlightKneeRef(*s, 8, 480);
+    } catch (const std::exception& ex) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageDevelop,
+                 std::string("highlight knee measure failed: ") + ex.what());
+        return -1.0f;
+    }
+}
 
 JNIEXPORT jintArray JNICALL
 Java_com_ritim_ritimcraw_engine_NativeSource_nativeRawHistogram(

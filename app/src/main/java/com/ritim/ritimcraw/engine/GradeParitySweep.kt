@@ -754,6 +754,7 @@ object GradeParitySweep {
                 null, 0, 0f, 0f, 0f, 0f,
                 maxDim,
                 -1, -1, -1, -1, -1,
+                highlightKneeRef = args.highlightKneeRef,
             )
             val rows = ArrayList<Pair<CropCase, Stats>>()
             val diagRows = ArrayList<Pair<CropCase, Stats>>()
@@ -993,6 +994,7 @@ object GradeParitySweep {
                 maxDim,
                 -1, -1, -1, -1, -1,
                 c.chainWire,
+                highlightKneeRef = c.grade.highlightKneeRef,
             )
             val rows = ArrayList<Pair<V2Case, Stats>>()
             var skipped = 0

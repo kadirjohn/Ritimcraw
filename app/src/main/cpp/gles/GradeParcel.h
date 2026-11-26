@@ -66,9 +66,10 @@ struct DevelopGrade {
     float rawLevelsClipR = -1.0f;
     float rawLevelsClipG = -1.0f;
     float rawLevelsClipB = -1.0f;
+    float highlightKneeRef = 0.0f;
 };
 
-constexpr int kGradeParcelSlotCount = 38;
+constexpr int kGradeParcelSlotCount = 39;
 
 constexpr int kGradeParcelChromaDenoise = 0;
 constexpr int kGradeParcelNoiseReduction = 1;
@@ -108,6 +109,7 @@ constexpr int kGradeParcelRawLevelsBlackB = 34;
 constexpr int kGradeParcelRawLevelsClipR = 35;
 constexpr int kGradeParcelRawLevelsClipG = 36;
 constexpr int kGradeParcelRawLevelsClipB = 37;
+constexpr int kGradeParcelHighlightKneeRef = 38;
 
 // Slot names, index-aligned, for honest refusal messages.
 inline constexpr const char* kGradeParcelSlotNames[] = {
@@ -149,6 +151,7 @@ inline constexpr const char* kGradeParcelSlotNames[] = {
 "rawLevelsClipR",
 "rawLevelsClipG",
 "rawLevelsClipB",
+"highlightKneeRef",
 };
 
 // Decodes the flat parcel into [out] by NAME. Returns false with the full
@@ -238,6 +241,7 @@ inline bool decodeGradeParcel(const float* parcel, int length, DevelopGrade* out
     out->rawLevelsClipR = parcel[kGradeParcelRawLevelsClipR];
     out->rawLevelsClipG = parcel[kGradeParcelRawLevelsClipG];
     out->rawLevelsClipB = parcel[kGradeParcelRawLevelsClipB];
+    out->highlightKneeRef = parcel[kGradeParcelHighlightKneeRef];
     return true;
 }
 
@@ -279,6 +283,7 @@ inline void applyGradeToRequest(const DevelopGrade& grade, RequestT* req) {
     req->keepVignetting = grade.keepVignetting;
     req->tonemap = grade.tonemap;
     req->highlightRecovery = grade.highlightRecovery;
+    req->highlightKneeRef = grade.highlightKneeRef;
 }
 
 // Folds the decoded grade onto a rawedit::Grade (the CPU export path's
@@ -322,6 +327,7 @@ inline void applyGradeToRawedit(const DevelopGrade& grade, GradeT* out) {
     out->keepVignetting = grade.keepVignetting;
     out->tonemap = grade.tonemap;
     out->highlightRecovery = grade.highlightRecovery;
+    out->highlightKneeRef = grade.highlightKneeRef;
 }
 
 }  // namespace gles
