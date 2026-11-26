@@ -519,21 +519,23 @@ object GlesShaderValidator {
         // Stage 3: the CPU highlight-reconstruction cell pass, verbatim —
         // the clipped criterion, the ceiling level, the unclipped passthrough,
         // and the cap.
-        if (!s.contains("if (clipFlag(ivec2(xx, yy))) clipped[color] = true;") ||
+        if (!s.contains("if (clipFlag(ivec2(xx, yy))) {") ||
+            !s.contains("clipped[color] = true;") ||
             !s.contains("return stage1(p) >= thr;") ||
             !s.contains("float thr = uClipUse == 1 ? uClipThr[siteAt(p)] : 1.0;")
         ) {
             out += "missing the stage-3 clipped criterion " +
-                "(`if (clipFlag(ivec2(xx, yy))) clipped[color] = true;` over the PRE-shading " +
+                "(`if (clipFlag(ivec2(xx, yy))) { ... clipped[color] = true; }` over the PRE-shading " +
                 "stage-1 value against the per-frame channel threshold — the CPU's preClip flag)"
         }
-        if (!s.contains("float level = minV[c] * uHrGain[c];")) {
+        if (!s.contains("float level = minClipV[c] * uHrGain[c];") || !s.contains("if (!clipped[c]) continue;")) {
             out += "missing the stage-3 ceiling level " +
-                "(`float level = minV[c] * uHrGain[c];` — the CPU's minV * gain)"
+                "(`float level = minClipV[c] * uHrGain[c];` over the CLIPPED colors only, " +
+                "`if (!clipped[c]) continue;` — Formula X, the CPU's minClipV * gain)"
         }
-        if (!s.contains("if (!clipFlag(p)) return v;")) {
-            out += "missing the stage-3 unclipped passthrough " +
-                "(`if (!clipFlag(p)) return v;` — unclipped sites keep their real level)"
+        if (!s.contains("if (!(clipped[0] || clipped[1] || clipped[2])) return normAt(p);")) {
+            out += "missing the stage-3 unclipped-cell passthrough " +
+                "(`if (!(clipped[0] || clipped[1] || clipped[2])) return normAt(p);` — unclipped cells stay untouched)"
         }
         if (!s.contains("float cap = ceiling / uHrGain[siteAt(p)];")) {
             out += "missing the stage-3 cap " +

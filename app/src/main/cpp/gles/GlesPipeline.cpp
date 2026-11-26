@@ -676,44 +676,34 @@ ParityReport developFragmentParityFullFrame(const std::string& vertexSource,
                     const int x1 = std::min(x0 + 1, static_cast<int>(w) - 1);
                     const int y1 = std::min(y0 + 1, static_cast<int>(h) - 1);
 
-                    float minV[3] = {-1.0f, -1.0f, -1.0f};
+                    float minClipV[3] = {-1.0f, -1.0f, -1.0f};
                     bool clipped[3] = {false, false, false};
-                    bool present[3] = {false, false, false};
                     for (int yy = y0; yy <= y1; ++yy) {
                         for (int xx = x0; xx <= x1; ++xx) {
                             const int color = cell[(yy & 1) * 2 + (xx & 1)];
                             const float v = norm[static_cast<size_t>(yy) * w + xx];
-                            present[color] = true;
-                            if (minV[color] < 0.0f || v < minV[color])
-                                minV[color] = v;
-                            if (v >= 1.0f)
+                            if (v >= 1.0f) {
                                 clipped[color] = true;
+                                if (minClipV[color] < 0.0f || v < minClipV[color])
+                                    minClipV[color] = v;
+                            }
                         }
                     }
+                    if (!(clipped[0] || clipped[1] || clipped[2]))
+                        continue;
                     float ceiling = -1.0f;
                     for (int c = 0; c < 3; ++c) {
-                        if (!present[c] || clipped[c])
+                        if (!clipped[c])
                             continue;
-                        const float level = minV[c] * gain[c];
+                        const float level = minClipV[c] * gain[c];
                         if (ceiling < 0.0f || level < ceiling)
                             ceiling = level;
-                    }
-                    if (ceiling < 0.0f) {
-                        for (int c = 0; c < 3; ++c) {
-                            if (!present[c])
-                                continue;
-                            const float level = minV[c] * gain[c];
-                            if (ceiling < 0.0f || level < ceiling)
-                                ceiling = level;
-                        }
                     }
                     if (ceiling < 0.0f)
                         continue;
                     for (int yy = y0; yy <= y1; ++yy) {
                         for (int xx = x0; xx <= x1; ++xx) {
                             const size_t idx = static_cast<size_t>(yy) * w + xx;
-                            if (norm[idx] < 1.0f)
-                                continue;
                             const float cap = ceiling / gain[cell[(yy & 1) * 2 + (xx & 1)]];
                             if (norm[idx] > cap)
                                 norm[idx] = cap;

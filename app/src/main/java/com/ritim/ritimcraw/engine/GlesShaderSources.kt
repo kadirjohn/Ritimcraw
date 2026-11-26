@@ -581,49 +581,38 @@ float hrAt(ivec2 p) {
 
     // First pass: per-color minV / clipped / present over the cell's
     // sites (the CPU's exact loop, colors from layout.cell[yy&1][xx&1]).
-    float minV[3];
+    float minClipV[3];
     bool clipped[3];
-    bool present[3];
     for (int c = 0; c < 3; ++c) {
-        minV[c] = -1.0;
+        minClipV[c] = -1.0;
         clipped[c] = false;
-        present[c] = false;
     }
     for (int yy = y0; yy <= y1; ++yy) {
         for (int xx = x0; xx <= x1; ++xx) {
             int color = siteAt(ivec2(xx, yy));
-            float v = normAt(ivec2(xx, yy));
-            present[color] = true;
-            if (minV[color] < 0.0 || v < minV[color]) minV[color] = v;
-            if (clipFlag(ivec2(xx, yy))) clipped[color] = true;
+            if (clipFlag(ivec2(xx, yy))) {
+                float v = normAt(ivec2(xx, yy));
+                clipped[color] = true;
+                if (minClipV[color] < 0.0 || v < minClipV[color]) minClipV[color] = v;
+            }
         }
     }
 
-    // Ceiling from colors that still have unclipped sites.
+    // Formula X: only cells with at least one clipped site are capped (unclipped cells stay
+    // bit-identical). The ceiling is the lowest post-WB level among the CLIPPED colors and every
+    // site of the cell is capped to it, so unclipped R/B above a clipped G come down to G's level
+    // (no magenta) while a channel already below the ceiling is never touched.
+    if (!(clipped[0] || clipped[1] || clipped[2])) return normAt(p);
     float ceiling = -1.0;
     for (int c = 0; c < 3; ++c) {
-        if (!present[c] || clipped[c]) continue;
-        float level = minV[c] * uHrGain[c];
+        if (!clipped[c]) continue;
+        float level = minClipV[c] * uHrGain[c];
         if (ceiling < 0.0 || level < ceiling) ceiling = level;
-    }
-    // Every color clipped: fall back to the lowest level overall
-    // (uniform fully-clipped patches stay at 1.0).
-    if (ceiling < 0.0) {
-        for (int c = 0; c < 3; ++c) {
-            if (!present[c]) continue;
-            float level = minV[c] * uHrGain[c];
-            if (ceiling < 0.0 || level < ceiling) ceiling = level;
-        }
     }
     if (ceiling < 0.0) return normAt(p);
 
-    // Second pass: cap only the clipped sites of this cell. The CPU caps
-    // the whole buffer's clipped sites; every site of this cell is one
-    // invocation of its own, so capping THIS site reproduces the CPU's
-    // buffer exactly. cap = ceiling / gain[wbIndex(color)] with the CPU's
-    // wbIndex(siteColor) = siteColor.
+    // Second pass: cap every site of this clipped cell against ceiling / gain.
     float v = normAt(p);
-    if (!clipFlag(p)) return v;
     float cap = ceiling / uHrGain[siteAt(p)];
     return v > cap ? cap : v;
 }

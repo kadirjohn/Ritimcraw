@@ -89,6 +89,19 @@ ImageF developThumbnail(const uint16_t* cfa, const FrameInfo& info,
 bool reduceCfaBinned(const uint16_t* cfa, uint32_t width, uint32_t height,
                      int strideEvery, std::vector<uint16_t>& out);
 
+// Clip-aware preview binning: runs the stage-3 cell cap on clipped full-res
+// 2x2 cells BEFORE averaging each N x N block, so partially-clipped bins
+// (lamp edges, thin neon strokes, small speculars) do not lose their clip
+// signal below the raw plateau and turn magenta after white balance.
+// Unclipped frames take the zero-overhead reduceCfaBinned fast path; N = 1
+// returns the source samples verbatim. Shared by developThumbnail and the
+// GPU preview bridge so CPU and GPU previews stay identical.
+bool reduceCfaBinnedReconstructed(const uint16_t* cfa, const FrameInfo& info,
+                                  const RawMeta& meta, int strideEvery,
+                                  bool keepVignetting,
+                                  const RawLevelsOverride& rawLevels,
+                                  std::vector<uint16_t>& out);
+
 // Output dimensions for the given frame size and stride, per the header
 // math: (2*ceil(width/2/N)) x (2*ceil(height/2/N)). Returns 0x0 for an
 // invalid stride or a frame smaller than one 2x2 cell. Exposed so callers

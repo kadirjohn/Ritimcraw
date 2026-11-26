@@ -376,14 +376,14 @@ object GradeParitySweep {
      * under [TAG]; returns the summary line, or null when disabled /
      * unopenable.
      */
-    suspend fun run(fd: Int): String? {
+    suspend fun run(fd: Int, frameIndex: Int = 0): String? {
         if (!enabled) {
             PreviewRenderer.closeFdQuietly(fd)
             return null
         }
         val engine = PreviewRenderer.previewEngine
         return try {
-            val future = engine.submit<String?> { runBlocking(fd) }
+            val future = engine.submit<String?> { runBlocking(fd, frameIndex) }
             try {
                 kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { future.get() }
             } catch (e: ExecutionException) {
@@ -395,7 +395,7 @@ object GradeParitySweep {
         }
     }
 
-    private fun runBlocking(fd: Int): String? {
+    private fun runBlocking(fd: Int, frameIndex: Int): String? {
         if (!NativeSource.nativeAvailable) {
             Log.w(TAG, "grade-sweep aborted: ${NativeSource.nativeUnavailableMessage}")
             return null
@@ -415,14 +415,15 @@ object GradeParitySweep {
         }
         val identity = floatArrayOf(1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f)
         fun gpu(g: GradeK, warpM: FloatArray? = null, lut: String? = null): ByteArray? = NativeGpuDevelop.renderFrameParcel(
-            session, clip, 0, GradeParcel.encode(g),
+            session, clip, frameIndex, GradeParcel.encode(g),
             lut, if (lut != null) g.lutStrength / 100f else 0f, -1, -1, -1, -1, -1, warpM != null, warpM ?: identity,
         )
         fun cpu(g: GradeK, lut: String? = null): ByteArray? = NativeSource.jniExportFrameParcel(
-            clip, 0, GradeParcel.encode(g),
+            clip, frameIndex, GradeParcel.encode(g),
             lut, if (lut != null) g.lutStrength / 100f else 0f, null, 0, 0f, 0f, 0f, 0f, -1, -1, -1, -1, -1,
         )
         try {
+            Log.i(TAG, "grade-sweep clip frame=$frameIndex")
             val neutralGrade = GradeK()
             val gpuNeutral = gpu(neutralGrade)
             val cpuNeutral = cpu(neutralGrade)

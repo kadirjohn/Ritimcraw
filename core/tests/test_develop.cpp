@@ -217,11 +217,53 @@ TEST_CASE("lens_shading_flattens_vignetted_flat_field") {
     CHECK(std::abs(corner / center - 1.0f) < 0.01f);
 }
 
+namespace {
+// An 8x8 RGGB patch with a realistic green-first clip (Formula X tests): wbGains 2.0 / 1.0 / 1.6, white 1000,
+// the two green sites of every cell at white (clipped), red at `r` and blue at `bl` raw codes (unclipped, but
+// above 1.0 after white balance: 1.4 / 1.28 for r = 700, bl = 800).
+Synthetic greenClippedPatch(uint16_t r, uint16_t bl) {
+    const uint32_t w = 8, h = 8;
+    Synthetic s;
+    s.info.width = w; s.info.height = h; s.info.bitDepth = 16;
+    s.info.cfa = CfaPattern::RGGB;
+    s.info.activeArea = Rect{0, 0, int(w), int(h)};
+    s.meta.black[0] = s.meta.black[1] = s.meta.black[2] = s.meta.black[3] = 0;
+    s.meta.white = 1000;
+    s.meta.wbGains[0] = 2.0f; s.meta.wbGains[1] = 1.0f; s.meta.wbGains[2] = 1.6f;
+    s.meta.asShotNeutral[0] = 0.5f; s.meta.asShotNeutral[1] = 1.0f; s.meta.asShotNeutral[2] = 0.625f;
+    s.meta.colorMatrix[0] = 1; s.meta.colorMatrix[4] = 1; s.meta.colorMatrix[8] = 1;
+    s.cfa.assign(size_t(w) * h, 0);
+    for (uint32_t y = 0; y < h; ++y)
+        for (uint32_t x = 0; x < w; ++x) {
+            const bool rSite = (y % 2 == 0) && (x % 2 == 0);
+            const bool bSite = (y % 2 == 1) && (x % 2 == 1);
+            // A little texture on the unclipped channels (0..84 raw codes): a perfectly flat red/blue plane would
+            // look like a saturation plateau to recoveryClipLevels' R/B detector, which real frames never do.
+            const uint16_t jitter = static_cast<uint16_t>(((x / 2) + 3 * (y / 2)) % 8 * 12);
+            s.cfa[size_t(y) * w + x] = rSite ? uint16_t(r + jitter) : (bSite ? uint16_t(bl + jitter) : 1000);
+        }
+    return s;
+}
+}  // namespace
+
 TEST_CASE("clipped_highlights_stay_neutral") {
-    // Red sites clipped at white, green/blue at 0.6: without reconstruction
-    // the pixel would go magenta. With reconstruction all clipped channels
-    // clip to the lowest clipped channel's level, so r <= g + tolerance and
-    // b <= g + tolerance.
+    // Green clips first (it has the smallest WB gain): G at white, red and blue still below white in raw
+    // but ABOVE 1.0 after white balance (1.4 / 1.28). Without reconstruction that patch reads magenta (R and B
+    // above G). Formula X (owner decision 2026-11-26): the ceiling is the lowest post-WB level among the
+    // CLIPPED channels (green, 1.0), every site of the cell is capped to it, so r, g and b come out equal.
+    // (Replaces the pre-X version of this test, which clipped RED with gains 1/1/1 and expected grey 0.6.)
+    Synthetic s = greenClippedPatch(700, 800);
+    auto img = developCpu(s.cfa.data(), s.info, s.meta, Grade{});
+    auto r = centerMean(img, 0), g = centerMean(img, 1), b = centerMean(img, 2);
+    CHECK(std::abs(r - g) < 0.01f);
+    CHECK(std::abs(b - g) < 0.01f);
+    CHECK(g > 0.9f);   // the patch stays bright (capped at the clipped level 1.0), not dark
+}
+
+TEST_CASE("clipped_red_only_light_stays_red") {
+    // Formula X: a channel that is NOT clipped is never pulled below the clipped ceiling, and a light whose only
+    // clipped channel is red keeps its colour (wbGains 1/1/1, red at white, green/blue 0.6): the ceiling is the
+    // red clip level itself, nothing is capped.
     const uint32_t w = 8, h = 8;
     Synthetic s;
     s.info.width = w; s.info.height = h; s.info.bitDepth = 16;
@@ -231,21 +273,28 @@ TEST_CASE("clipped_highlights_stay_neutral") {
     s.meta.white = 1000;
     s.meta.wbGains[0] = 1.0f; s.meta.wbGains[1] = 1.0f; s.meta.wbGains[2] = 1.0f;
     s.meta.colorMatrix[0] = 1; s.meta.colorMatrix[4] = 1; s.meta.colorMatrix[8] = 1;
-
     s.cfa.assign(size_t(w) * h, 0);
     for (uint32_t y = 0; y < h; ++y)
-        for (uint32_t x = 0; x < w; ++x) {
-            const bool rSite = (y % 2 == 0) && (x % 2 == 0);
-            s.cfa[size_t(y) * w + x] = rSite ? 1000 : 600;
-        }
-
+        for (uint32_t x = 0; x < w; ++x)
+            s.cfa[size_t(y) * w + x] = ((y % 2 == 0) && (x % 2 == 0)) ? 1000 : 600;
     auto img = developCpu(s.cfa.data(), s.info, s.meta, Grade{});
-    auto r = centerMean(img, 0), g = centerMean(img, 1), b = centerMean(img, 2);
-    // No magenta: red and blue must not exceed green by more than 0.01.
-    CHECK(r <= g + 0.01f);
-    CHECK(b <= g + 0.01f);
-    // And the clipped pixel stays bright/neutral-ish, not dark.
-    CHECK(g > 0.5f);
+    CHECK(centerMean(img, 0) > centerMean(img, 1) + 0.25f);
+    CHECK(centerMean(img, 0) > 0.95f);
+    // And identical to reconstruction off: nothing was capped.
+    Grade off; off.highlightReconstruction = false;
+    auto imgOff = developCpu(s.cfa.data(), s.info, s.meta, off);
+    CHECK(centerMean(img, 0) == doctest::Approx(centerMean(imgOff, 0)).epsilon(1e-6));
+}
+
+TEST_CASE("saturated_yellow_core_keeps_its_low_blue") {
+    // Formula X vs the min-over-all-channels rule: a very saturated yellow core (G clipped, R above 1.0 after
+    // WB, B far below) must come out (1, 1, low), not a dark grey hole at the blue level.
+    Synthetic s = greenClippedPatch(700, 150);   // blue 0.15 raw -> 0.24 post-WB
+    auto img = developCpu(s.cfa.data(), s.info, s.meta, Grade{});
+    const float r = centerMean(img, 0), g = centerMean(img, 1), b = centerMean(img, 2);
+    CHECK(std::abs(r - g) < 0.01f);          // red brought down to the clipped green level
+    CHECK(g > 0.9f);                         // still bright
+    CHECK(b < 0.5f);                         // blue untouched (0.24 .. 0.34 here), so the core stays yellow
 }
 
 TEST_CASE("exposure_plus_one_ev_doubles_linear") {
@@ -871,36 +920,20 @@ TEST_CASE("as_shot_with_neutral_manual_values_is_bit_identical") {
 }
 
 TEST_CASE("reconstruction_off_keeps_the_magenta_clip") {
-    // Inverse of clipped_highlights_stay_neutral: with
-    // highlightReconstruction = false the clipped red sites keep their raw
-    // clipped level and the patch reads magenta (red above green) — the
+    // Inverse of clipped_highlights_stay_neutral: with highlightReconstruction = false the unclipped red and blue
+    // above the clipped green keep their post-WB level and the patch reads magenta (R and B above G): the
     // sensor-channel artifact the owner wants to be able to keep.
-    const uint32_t w = 8, h = 8;
-    Synthetic s;
-    s.info.width = w; s.info.height = h; s.info.bitDepth = 16;
-    s.info.cfa = CfaPattern::RGGB;
-    s.info.activeArea = Rect{0, 0, int(w), int(h)};
-    s.meta.black[0] = s.meta.black[1] = s.meta.black[2] = s.meta.black[3] = 0;
-    s.meta.white = 1000;
-    s.meta.wbGains[0] = 1.0f; s.meta.wbGains[1] = 1.0f; s.meta.wbGains[2] = 1.0f;
-    s.meta.colorMatrix[0] = 1; s.meta.colorMatrix[4] = 1; s.meta.colorMatrix[8] = 1;
-
-    s.cfa.assign(size_t(w) * h, 0);
-    for (uint32_t y = 0; y < h; ++y)
-        for (uint32_t x = 0; x < w; ++x) {
-            const bool rSite = (y % 2 == 0) && (x % 2 == 0);
-            s.cfa[size_t(y) * w + x] = rSite ? 1000 : 600;
-        }
-
+    Synthetic s = greenClippedPatch(700, 800);
     Grade off;
     off.highlightReconstruction = false;
     auto img = developCpu(s.cfa.data(), s.info, s.meta, off);
     auto r = centerMean(img, 0), g = centerMean(img, 1), b = centerMean(img, 2);
-    // Magenta-ish: red clearly above green (1.0 raw level vs 0.6).
-    CHECK(r > g + 0.05f);
+    CHECK(r > g + 0.25f);
+    CHECK(b > g + 0.20f);
     // And the default still reconstructs (the paired guarantee).
     auto on = developCpu(s.cfa.data(), s.info, s.meta, Grade{});
-    CHECK(centerMean(on, 0) <= centerMean(on, 1) + 0.01f);
+    CHECK(std::abs(centerMean(on, 0) - centerMean(on, 1)) < 0.01f);
+    CHECK(std::abs(centerMean(on, 2) - centerMean(on, 1)) < 0.01f);
 }
 
 TEST_CASE("vignetting_off_darkens_the_corners") {
@@ -1836,4 +1869,50 @@ TEST_CASE("develop_linear_rejects_empty_input") {
     std::vector<uint16_t> cfa(16, 0);
     info.width = 0;
     CHECK(developLinear(cfa.data(), info, meta).empty());
+}
+
+TEST_CASE("stage3_caps_unclipped_rb_when_green_clips_first") {
+    // Regression for pembe leke (magenta highlights): on real sensors green has
+    // the lowest WB gain (1.0 vs R ~2.56, B ~1.98), so neutral highlights
+    // between 1.0 and 2.56 clip G at white while R and B are still unclipped
+    // above 1.0 post-WB. Stage 3 must cap R and B down to G's level so the
+    // highlight stays neutral under Highlights -100 instead of going magenta.
+    const uint32_t w = 16, h = 16;
+    Synthetic s;
+    s.info.width = w; s.info.height = h; s.info.bitDepth = 16;
+    s.info.cfa = CfaPattern::RGGB;
+    s.info.activeArea = Rect{0, 0, int(w), int(h)};
+    for (int i = 0; i < 4; ++i) s.meta.black[i] = 64;
+    s.meta.white = 1023;
+    s.meta.asShotNeutral[0] = 1.0f / 2.56f;
+    s.meta.asShotNeutral[1] = 1.0f;
+    s.meta.asShotNeutral[2] = 1.0f / 1.98f;
+    s.meta.wbGains[0] = 2.56f; s.meta.wbGains[1] = 1.0f; s.meta.wbGains[2] = 1.98f;
+    s.meta.colorMatrix[0] = 1; s.meta.colorMatrix[4] = 1; s.meta.colorMatrix[8] = 1;
+
+    // Neutral highlight at post-WB ~1.7: G clipped at 1023, R/B unclipped below white.
+    s.cfa.assign(size_t(w) * h, 0);
+    for (uint32_t y = 0; y < h; ++y)
+        for (uint32_t x = 0; x < w; ++x) {
+            const int r = y & 1, c = x & 1;
+            uint16_t v = 1023; // G clipped
+            if (r == 0 && c == 0) v = static_cast<uint16_t>(64 + 0.70f * 959); // R post-WB ~1.79
+            if (r == 1 && c == 1) v = static_cast<uint16_t>(64 + 0.85f * 959); // B post-WB ~1.68
+            s.cfa[size_t(y) * w + x] = v;
+        }
+
+    Grade on;
+    on.highlights = -100.0f;
+    on.highlightReconstruction = true;
+    const ImageF imgOn = developCpu(s.cfa.data(), s.info, s.meta, on);
+    const float rOn = centerMean(imgOn, 0), gOn = centerMean(imgOn, 1), bOn = centerMean(imgOn, 2);
+    CHECK(std::abs(rOn - gOn) < 0.01f);
+    CHECK(std::abs(bOn - gOn) < 0.01f);
+
+    // Turning reconstruction off still preserves the raw magenta sensor clip.
+    Grade off = on;
+    off.highlightReconstruction = false;
+    const ImageF imgOff = developCpu(s.cfa.data(), s.info, s.meta, off);
+    CHECK(centerMean(imgOff, 0) > centerMean(imgOff, 1) + 0.25f);
+    CHECK(centerMean(imgOff, 2) > centerMean(imgOff, 1) + 0.20f);
 }
