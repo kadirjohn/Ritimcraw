@@ -119,6 +119,7 @@ val EditorTopBarHeight = 56.dp
 @Composable
 fun EditorTopBar(
     sourceId: String,
+    onRenameClip: (String) -> Boolean = { false },
     onBack: () -> Unit,
     // (Export resolution, owner request 2026-11-13) the widened export
     // callback: the target plus the RESOLVED resolution bound the sheet's
@@ -275,6 +276,8 @@ fun EditorTopBar(
                 infoSheetOpen = false
                 onDevelopFrame()
             },
+            currentName = sourceId,
+            onRenameClip = onRenameClip,
             onDismiss = { infoSheetOpen = false },
         )
     }
@@ -812,9 +815,12 @@ private fun ClipInfoSheet(
     onSavePreset: (String) -> Unit,
     onRemovePreset: (String) -> Unit,
     onDevelopFrame: () -> Unit,
+    currentName: String,
+    onRenameClip: (String) -> Boolean,
     onDismiss: () -> Unit,
 ) {
     var saveDialogOpen by remember { mutableStateOf(false) }
+    var renameOpen by remember { mutableStateOf(false) }
     val unknown = stringResource(R.string.editor_clip_info_unknown)
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Text(
@@ -825,6 +831,20 @@ private fun ClipInfoSheet(
         ClipInfoRow(
             label = stringResource(R.string.editor_clip_info_name),
             value = info.name.ifBlank { unknown },
+        )
+        ListItem(
+            headlineContent = { Text(stringResource(R.string.editor_rename_clip)) },
+            supportingContent = { Text(stringResource(R.string.editor_rename_clip_detail)) },
+            leadingContent = {
+                Icon(
+                    painterResource(R.drawable.ic_edit),
+                    contentDescription = null,
+                    modifier = Modifier.heightIn(max = 24.dp),
+                )
+            },
+            modifier = Modifier
+                .heightIn(min = 48.dp)
+                .clickable(role = androidx.compose.ui.semantics.Role.Button) { renameOpen = true },
         )
         ClipInfoRow(
             label = stringResource(R.string.editor_clip_info_resolution),
@@ -985,6 +1005,13 @@ private fun ClipInfoSheet(
             modifier = Modifier.clickable { onDevelopFrame() },
         )
         Spacer(Modifier.height(16.dp))
+    }
+    if (renameOpen) {
+        com.ritim.ritimcraw.ui.library.RenameClipDialog(
+            currentName = currentName,
+            onRename = onRenameClip,
+            onDismiss = { renameOpen = false },
+        )
     }
     if (saveDialogOpen) {
         PresetNameDialog(

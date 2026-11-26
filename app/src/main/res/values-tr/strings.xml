@@ -725,4 +725,12 @@
     <string name="node_output_display_srgb">sRGB 2.2</string>
     <string name="node_output_display_1886">Rec.1886</string>
     <string name="node_output_display_hlg">HLG 1000</string>
+    <string name="rename_clip_title">Klibi yeniden adlandır</string>
+    <string name="rename_clip_label">Ad</string>
+    <string name="rename_clip_action">Yeniden adlandır</string>
+    <string name="rename_clip_cancel">Vazgeç</string>
+    <string name="rename_clip_error">Klip yeniden adlandırılamadı. Başka bir ad deneyin.</string>
+    <string name="library_selection_rename">Klibi yeniden adlandır</string>
+    <string name="editor_rename_clip">Klibi yeniden adlandır</string>
+    <string name="editor_rename_clip_detail">Bu klip için gösterilen adı değiştir</string>
 </resources>

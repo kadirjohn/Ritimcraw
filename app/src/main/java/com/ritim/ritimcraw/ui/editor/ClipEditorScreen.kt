@@ -959,6 +959,8 @@ fun ClipEditorScreen(
     // real file name, id fallback resolved by the caller (never blank).
     // Defaults to the id so every existing caller is unchanged.
     sourceName: String? = null,
+    // Renames this clip's display name; true when accepted.
+    onRenameClip: (String) -> Boolean = { false },
     // ---- LUT wiring (COL-07) ----
     // The imported cube library (LutStore.all(): id + display name). The
     // screen owns no store; AppNav passes the list and refreshes it after
@@ -5187,6 +5189,7 @@ fun ClipEditorScreen(
             if (!fullscreen) {
                 EditorTopBar(
                     sourceId = sourceName ?: sourceId,
+                    onRenameClip = onRenameClip,
                     onBack = onBack,
                     onExport = onExport,
                     exportRate = exportRate,
