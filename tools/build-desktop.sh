@@ -290,6 +290,20 @@ echo "== building tests =="
 # expected values round the same way the port does (Yuv.cpp precedent).
 "$CXX" "${FLAGS[@]}" -ffp-contract=off "${INCLUDES[@]}" "$ROOT/core/tests/test_loudness.cpp" \
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_loudness"
+# test_develop_stripes: the striped encoded-develop proofs (night A7,
+# 2026-11-26) — stripe plan coverage, stripes == whole frame bit-exact at
+# every stripe size with the full windowed stage set, the margin's
+# load-bearing proof, 10-bit P010, planar I420, LUT/chain tails. The 8K
+# completion case is gated behind RAWEDIT_BIGSTRIPE=1 (minutes); the 8K
+# equality + peak-RSS numbers live in stripe_measure's hand-run record.
+"$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_develop_stripes.cpp" \
+  "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_develop_stripes"
+# stripe_measure <whole|striped|equal> [w h]: the A7 hand-run driver —
+# synthetic 8K default, whole vs striped peak-RSS via /usr/bin/time -l,
+# `equal` proves the byte-exact full pipeline at 8K. Run by hand from the
+# repo root, like bp_measure/hr_measure.
+"$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/stripe_measure.cpp" \
+  "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/stripe_measure"
 
 if [[ "${1:-}" == "--no-tests" ]]; then
   echo "== done (tests skipped): $BUILD/rawcli =="
@@ -364,6 +378,8 @@ echo "== running test_node_chain_wire =="
 "$BUILD/test_node_chain_wire"
 echo "== running test_loudness =="
 "$BUILD/test_loudness"
+echo "== running test_develop_stripes =="
+"$BUILD/test_develop_stripes"
 echo "== running test_resample =="
 "$BUILD/test_resample"
 echo "== running bench_develop (real-clip case needs RAWEDIT_REALCLIP=1) =="

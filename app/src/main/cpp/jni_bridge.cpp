@@ -6926,4 +6926,228 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeEncodedDevelop(
     }
 }
 
+// A7 (night 2026-11-26): the striped CPU oracle — the encoded export's
+// bounded-memory develop, the fallback for frames the whole-frame path
+// cannot hold on the JVM heap (8K: planes + ARGB + RGB888 ~= 281 MB). The
+// develop math is IDENTICAL to nativeEncodedDevelop above — the same
+// gradeFromKotlin, the same developEncoded, the same v2 chain and the same
+// linearToRec709+toByte tail — but the frame is consumed in horizontal
+// stripes (rawedit::planEncodedStripes): each stripe copies ONLY its
+// luma+chroma rows out of the JVM plane arrays (GetByteArrayRegion, bounded
+// by the stripe), develops the stripe view with kEncodedStripeMargin rows
+// of context, runs the tail for the emitted rows and writes them into the
+// one full-frame RGB888 output (SetByteArrayRegion per stripe). Peak
+// native memory is one stripe's ImageF + stage planes (the whole-frame
+// path holds the full 33 MP ImageF plus its stage planes at once); peak
+// JVM memory is the decoded planes (passed in place, no copy) + the output
+// bytes — exactly what the caller's guard (EncodedExportPlanner) counts.
+// Bit-exactness with the whole-frame path is locked by
+// core/tests/test_develop_stripes.cpp. The output is NOT rotated (the
+// export pipeline rotates pixels itself; the whole-frame caller passes
+// orientation 0 for the same reason). Null + error accessors on failure.
+// The plane bytes, layouts and strides arrive exactly like
+// nativeEncodedDevelop's (vPlane null for semi-planar).
+JNIEXPORT jbyteArray JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativeEncodedDevelopStriped(
+        JNIEnv* env, jclass,
+        jbyteArray yPlane, jbyteArray uPlane, jbyteArray vPlane,
+        jint width, jint height, jint stride, jint uvStride,
+        jboolean semiPlanar, jboolean isBt709,
+        jint bitDepth, jboolean fullRange, jint matrix, jint transfer, jint primaries,
+        jfloat exposureEv, jfloat highlights, jfloat tempK, jfloat tint,
+        jfloat saturation, jfloat blackPoint, jfloat whitePoint,
+        jfloat shadows, jfloat midtones, jfloat contrast,
+        jboolean asShot, jboolean highlightReconstruction, jboolean keepVignetting,
+        jboolean highlightRecovery,
+        jfloat sharpness, jfloat detail, jint tonemap,
+        jstring lutPath, jfloat lutStrength,
+        jfloat noiseReduction, jfloat chromaDenoise,
+        jboolean temporalNr, jfloat temporalStrength,
+        jfloat wheelShadowX, jfloat wheelShadowY,
+        jfloat wheelMidX, jfloat wheelMidY,
+        jfloat wheelHighX, jfloat wheelHighY,
+        jfloat splitShadowHue, jfloat splitHighlightHue, jfloat splitBalance,
+        jint lutRole, jint lutInGamut, jint lutInTransfer,
+        jint lutOutGamut, jint lutOutTransfer,
+        jfloatArray chainWire, jint stripeRows) {
+    gLastErrorCode = 0;
+    gLastErrorStage = kStageDevelop;
+    // The v2 chain decodes ONCE (the same decode as nativeEncodedDevelop);
+    // it is applied per stripe, like the develop itself.
+    std::unique_ptr<gles::NodeChainDecoded> chain;
+    if (!v2ChainFor(env, chainWire, &chain)) return nullptr;
+    const rawedit::Lut* lut = nullptr;
+    if (!resolveLut(env, lutPath, &lut)) return nullptr;
+    const rawedit::CompiledLutBinding* binding = nullptr;
+    resolveBinding(lut, lutRole, lutInGamut, lutInTransfer,
+                   lutOutGamut, lutOutTransfer, &binding);
+    const rawedit::Grade grade = gradeFromKotlin(
+        exposureEv, highlights, tempK, tint,
+        saturation, blackPoint, whitePoint,
+        shadows, midtones, contrast,
+        asShot, highlightReconstruction, keepVignetting,
+        highlightRecovery == JNI_TRUE,
+        sharpness, detail, tonemap, lutStrength,
+        noiseReduction, chromaDenoise,
+        temporalNr == JNI_TRUE, temporalStrength,
+        wheelShadowX, wheelShadowY,
+        wheelMidX, wheelMidY,
+        wheelHighX, wheelHighY,
+        splitShadowHue, splitHighlightHue, splitBalance);
+
+    if (width <= 0 || height <= 0 || yPlane == nullptr || uPlane == nullptr ||
+        (semiPlanar == JNI_FALSE && vPlane == nullptr)) {
+        setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageDevelop,
+                 "develop: unsupported — the decoded frame is empty or malformed "
+                 "(recovery: re-import the clip)");
+        return nullptr;
+    }
+    if (bitDepth != 8 && bitDepth != 10) {
+        setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageDevelop,
+                 "develop: unsupported — the decoded frame's bit depth is not 8 or 10 "
+                 "(recovery: re-import the clip)");
+        return nullptr;
+    }
+    const jsize yLen = env->GetArrayLength(yPlane);
+    const jsize uLen = env->GetArrayLength(uPlane);
+    const jsize vLen = vPlane != nullptr ? env->GetArrayLength(vPlane) : 0;
+    const int bps = bitDepth > 8 ? 2 : 1;
+    const int s = stride > 0 ? stride : width * bps;
+    const int us = uvStride > 0 ? uvStride
+        : ((width + 1) / 2) * (semiPlanar != JNI_FALSE ? 2 : 1) * bps;
+    // Full-plane bounds (the stripes below read sub-ranges of these):
+    // the develop indexes y up to (height-1)*stride + width-1 and the
+    // chroma grid up to (ch-1)*uvStride + (cw-1)*2 (+1 for the V word).
+    const long long cw = (static_cast<long long>(width) + 1) / 2;
+    const long long ch = (static_cast<long long>(height) + 1) / 2;
+    const long long yNeed = static_cast<long long>(height - 1) * s
+                          + static_cast<long long>(width) * bps;
+    const long long cNeed = semiPlanar != JNI_FALSE
+        ? static_cast<long long>(ch - 1) * us + ((cw - 1) * 2 + 2) * bps
+        : static_cast<long long>(ch - 1) * us + cw * bps;
+    if (yLen < yNeed || uLen < cNeed || (semiPlanar == JNI_FALSE && vLen < cNeed)) {
+        setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageDevelop,
+                 "develop: unsupported — the decoded frame's planes are smaller "
+                 "than its dimensions (recovery: re-import the clip)");
+        return nullptr;
+    }
+
+    // The one full-frame output (counted in the caller's heap budget; the
+    // bridge writes it stripe by stripe, never a second full copy).
+    const size_t outBytes = static_cast<size_t>(width) * static_cast<size_t>(height) * 3;
+    if (outBytes > 0x7fffff00LL) { // jsize safety: >2 GB impossible for real clips
+        setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageDevelop,
+                 "develop: unsupported — the frame is too large for a Java array "
+                 "(recovery: export at a smaller size)");
+        return nullptr;
+    }
+    jbyteArray out = env->NewByteArray(static_cast<jsize>(outBytes));
+    if (out == nullptr) return nullptr; // OOM pending exception propagates
+
+    const uint32_t margin = rawedit::kEncodedStripeMargin;
+    const auto plan = rawedit::planEncodedStripes(static_cast<uint32_t>(height),
+                                                  static_cast<uint32_t>(stripeRows));
+    // The stripe view's buffers (capacity reused across stripes) and the
+    // emitted-rows RGB slab.
+    rawedit::YuvFrame view;
+    view.width = static_cast<uint32_t>(width);
+    view.semiPlanar = semiPlanar != JNI_FALSE;
+    view.stride = s;
+    view.uvStride = us;
+    view.bitDepth = bitDepth;
+    view.fullRange = fullRange != JNI_FALSE;
+    view.matrix = matrix == 0 ? rawedit::YuvMatrix::BT601
+                 : matrix == 2 ? rawedit::YuvMatrix::BT2020
+                 : rawedit::YuvMatrix::BT709;
+    view.transfer = transfer == 1 ? rawedit::EncodedTransfer::Rec709
+                   : transfer == 2 ? rawedit::EncodedTransfer::Srgb
+                   : transfer == 3 ? rawedit::EncodedTransfer::Linear
+                   : rawedit::EncodedTransfer::MiLog;
+    view.primaries = primaries == 1 ? rawedit::EncodedPrimaries::BT2020
+                                   : rawedit::EncodedPrimaries::BT709;
+    std::vector<uint8_t> rgbRows;
+
+    try {
+        for (const auto& range : plan) {
+            const uint32_t y0 = range.first, y1 = range.second;
+            const uint32_t inTop = y0 > margin ? y0 - margin : 0;
+            const uint32_t inBot = std::min(static_cast<uint32_t>(height), y1 + margin);
+            const uint32_t rows = inBot - inTop;
+            const uint32_t cTop = inTop / 2, cBot = (inBot + 1) / 2;
+            const size_t cRows = cBot - cTop;
+            view.height = rows;
+            // Bounded per-stripe copies: only this stripe's context rows
+            // ever exist on the native side.
+            view.y.resize(static_cast<size_t>(rows) * static_cast<size_t>(s));
+            env->GetByteArrayRegion(yPlane, static_cast<jsize>(static_cast<size_t>(inTop) * s),
+                                    static_cast<jsize>(view.y.size()),
+                                    reinterpret_cast<jbyte*>(view.y.data()));
+            view.u.resize(static_cast<size_t>(cRows) * static_cast<size_t>(us));
+            env->GetByteArrayRegion(uPlane, static_cast<jsize>(static_cast<size_t>(cTop) * us),
+                                    static_cast<jsize>(view.u.size()),
+                                    reinterpret_cast<jbyte*>(view.u.data()));
+            if (semiPlanar != JNI_FALSE) {
+                view.v.clear();
+            } else {
+                view.v.resize(static_cast<size_t>(cRows) * static_cast<size_t>(us));
+                env->GetByteArrayRegion(vPlane, static_cast<jsize>(static_cast<size_t>(cTop) * us),
+                                        static_cast<jsize>(view.v.size()),
+                                        reinterpret_cast<jbyte*>(view.v.data()));
+            }
+
+            rawedit::ImageF img = rawedit::developEncoded(view, grade,
+                                                          isBt709 != JNI_FALSE, lut, binding);
+            if (img.w == 0 || img.h == 0 || img.rgb.empty()) {
+                setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageDevelop,
+                         "develop: unsupported — the frame is too small to develop "
+                         "(recovery: re-import the clip)");
+                return nullptr;
+            }
+            bool drtOutput = false;
+            if (!applyV2ChainCpu(chain.get(), img, &drtOutput)) {
+                setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageDevelop,
+                         "develop: the v2 node chain exceeds the N1 limits "
+                         "(recovery: cap the chain at 8 nodes)");
+                return nullptr;
+            }
+
+            // The tail for the EMITTED rows only (linearToRec709 -> clamp ->
+            // round, the whole-frame path's exact per-pixel math).
+            const uint32_t emitOff = y0 - inTop;
+            const size_t outRows = y1 - y0;
+            rgbRows.resize(static_cast<size_t>(width) * outRows * 3);
+            for (size_t r = 0; r < outRows; ++r) {
+                const float* src = &img.rgb[(static_cast<size_t>(emitOff) + r)
+                                            * static_cast<size_t>(width) * 3];
+                uint8_t* dst = &rgbRows[static_cast<size_t>(r) * static_cast<size_t>(width) * 3];
+                for (jsize x = 0; x < width; ++x) {
+                    const float r0 = drtOutput ? src[x * 3 + 0]
+                        : rawedit::linearToRec709(src[x * 3 + 0]);
+                    const float g0 = drtOutput ? src[x * 3 + 1]
+                        : rawedit::linearToRec709(src[x * 3 + 1]);
+                    const float b0 = drtOutput ? src[x * 3 + 2]
+                        : rawedit::linearToRec709(src[x * 3 + 2]);
+                    dst[x * 3 + 0] = toByte(r0);
+                    dst[x * 3 + 1] = toByte(g0);
+                    dst[x * 3 + 2] = toByte(b0);
+                }
+            }
+            env->SetByteArrayRegion(out,
+                                    static_cast<jsize>(static_cast<size_t>(y0) * width * 3),
+                                    static_cast<jsize>(rgbRows.size()),
+                                    reinterpret_cast<const jbyte*>(rgbRows.data()));
+        }
+        return out;
+    } catch (const std::bad_alloc&) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageDevelop,
+                 "develop: out of memory developing the frame "
+                 "(recovery: free memory and retry)");
+        return nullptr;
+    } catch (const std::exception& e) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageDevelop,
+                 std::string("develop: ") + e.what() + " (recovery: reopen the clip)");
+        return nullptr;
+    }
+}
+
 } // extern "C"

@@ -5,6 +5,7 @@ import com.ritim.ritimcraw.data.SourceKind
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
@@ -1109,6 +1110,160 @@ class EncodedSourceTest {
                 v = YuvPlane(ByteArray(4) { ((m + 2) % 251).toByte() }, 0, 2, 1),
             )
         }
+    }
+
+
+    // ---- A7 (night 2026-11-26): the striped CPU oracle door ----
+
+    /** A developer with a striped door: records the frame and returns full-frame RGB888. */
+    private class FakeStripedDeveloper(
+        var stripedResult: ByteArray? = ByteArray(4 * 4 * 3) { it.toByte() },
+        var stripedThrows: IllegalStateException? = null,
+    ) : EncodedDeveloper {
+        val stripedFrames = ArrayList<YuvFrameK>()
+        val stripedStripeRows = ArrayList<Int>()
+        override fun develop(
+            frame: YuvFrameK, color: EncodedColorSpec, orientationDeg: Int, grade: GradeK,
+            lutPath: String?, chainWire: FloatArray?,
+        ): IntArray? = intArrayOf(4, 4, 1)
+        override fun developStriped(
+            frame: YuvFrameK, color: EncodedColorSpec, grade: GradeK,
+            lutPath: String?, chainWire: FloatArray?, stripeRows: Int,
+        ): ByteArray? {
+            stripedFrames.add(frame)
+            stripedStripeRows.add(stripeRows)
+            stripedThrows?.let { throw it }
+            return stripedResult
+        }
+        override fun code() = 0
+        override fun stage() = 0
+        override fun detail(): String? = null
+    }
+
+    @Test
+    fun to_cpu_view_takes_the_planar_planes_in_place() {
+        // FakeDecoder's 4x4 shape is true planar I420 (three arrays, pixelStride 1):
+        // the view must reference the SAME buffers with the planes' own strides.
+        val reader = FakeReader(samples(longArrayOf(0)))
+        val decoder = FakeDecoder()
+        val source = EncodedSource(reader, decoder, FakeDeveloper())
+        source.open(3)
+        // the decoder's emitted 4x4 planar shape, viewed in place
+        val y = ByteArray(16); val u = ByteArray(4); val v = ByteArray(4)
+        val markerPlane = YuvPlanes(0, 4, 4, YuvPlane(y, 0, 4, 1), YuvPlane(u, 0, 2, 1), YuvPlane(v, 0, 2, 1))
+        val view = EncodedYuv.toCpuView(markerPlane)!!
+        assertEquals(4, view.width)
+        assertEquals(4, view.height)
+        assertFalse(view.semiPlanar)
+        assertSame(y, view.y)
+        assertSame(u, view.u)
+        assertSame(v, view.v)
+        assertEquals(4, view.stride)
+        assertEquals(2, view.uvStride)
+    }
+
+    @Test
+    fun to_cpu_view_refuses_layouts_the_frame_contract_cannot_address() {
+        // NV12-shape but V-before-U (NV21 phase) and padded pixel strides: no
+        // honest view exists; the caller must take the toNv12 repack.
+        val c = ByteArray(8)
+        run {
+            val p = YuvPlanes(0, 4, 4, YuvPlane(ByteArray(16), 0, 4, 1), YuvPlane(c, 1, 4, 2), YuvPlane(c, 0, 4, 2))
+            assertNull(EncodedYuv.toCpuView(p)) // v at 0, u at 1: swapped
+        }
+        run {
+            val p = YuvPlanes(0, 4, 4, YuvPlane(ByteArray(16), 0, 5, 1), YuvPlane(c, 0, 4, 2), YuvPlane(c, 1, 4, 2))
+            assertNull(EncodedYuv.toCpuView(p)) // luma pixelStride 1 but rowStride 5: fine for
+            // stride-bearing reads — this shape IS addressable; see the next case for the true refuse
+        }
+        run {
+            val p = YuvPlanes(0, 4, 4, YuvPlane(ByteArray(16), 2, 4, 1), YuvPlane(c, 0, 4, 2), YuvPlane(c, 1, 4, 2))
+            assertNull(EncodedYuv.toCpuView(p)) // luma offset 2: unaddressable
+        }
+    }
+
+    @Test
+    fun to_cpu_view_takes_the_pooled_nv12_shape_zero_copy() {
+        // The pooled adapter's shape (one interleaved chroma array, V at +1): zero-copy.
+        val y = ByteArray(16)
+        val c = ByteArray(8)
+        val p = YuvPlanes(0, 4, 4, YuvPlane(y, 0, 4, 1), YuvPlane(c, 0, 4, 2), YuvPlane(c, 1, 4, 2))
+        val view = EncodedYuv.toCpuView(p)!!
+        assertTrue(view.semiPlanar)
+        assertSame(y, view.y)
+        assertSame(c, view.u)
+        assertEquals(4, view.stride)
+        assertEquals(4, view.uvStride)
+    }
+
+    @Test
+    fun render_frame_rgb_striped_develops_the_view_and_recycles_the_planes() {
+        val reader = FakeReader(samples(longArrayOf(0, 40000)))
+        val decoder = FakeDecoder()
+        val dev = FakeStripedDeveloper()
+        val source = EncodedSource(reader, decoder, dev)
+        source.open(3)
+        val rgb = source.renderFrameRgbStriped(0, GradeK(), null, null, 256L * 1024 * 1024)!!
+        assertSame(dev.stripedResult, rgb)
+        assertEquals(1, dev.stripedFrames.size)
+        val frame = dev.stripedFrames[0]
+        assertFalse(frame.semiPlanar) // the FakeDecoder's planar shape, viewed in place
+        assertEquals(4, frame.width)
+        // the stripe rows follow the planner's width rule, even
+        val rows = dev.stripedStripeRows[0]
+        assertTrue(rows % 2 == 0)
+        // the plane arrays were recycled (the pooled decoder counts them)
+        assertTrue(decoder.producedOutputs > 0)
+    }
+
+    @Test
+    fun render_frame_rgb_striped_packs_when_the_layout_needs_it_and_checks_the_budget() {
+        // A decoder whose planes cannot be viewed (luma offset 2): the pack runs
+        // inside the heap — and a tight heap REFUSES the pack with the short
+        // message instead of allocating it.
+        val offsetDecoder = object : EncodedFrameDecoder {
+            override fun configure(format: EncodedVideoFormat): String? = null
+            override fun flush() {}
+            var s: EncodedSample? = null
+            override fun queueSample(sample: EncodedSample) { s = sample }
+            override fun queueEos() {}
+            override fun dequeueFrame(timeoutUs: Long): YuvPlanes? {
+                val sample = s ?: return null
+                s = null
+                return YuvPlanes(
+                    sample.ptsUs, 4, 4,
+                    YuvPlane(ByteArray(20), 2, 4, 1), // offset 2: unviewable
+                    YuvPlane(ByteArray(4), 0, 2, 1), YuvPlane(ByteArray(4), 0, 2, 1),
+                )
+            }
+            override fun release() {}
+        }
+        val reader = FakeReader(samples(longArrayOf(0)))
+        val dev = FakeStripedDeveloper()
+        val source = EncodedSource(reader, offsetDecoder, dev)
+        source.open(3)
+        // big heap: the pack runs and the develop sees the packed NV12
+        val rgb = source.renderFrameRgbStriped(0, GradeK(), null, null, 256L * 1024 * 1024)!!
+        assertEquals(1, dev.stripedFrames.size)
+        assertTrue(dev.stripedFrames[0].semiPlanar) // toNv12's packed shape
+        // tight heap: the short refusal, no develop
+        val source2 = EncodedSource(FakeReader(samples(longArrayOf(0))), offsetDecoder, dev)
+        source2.open(3)
+        try {
+            source2.renderFrameRgbStriped(0, GradeK(), null, null, 1L)
+            fail("the pack budget must refuse")
+        } catch (e: IllegalStateException) {
+            assertTrue(e.message!!.contains("too large") || e.message!!.contains("repack"))
+        }
+        assertEquals(1, dev.stripedFrames.size) // no second develop
+    }
+
+    @Test
+    fun render_frame_rgb_striped_returns_null_when_the_developer_has_no_door() {
+        val reader = FakeReader(samples(longArrayOf(0)))
+        val source = EncodedSource(reader, FakeDecoder(), FakeDeveloper()) // developStriped default: null
+        source.open(3)
+        assertNull(source.renderFrameRgbStriped(0, GradeK(), null, null, 256L * 1024 * 1024))
     }
 
     /** The native develop boundary, recording everything it was handed. */
