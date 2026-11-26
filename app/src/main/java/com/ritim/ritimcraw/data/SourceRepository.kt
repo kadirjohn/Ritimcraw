@@ -81,6 +81,14 @@ data class MediaSource(
      * manualRotationDeg shape).
      */
     val gyroId: String = "",
+    /**
+     * The file name this clip was imported under (owner request
+     * 2026-11-26): written ONCE, at import or at the lazy backfill, and
+     * never overwritten by a later rename (the app's or the file's).
+     * Blank = unknown (the info sheet hides the row). Persisted only when
+     * non-blank so older project.json files stay byte-identical.
+     */
+    val originalName: String = "",
 ) {
     /** True when the engine pass has filled in the format-line stats. */
     val hasStats: Boolean
@@ -242,6 +250,7 @@ class SourceRepository(
                 uri = uri,
                 access = Access.OK,
                 displayName = name ?: existing.displayName,
+                originalName = existing.originalName.ifBlank { name ?: "" },
             )
             sources[sources.indexOf(existing)] = updated
             write(sources)
@@ -254,6 +263,7 @@ class SourceRepository(
             kind = kind,
             access = Access.OK,
             displayName = name ?: "",
+            originalName = name ?: "",
         )
         sources.add(source)
         write(sources)
@@ -289,6 +299,69 @@ class SourceRepository(
     }
 
     /**
+     * Lazily fills [MediaSource.originalName] for a record written before
+     * the field existed: the file's CURRENT name is taken as the original
+     * only when it is provably the original, i.e. the app-side name is
+     * blank or equals it (an app-only rename in the past means the
+     * original is unknowable, so it stays blank rather than guessed).
+     * Never overwrites a non-blank value. Returns the (possibly updated)
+     * record, or null when it is missing.
+     */
+    fun backfillOriginalName(id: String): MediaSource? {
+        val sources = load().toMutableList()
+        val index = sources.indexOfFirst { it.id == id }
+        if (index < 0) return null
+        val current = sources[index]
+        if (current.originalName.isNotBlank()) return current
+        val fileName = try {
+            resolver.displayName(current.uri)
+        } catch (e: Exception) {
+            null
+        }
+        if (fileName.isNullOrBlank()) return current
+        if (current.displayName.isNotBlank() && current.displayName != fileName) return current
+        val updated = current.copy(originalName = fileName)
+        sources[index] = updated
+        write(sources)
+        return updated
+    }
+
+    /**
+     * Applies a successful (or partially successful) file rename in ONE
+     * project.json write: the record's [MediaSource.uri] moves to
+     * [newUri] and the app-side name becomes [name]. The id is
+     * fingerprint-derived (content, not path), so grades, nodes, gyro
+     * attachment, proxy cache (fingerprint-keyed) and exports (sourceId-
+     * keyed) need no migration. [MediaSource.originalName] is frozen
+     * first (backfill rule) so a rename can never lose it.
+     */
+    fun applyFileRename(id: String, newUri: String, name: String): MediaSource? {
+        val sources = load().toMutableList()
+        val index = sources.indexOfFirst { it.id == id }
+        if (index < 0) return null
+        val current = sources[index]
+        val original = current.originalName.ifBlank {
+            val fileName = try {
+                resolver.displayName(current.uri)
+            } catch (e: Exception) {
+                null
+            }
+            if (!fileName.isNullOrBlank() &&
+                (current.displayName.isBlank() || current.displayName == fileName)
+            ) fileName else ""
+        }
+        val updated = current.copy(
+            uri = newUri,
+            displayName = name.trim().ifBlank { current.displayName },
+            originalName = original,
+            access = Access.OK,
+        )
+        sources[index] = updated
+        write(sources)
+        return updated
+    }
+
+    /**
      * Renames a clip (owner request 2026-11-15, the folder-import name
      * dialog): the user-edited name replaces the resolver-derived
      * [MediaSource.displayName] — the record's id, fingerprint and grade
@@ -308,7 +381,19 @@ class SourceRepository(
         val current = sources[index]
         if (trimmed.isBlank()) return current
         if (trimmed == current.displayName) return current
-        val updated = current.copy(displayName = trimmed)
+        // Freeze the original name before the app-side name changes, while
+        // the old name still proves what the file was called.
+        val original = current.originalName.ifBlank {
+            val fileName = try {
+                resolver.displayName(current.uri)
+            } catch (e: Exception) {
+                null
+            }
+            if (!fileName.isNullOrBlank() &&
+                (current.displayName.isBlank() || current.displayName == fileName)
+            ) fileName else ""
+        }
+        val updated = current.copy(displayName = trimmed, originalName = original)
         sources[index] = updated
         write(sources)
         return updated
@@ -574,6 +659,11 @@ class SourceRepository(
                     // byte-identical.
                     sb.append(",\"gyroId\":").append(jsonString(s.gyroId))
                 }
+                if (s.originalName.isNotBlank()) {
+                    // The import-time file name (owner request 2026-11-26);
+                    // omitted while unknown so older files stay byte-identical.
+                    sb.append(",\"originalName\":").append(jsonString(s.originalName))
+                }
                 sb.append('}')
             }
             sb.append(']')
@@ -654,6 +744,7 @@ class SourceRepository(
                     // no sidecar gyro log attached (stabilization stays a
                     // no-op).
                     gyroId = m["gyroId"] as? String ?: "",
+                    originalName = m["originalName"] as? String ?: "",
                 )
             }
         }
