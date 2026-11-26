@@ -290,7 +290,7 @@ TEST_CASE("static_window_reduces_noise_variance") {
 
     CHECK(rep.prev.eligible);
     CHECK(rep.next.eligible);
-    CHECK(rep.prev.meanWeight == doctest::Approx(0.40f).epsilon(0.05));
+    CHECK(rep.prev.meanWeight == doctest::Approx(0.50f).epsilon(0.05)); // default cap 0.50 (owner choice 2026-11-26)
 
     const double varC = variance(c, kTw, 32, 32, 224, 224);
     const double varOut = variance(out, kTw, 32, 32, 224, 224);
@@ -825,7 +825,7 @@ TEST_CASE("merge_with_seeded_next_side_bit_identical_to_plain") {
 // contract: default bit-identical, the boost only deepens static denoise,
 // and every ADMIT decision (the gates) is independent of the cap.
 
-TEST_CASE("static_cap_boost_default_is_bit_identical") {
+TEST_CASE("static_cap_default_equals_explicit_half") {
     const RawMeta m = testMeta();
     const FrameInfo info = testInfo(kTw, kTw);
     std::vector<uint16_t> c = makeFrame(kTw, kTw, flat(0.3f), 211, 6.0f);
@@ -836,7 +836,7 @@ TEST_CASE("static_cap_boost_default_is_bit_identical") {
     ts.strength = 100.0f;
     temporalMergeCfa(c.data(), info, p.data(), x.data(), m, ts, o1.data(), nullptr);
     TemporalSettings ts2 = ts;
-    ts2.staticBlockCap = 0.40f; // the legacy value, explicitly
+    ts2.staticBlockCap = 0.50f; // the new default, explicitly
     temporalMergeCfa(c.data(), info, p.data(), x.data(), m, ts2, o2.data(), nullptr);
     CHECK(std::memcmp(o1.data(), o2.data(), o1.size() * sizeof(uint16_t)) == 0);
     // And the real default run is what the golden checksum test above pins.
@@ -853,6 +853,7 @@ TEST_CASE("static_cap_boost_deepens_static_denoise") {
     // var ~0.375x. Same frames, only the flag differs.
     TemporalSettings tsL;
     tsL.strength = 100.0f;
+    tsL.staticBlockCap = 0.40f; // the legacy value, explicitly
     std::vector<uint16_t> oL(c.size(), 0);
     TemporalReport repL;
     temporalMergeCfa(c.data(), info, p.data(), x.data(), m, tsL, oL.data(), &repL);
@@ -910,6 +911,7 @@ TEST_CASE("static_cap_boost_never_changes_admit_decisions") {
     // Legacy reference of the same fixture.
     TemporalSettings tsL;
     tsL.strength = 100.0f;
+    tsL.staticBlockCap = 0.40f; // the legacy value, explicitly
     std::vector<uint16_t> outL(c.size(), 0);
     TemporalReport repL;
     temporalMergeCfa(c.data(), info, p.data(), nullptr, m, tsL, outL.data(), &repL);
@@ -1007,28 +1009,28 @@ TEST_CASE("distant_neighbor_weight_decays_with_temporal_distance") {
     std::vector<uint16_t> out(c.size(), 0);
     TemporalReport rep;
 
-    // Adjacent (dPts = 1 duration): full cap 0.40.
+    // Adjacent (dPts = 1 duration): full cap 0.50.
     TemporalSettings ts;
     ts.strength = 100.0f;
     ts.prevDPtsUs = 33333;
     ts.frameDurationUs = 33333;
     temporalMergeCfa(c.data(), info, p.data(), nullptr, m, ts, out.data(), &rep);
     CHECK(rep.prev.eligible);
-    CHECK(rep.prev.meanWeight == doctest::Approx(0.40f).epsilon(0.05));
+    CHECK(rep.prev.meanWeight == doctest::Approx(0.50f).epsilon(0.05));
 
-    // 1.5 durations out: cap x (1/1.5) = 0.267 (atadenoise get_weights).
+    // 1.5 durations out: cap x (1/1.5) = 0.333 (atadenoise get_weights).
     std::fill(out.begin(), out.end(), 0);
     ts.prevDPtsUs = (33333 * 3) / 2;
     temporalMergeCfa(c.data(), info, p.data(), nullptr, m, ts, out.data(), &rep);
     CHECK(rep.prev.eligible);
-    CHECK(rep.prev.meanWeight == doctest::Approx(0.40f * (2.0f / 3.0f)).epsilon(0.05));
+    CHECK(rep.prev.meanWeight == doctest::Approx(0.50f * (2.0f / 3.0f)).epsilon(0.05));
 
     // Unspecified (0): no decay — direct callers and tests.
     std::fill(out.begin(), out.end(), 0);
     ts.prevDPtsUs = 0;
     temporalMergeCfa(c.data(), info, p.data(), nullptr, m, ts, out.data(), &rep);
     CHECK(rep.prev.eligible);
-    CHECK(rep.prev.meanWeight == doctest::Approx(0.40f).epsilon(0.05));
+    CHECK(rep.prev.meanWeight == doctest::Approx(0.50f).epsilon(0.05));
 }
 
 // ---- statelessness: the scrub/ring-cache contract (DN-09) ----

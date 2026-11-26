@@ -270,7 +270,7 @@ struct TemporalSettings {
     // while the ghost metrics (moving-edge band MAF/bias/edge lag) stay
     // put — the boost changes a weight, never an ADMIT decision. The
     // morning owner flips the caller; not wired to the bridge yet.
-    float staticBlockCap = 0.40f;
+    float staticBlockCap = 0.50f;
 };
 
 // Per-neighbor outcome, for tests and the perf report.
