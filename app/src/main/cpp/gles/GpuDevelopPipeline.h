@@ -65,6 +65,7 @@
 #include "EncodedYuvPass.h"
 
 #include <rawedit/ColorModel.h>
+#include <rawedit/Develop.h>
 #include <rawedit/Source.h>
 
 namespace gles {
@@ -99,6 +100,10 @@ uint64_t gradeProbeHash(const DevelopFrameRequest& req);
 
 struct DevelopFrameRequest {
     const std::vector<uint16_t>* cfa = nullptr;  // w*h row-major
+    // D1 RAW Levels override (set by the session folds from the grade parcel's rawLevels octet; empty = the
+    // pre-D1 resolution, bit-identical). The draw resolves black/white through rawedit::resolveRawLevels (the
+    // one shared resolver developCpu uses) and replaces the measured clip thresholds the way developCpu does.
+    rawedit::RawLevelsOverride rawLevels{};
     // E0b-4b: an ENCODED frame instead of a CFA. When set, [cfa] stays null, pass 1 is the YUV pass
     // (gles/EncodedYuvPass: YCbCr -> RGB, transfer decode, primaries, WB gains x exposure, optionally
     // reduced first) writing the same RGBA32F texture the PRE pass would, and the chain runs on

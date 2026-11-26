@@ -1351,15 +1351,12 @@ GpuDevelopPipeline::DrawResult GpuDevelopPipeline::Impl::draw(
     // --- CPU-computed uniforms (documented copies of developCpu's own
     // stage-1/5/6 math — the harness runs the same rules; the shader
     // applies them in-hardware) --------------------------------------------
-    const bool useFrameBlack = req.info.dynamicBlack[0] >= 0;
-    const float white = req.info.dynamicWhite > 0
-        ? static_cast<float>(req.info.dynamicWhite)
-        : static_cast<float>(req.meta->white);
+    // D1: the RAW Levels override > the frame's dynamic levels > container metadata, through the ONE resolver
+    // developCpu stage 1 uses (rawedit::resolveRawLevels). An empty override resolves exactly the pre-D1 way
+    // (same float ops, proven by test_raw_levels), so a grade without the setting renders bit-identically.
+    float white;
     float black[4];
-    for (int slot = 0; slot < 4; ++slot)
-        black[slot] = useFrameBlack
-            ? static_cast<float>(req.info.dynamicBlack[slot])
-            : static_cast<float>(req.meta->black[slot]);
+    rawedit::resolveRawLevels(req.rawLevels, req.info, *req.meta, white, black);
     float range[4];
     for (int slot = 0; slot < 4; ++slot)
         range[slot] = white > black[slot] ? white - black[slot] : 1.0f;
@@ -1916,7 +1913,10 @@ GpuDevelopPipeline::DrawResult GpuDevelopPipeline::Impl::draw(
     // Stage 3 flags clipped sites with the per-frame measured thresholds (the CPU oracle's own function, so
     // the two paths cannot disagree about which sites are clipped); a grade without stage 3 needs none.
     if (req.highlightReconstruction) {
-        const rawedit::RecoveryClipLevels lv = rawedit::recoveryClipLevels(req.cfa->data(), req.info, *req.meta);
+        rawedit::RecoveryClipLevels lv = rawedit::recoveryClipLevels(req.cfa->data(), req.info, *req.meta);
+        // D1: an explicit user clip threshold replaces the measured one per channel (developCpu's own rule).
+        for (int c = 0; c < 3; ++c)
+            if (req.rawLevels.overridesThreshold(c)) lv.threshold[c] = req.rawLevels.threshold[c];
         if (clipUseLoc >= 0) glUniform1i(clipUseLoc, 1);
         if (clipThrLoc >= 0) glUniform3f(clipThrLoc, lv.threshold[0], lv.threshold[1], lv.threshold[2]);
     } else {
@@ -2633,7 +2633,9 @@ bool GpuDevelopPipeline::Impl::recoveryDraw(const DevelopFrameRequest& req, uint
     const double t0 = timing ? nowMs() : 0.0;
     // The clip thresholds: measured CPU-side from the raw CFA (the CPU oracle's own function, so the GPU
     // cannot disagree about which sites are clipped).
-    const rawedit::RecoveryClipLevels levels = rawedit::recoveryClipLevels(req.cfa->data(), req.info, *req.meta);
+    rawedit::RecoveryClipLevels levels = rawedit::recoveryClipLevels(req.cfa->data(), req.info, *req.meta);
+    for (int c = 0; c < 3; ++c)  // D1: the user's clip thresholds win per channel (developCpu's own rule)
+        if (req.rawLevels.overridesThreshold(c)) levels.threshold[c] = req.rawLevels.threshold[c];
     const double tLv = timing ? nowMs() : 0.0;
     // Ordered pair p = c*2 + (r > c ? r-1 : r). A pair is needed when its c can clip and (green can clip, so
     // any reference may be chosen) or (the reference is green, the only choice while green never clips).

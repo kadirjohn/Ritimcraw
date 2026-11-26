@@ -517,6 +517,24 @@ inline void applyGradeToRawedit(const DevelopGrade& grade, GradeT* out) {
 %s
 }
 
+// The RAW Levels override (D1) from the decoded parcel's eight rawLevels slots, as a rawedit::RawLevelsOverride
+// (value type SEPARATE from rawedit::Grade; developCpu and the GPU draw both take it as their own input, the
+// way lutStrength is not a Grade field). The -1 sentinel crosses verbatim: an all-sentinel result is the EMPTY
+// override, which resolves exactly the pre-D1 way (bit-identical output). Hand-written here, not generated.
+template <typename OverrideT>
+inline OverrideT rawLevelsFromGrade(const DevelopGrade& g) {
+    OverrideT lv;
+    lv.white = g.rawLevelsWhite;
+    lv.black[0] = g.rawLevelsBlackR;
+    lv.black[1] = g.rawLevelsBlackGr;
+    lv.black[2] = g.rawLevelsBlackGb;
+    lv.black[3] = g.rawLevelsBlackB;
+    lv.threshold[0] = g.rawLevelsClipR;
+    lv.threshold[1] = g.rawLevelsClipG;
+    lv.threshold[2] = g.rawLevelsClipB;
+    return lv;
+}
+
 }  // namespace gles
 """ % (
         "\n".join(struct_members),

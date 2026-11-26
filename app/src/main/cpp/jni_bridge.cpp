@@ -1695,16 +1695,7 @@ rawedit::Grade gradeFromKotlin(float exposureEv, float highlights, float tempK, 
 // type SEPARATE from rawedit::Grade, carried by developCpu's own appended
 // parameter rather than a Grade member.
 rawedit::RawLevelsOverride rawLevelsFromParcel(const gles::DevelopGrade& g) {
-    rawedit::RawLevelsOverride lv;
-    lv.white = g.rawLevelsWhite;
-    lv.black[0] = g.rawLevelsBlackR;
-    lv.black[1] = g.rawLevelsBlackGr;
-    lv.black[2] = g.rawLevelsBlackGb;
-    lv.black[3] = g.rawLevelsBlackB;
-    lv.threshold[0] = g.rawLevelsClipR;
-    lv.threshold[1] = g.rawLevelsClipG;
-    lv.threshold[2] = g.rawLevelsClipB;
-    return lv;
+    return gles::rawLevelsFromGrade<rawedit::RawLevelsOverride>(g);  // one construction, shared with the GPU session folds
 }
 
 // The same fold from the flat preview doors' eight trailing jfloat
@@ -5007,7 +4998,7 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderFrameParc
             const bool reducedOk = reconstructBeforeBin
                 ? rawedit::reduceCfaBinnedReconstructed(
                       cfa->data(), info, meta, strideN, grade.keepVignetting,
-                      rawedit::RawLevelsOverride(), scratch)
+                      rawLevelsFromParcel(grade), scratch)
                 : rawedit::reduceCfaBinned(
                       cfa->data(), info.width, info.height, strideN, scratch);
             if (!reducedOk) {
