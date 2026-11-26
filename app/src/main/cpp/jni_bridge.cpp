@@ -1749,13 +1749,6 @@ static bool readNodeChainWire(JNIEnv* env, jfloatArray wire,
         *error = out->error;
         return false;
     }
-    for (const rawedit::GradeNode& n : out->nodes) {
-        if (n.lut != nullptr || (n.lutMix > 0.0001f && out->nodeCount > 0 && n.hasLut())) {
-            *error = std::string("node chain wire: node LUTs are not wired on this path "
-                                 "(recovery: render this clip on the CPU path)");
-            return false;
-        }
-    }
     return true;
 }
 

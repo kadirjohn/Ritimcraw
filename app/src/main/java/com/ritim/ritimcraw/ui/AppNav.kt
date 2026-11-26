@@ -93,6 +93,7 @@ import com.ritim.ritimcraw.data.ThemeMode
 import com.ritim.ritimcraw.data.ThumbnailRules
 import com.ritim.ritimcraw.data.VideoTree
 import com.ritim.ritimcraw.data.ThumbnailStore
+import com.ritim.ritimcraw.engine.NodeLutHandles
 import com.ritim.ritimcraw.engine.RecoveryBench
 import com.ritim.ritimcraw.engine.StabilizationGate
 import com.ritim.ritimcraw.engine.ClipThumbnails
@@ -502,6 +503,9 @@ fun AppNav(
     var exportJobs by remember { mutableStateOf(stores.exports.all()) }
     // The cube library list (COL-07): plain state refreshed after every
     // import/remove so the editor's LUT rows stay current.
+    // F1-8d: node LUTs ride the chain wire as native handles; the wire encoder resolves a node's lutId through the
+    // same library the Look tab uses (an unresolvable id is refused honestly, never dropped).
+    NodeLutHandles.pathFor = { id -> stores.luts.pathFor(id) }
     var lutEntries by remember { mutableStateOf(stores.luts.all()) }
     // The saved presets (owner request 2026-11-11 §4): plain state
     // refreshed after every save/delete so the clip-info sheet's rows
