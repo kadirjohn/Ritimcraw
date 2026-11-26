@@ -6,6 +6,12 @@ import java.security.MessageDigest
 const val PROXY_ENCODER_VERSION = 1
 
 /**
+ * Hex characters of the signature hash in a file name: 16 = 64 bits (decision 2026-11-26,
+ * docs/PROXY_PLAN.md "Decisions 2026-11-26" (d): collision odds ~1e-16 per clip).
+ */
+const val PROXY_SIG_HASH_HEX_CHARS = 16
+
+/**
  * Encode settings that are part of the signature. The proxy is always 10-bit HEVC
  * (also for 8-bit sources), so [bitDepth] and [codec] default to that. [bitrateClass] is an
  * opaque label (the actual bitrate numbers are measured on the device later and injected by the writer).
@@ -66,10 +72,10 @@ data class ProxySignature(
         "h=${if (headroomAffine) 1 else 0}",
     ).joinToString("|")
 
-    /** First 16 hex chars of SHA-256 over [canonical]. */
+    /** First [PROXY_SIG_HASH_HEX_CHARS] hex chars of SHA-256 over [canonical]. */
     fun hash(): String {
         val d = MessageDigest.getInstance("SHA-256").digest(canonical().toByteArray(Charsets.UTF_8))
-        return d.take(8).joinToString("") { "%02x".format(it) }
+        return d.take(PROXY_SIG_HASH_HEX_CHARS / 2).joinToString("") { "%02x".format(it) }
     }
 
     fun key(): ProxyKey = ProxyKey(sourceFingerprint, hash())

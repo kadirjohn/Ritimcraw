@@ -37,6 +37,20 @@ class ProxyCacheTest {
         return h.commit(durationUs = 1_000_000, frameCount = 30)
     }
 
+    @Test fun dirLayoutMatchesThePlan() {
+        // the plan pins the path: filesDir (NOT cacheDir, the OS may clear it) /cache/proxies,
+        // the same nesting as filesDir/cache/imagestab
+        assertEquals(
+            File("/data/user/0/app/files/cache/proxies"),
+            ProxyDirs.cacheDir(File("/data/user/0/app/files")),
+        )
+        // the storage sits exactly there and keeps names inside it
+        val s = ProxyDirs.storage(root)
+        s.write("abc-1.mp4", ByteArray(1))
+        assertEquals(listOf("abc-1.mp4"), s.names())
+        assertEquals(listOf("abc-1.mp4"), root.resolve("cache/proxies").list()?.toList())
+    }
+
     @Test fun signatureIsStableAndFilenameSafe() {
         val a = sig(); val b = sig()
         assertEquals(a.canonical(), b.canonical())
@@ -63,23 +77,23 @@ class ProxyCacheTest {
         val c = cache(); val k = sig().key()
         val e = put(c, k, 100)
         assertNotNull(e)
-        val hit = c.lookup(k)
+        val hit = c.playable(k)
         assertNotNull(hit)
         assertEquals(100L, hit!!.bytes)
         assertEquals(30L, hit.frameCount)
         assertTrue(hit.file.isFile)
         // no tmp left behind, only the published pair
-        assertEquals(listOf("${k.baseName}.manifest", "${k.baseName}.mp4"), storage.names())
+        assertEquals(listOf("${k.baseName}.json", "${k.baseName}.mp4"), storage.names())
     }
 
     @Test fun abortLeavesNothingAndNeverResolves() {
         val c = cache(); val k = sig().key()
         val h = c.begin(k)
         h.videoFile.writeBytes(ByteArray(50))
-        assertNull(c.lookup(k)) // a .tmp never resolves
+        assertNull(c.playable(k)) // a .tmp never resolves
         h.abort()
         assertTrue(storage.names().isEmpty())
-        assertNull(c.lookup(k))
+        assertNull(c.playable(k))
     }
 
     @Test fun crashLeftoversNeverResolveAndSweepRemovesThem() {
@@ -88,15 +102,15 @@ class ProxyCacheTest {
         storage.write("${k.baseName}.mp4.tmp", ByteArray(40))
         val k2 = sig("def456").key()
         storage.write("${k2.baseName}.mp4", ByteArray(40))
-        storage.write("${k2.baseName}.manifest.tmp", "fingerprint=def456\n".toByteArray())
+        storage.write("${k2.baseName}.json.tmp", "fingerprint=def456\n".toByteArray())
         val c = cache() // fresh process: no open handles
-        assertNull(c.lookup(k))
-        assertNull(c.lookup(k2))
+        assertNull(c.playable(k))
+        assertNull(c.playable(k2))
         assertEquals(3, c.sweep())
         assertTrue(storage.names().isEmpty())
     }
 
-    @Test fun sweepSparesTmpOfOpenHandleAndLookupRejectsSizeMismatch() {
+    @Test fun sweepSparesTmpOfOpenHandleAndPlayableRejectsSizeMismatch() {
         val c = cache(); val k = sig().key()
         val h = c.begin(k)
         h.videoFile.writeBytes(ByteArray(10))
@@ -105,17 +119,17 @@ class ProxyCacheTest {
         h.commit()
         // truncate the published video: manifest size check must reject it
         File(root, "${k.baseName}.mp4").writeBytes(ByteArray(3))
-        assertNull(c.lookup(k))
+        assertNull(c.playable(k))
     }
 
     @Test fun recommitReplacesAtomicallyAndEmptyWriteIsRejected() {
         val c = cache(); val k = sig().key()
         put(c, k, 100)
         put(c, k, 60)
-        assertEquals(60L, c.lookup(k)!!.bytes)
+        assertEquals(60L, c.playable(k)!!.bytes)
         val h = c.begin(k); // nothing written
         assertNull(h.commit())
-        assertEquals(60L, c.lookup(k)?.bytes) // old entry untouched by an empty commit
+        assertEquals(60L, c.playable(k)?.bytes) // old entry untouched by an empty commit
     }
 
     @Test fun lruEvictsOldestToCapAndSparesJustCommitted() {
@@ -124,20 +138,59 @@ class ProxyCacheTest {
         put(c, ka, 100); put(c, kb, 100)
         assertEquals(200L, c.totalBytes())
         put(c, kc, 100) // 300 > 250 -> evict least recently used = a
-        assertNull(c.peek(ka))
-        assertNotNull(c.peek(kb)); assertNotNull(c.peek(kc))
+        assertNull(c.peekPlayable(ka))
+        assertNotNull(c.peekPlayable(kb)); assertNotNull(c.peekPlayable(kc))
         assertTrue(c.totalBytes() <= 250)
     }
 
-    @Test fun lookupTouchesLastAccess() {
+    @Test fun playableTouchesLastAccess() {
         val c = cache(cap = 250)
         val ka = sig("a1").key(); val kb = sig("b1").key(); val kc = sig("c1").key()
         put(c, ka, 100); put(c, kb, 100)
-        val before = c.peek(ka)!!.lastAccessMs
-        assertNotNull(c.lookup(ka)) // a is now newer than b
-        assertTrue(c.peek(ka)!!.lastAccessMs > before)
+        val before = c.peekPlayable(ka)!!.lastAccessMs
+        assertNotNull(c.playable(ka)) // a is now newer than b
+        assertTrue(c.peekPlayable(ka)!!.lastAccessMs > before)
         put(c, kc, 100)
-        assertNotNull(c.peek(ka)); assertNull(c.peek(kb)) // b evicted instead
+        assertNotNull(c.peekPlayable(ka)); assertNull(c.peekPlayable(kb)) // b evicted instead
+    }
+
+    @Test fun evictionSparesTheEntryBeingRebuiltAndProtectedKeys() {
+        // plan section 6: eviction deletes only proxies not playing and not being built.
+        // The storage-page eviction hook: the same storage, a tighter user cap.
+        val c = cache(cap = 90)
+        val ka = sig("a1").key(); val kb = sig("b1").key(); val kp = sig("c1").key()
+        put(c, ka, 30); put(c, kb, 30); put(c, kp, 30) // 90 <= 90: all published
+        val tight = ProxyCache(storage, 50) { now += 10_000; now }
+        val h = tight.begin(kb) // kb is being rebuilt: its published entry must survive
+        val evicted = tight.evictToCap(protect = setOf(kp)) // kp is playing: spared too
+        assertEquals(listOf(ka), evicted) // only the untouched, least recent one goes
+        assertNull(tight.peekPlayable(ka))
+        assertNotNull(tight.peekPlayable(kb)); assertNotNull(tight.peekPlayable(kp))
+        h.abort()
+    }
+
+    @Test fun signatureOverloadStoresTheFullSignatureLine() {
+        val c = cache()
+        val s = sig()
+        val h = c.begin(s) // the writer begins from the signature, not just the key
+        h.videoFile.writeBytes(ByteArray(50))
+        val e = h.commit(durationUs = 1_000_000, frameCount = 30)
+        assertNotNull(e)
+        assertEquals(s.canonical(), e!!.signatureLine)
+        assertEquals(s.canonical(), c.peekPlayable(s.key())!!.signatureLine) // survives a re-read
+    }
+
+    @Test fun sourceChangeProtectionIsTheKeyNotTheEntry() {
+        // plan section 3.1 "açılışta tekrar bakılır": size + mtime enter the signature, so a changed
+        // source resolves a DIFFERENT key — the stale entry is never served for it, the clip plays
+        // from the original until the new proxy exists
+        val c = cache()
+        val before = sig(fp = "abc123", settings = ProxySettings())
+        put(c, before.key(), 100)
+        val after = before.copy(sourceModifiedMs = before.sourceModifiedMs + 1)
+        assertNotEquals(before.key(), after.key())
+        assertNull(c.playable(after.key()))
+        assertNotNull(c.playable(before.key())) // still on disk; LRU or clearClip reaps it
     }
 
     @Test fun oversizeEntryIsNotPublished() {
@@ -164,7 +217,7 @@ class ProxyCacheTest {
 
     @Test fun policyAutoGenerationDefaultsAndMcrawOptIn() {
         val def = ProxyPolicy()
-        assertEquals(20L shl 30, def.capBytes)
+        assertEquals(PROXY_CAP_DEFAULT_BYTES, def.capBytes)
         fun enc(w: Int, h: Int, fps: Double) = ProxyClipInfo(ProxySourceKind.ENCODED, w, h, fps)
         assertTrue(def.shouldAutoGenerate(enc(7680, 4320, 30.0)))   // 8K
         assertTrue(def.shouldAutoGenerate(enc(3840, 2160, 60.0)))   // 4K60
@@ -190,5 +243,109 @@ class ProxyCacheTest {
         assertEquals(ProxyState.Failed, m.state(b)); assertEquals(1, m.failureCount(b))
         assertEquals(ProxyState.Ready, m.state(a))
         assertNotEquals(ProxyState.Queued, m.state(a))
+    }
+
+    // ---- decisions 2026-11-26 (docs/PROXY_PLAN.md) ----
+
+    @Test fun capDefaultIs20GibAndIsTheCacheDefault() {
+        assertEquals(21_474_836_480L, PROXY_CAP_DEFAULT_BYTES)
+        assertEquals(PROXY_CAP_DEFAULT_BYTES, ProxyPolicy().capBytes)
+        val c = ProxyCache(storage) // default cap: a small entry publishes
+        assertNotNull(put(c, sig().key(), 10))
+    }
+
+    @Test fun manifestIsJsonRoundTripsAndEscapes() {
+        val m = ProxyManifest("abc123", "0123456789abcdef", 123_456_789_012L, 8_000_000, 240, 1_764_000_000_000L, "v1|a=\"q\"\\x|\u00e9")
+        val text = ProxyManifestCodec.render(m)
+        assertTrue(text.trimStart().startsWith("{"))
+        assertEquals(m, ProxyManifestCodec.parse(text.toByteArray(Charsets.UTF_8)))
+        val noSig = m.copy(signature = null)
+        assertEquals(noSig, ProxyManifestCodec.parse(ProxyManifestCodec.render(noSig).toByteArray()))
+    }
+
+    @Test fun truncatedOrGarbageManifestIsToleratedEverywhere() {
+        val full = ProxyManifestCodec.render(
+            ProxyManifest("abc123", "0123456789abcdef", 50, 1, 2, 3, "sig\\with\"escapes"),
+        )
+        // every strict prefix of a valid manifest is unreadable (null), never an exception
+        for (n in 0 until full.trimEnd().length) {
+            assertNull("prefix $n", ProxyManifestCodec.parse(full.substring(0, n).toByteArray()))
+        }
+        for (bad in listOf("", "null", "[]", "{}", "{\"v\":2}", "garbage\u0000\u0001", "{\"v\":1,\"fingerprint\":1}", "{} trailing")) {
+            assertNull(bad, ProxyManifestCodec.parse(bad.toByteArray()))
+        }
+    }
+
+    @Test fun truncatedPublishedManifestNeverPlaysAndSweepRemovesIt() {
+        val c = cache(); val k = sig().key()
+        put(c, k, 40)
+        val manFile = File(root, "${k.baseName}.json")
+        val full = manFile.readBytes()
+        manFile.writeBytes(full.copyOf(full.size / 2)) // torn write
+        assertNull(c.playable(k))
+        assertNull(c.peekPlayable(k))
+        assertTrue(c.entries().isEmpty())
+        assertEquals(1, c.sweep()) // the torn manifest goes; the video then has no manifest
+        assertEquals(1, c.sweep()) // ... and is removed by the next pass
+        assertTrue(storage.names().isEmpty())
+    }
+
+    @Test fun manifestIsPublishedViaTmpThenRename() {
+        val c = cache(); val k = sig().key()
+        val h = c.begin(k)
+        h.videoFile.writeBytes(ByteArray(10))
+        h.commit()
+        assertFalse(storage.names().any { it.endsWith(".tmp") })
+        assertTrue(storage.exists("${k.baseName}.json"))
+    }
+
+    @Test fun playableForSignatureRejectsAMismatchingStoredSignature() {
+        val c = cache(); val s = sig()
+        val h = c.begin(s); h.videoFile.writeBytes(ByteArray(20)); h.commit()
+        assertNotNull(c.playable(s))
+        // a forged same-key / different-settings signature (simulated hash collision) must not resolve
+        val other = s.copy(settings = ProxySettings(shortSide = 720))
+        val f = File(root, "${s.key().baseName}.json")
+        val m = ProxyManifestCodec.parse(f.readBytes())!!
+        f.writeBytes(ProxyManifestCodec.render(m.copy(signature = other.canonical())).toByteArray())
+        assertNull(c.playable(s))
+        assertNotNull(c.playable(s.key())) // the key-only gate does not look at the signature text
+    }
+
+    @Test fun hashLengthIs16HexAndCollisionOddsAreNegligible() {
+        assertEquals(16, PROXY_SIG_HASH_HEX_CHARS)
+        assertEquals(PROXY_SIG_HASH_HEX_CHARS, sig().hash().length)
+        // birthday bound p ~ n^2 / 2^65 (numbers in docs/PROXY_PLAN.md decision (d))
+        fun p(n: Double) = n * n / 2.0 / Math.pow(2.0, 64.0)
+        assertTrue(p(100.0) < 1e-15)  // 100 variants of one clip: the realistic key-space per fingerprint
+        assertTrue(p(1.0e6) < 1e-7)   // a million hashes even if compared across ALL clips
+    }
+
+    @Test fun protectSourceIsHonouredByEvictionAndComposes() {
+        val c0 = cache(cap = 90)
+        val ka = sig("a1").key(); val kb = sig("b1").key(); val kc = sig("c1").key()
+        put(c0, ka, 30); put(c0, kb, 30); put(c0, kc, 30)
+        val inUse = ProxyInUse()
+        val state = ProxyStateMap()
+        state.enqueue(kb); assertEquals(kb, state.next()) // kb is Building
+        inUse.acquire(ka)
+        val src = ProxyProtectSource.union(inUse, state.buildingSource())
+        assertEquals(setOf(ka, kb), src.protectedKeys())
+        val tight = ProxyCache(storage, 40, src) { now += 10_000; now }
+        assertEquals(listOf(kc), tight.evictToCap()) // only the unprotected one goes; protected stay even over cap
+        assertNotNull(tight.peekPlayable(ka)); assertNotNull(tight.peekPlayable(kb))
+        inUse.release(ka)
+        assertEquals(listOf(ka), tight.evictToCap()) // released: evictable (kb still Building)
+        assertNotNull(tight.peekPlayable(kb))
+        assertTrue(ProxyProtectSource.NONE.protectedKeys().isEmpty())
+    }
+
+    @Test fun inUseIsReferenceCounted() {
+        val u = ProxyInUse(); val k = sig().key()
+        u.acquire(k); u.acquire(k)
+        u.release(k); assertTrue(u.isInUse(k))
+        u.release(k); assertFalse(u.isInUse(k))
+        u.release(k) // extra release is a no-op
+        assertTrue(u.protectedKeys().isEmpty())
     }
 }
