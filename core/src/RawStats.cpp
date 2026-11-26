@@ -8,6 +8,8 @@
 
 #include <rawedit/RawStats.h>
 
+#include <algorithm>
+
 namespace rawedit {
 
 namespace {
@@ -93,6 +95,66 @@ RawHistogramStats rawHistogramStats(const uint16_t* cfa, uint32_t w, uint32_t h,
         }
     }
     return out;
+}
+
+RawDiagnostics rawDiagnostics(const uint16_t* cfa, const FrameInfo& info, const RawMeta& meta) {
+    RawDiagnostics d;
+    const uint32_t w = info.width, h = info.height;
+    if (cfa == nullptr || w == 0 || h == 0) return d;
+    d.valid = true;
+    // Level resolution: identical to Develop stage 1 (and rawHistogramStats).
+    const bool useFrameBlack = info.dynamicBlack[0] >= 0;
+    const int32_t white = info.dynamicWhite > 0 ? info.dynamicWhite : static_cast<int32_t>(meta.white);
+    d.whiteDeclared = white;
+    const CfaLayout layout = layoutFor(info.cfa);
+    // Position (R, Gr, Gb, B) of each 2x2 cell slot: a green is Gr when its row holds the R site.
+    int posOfSlot[4];
+    for (int cy = 0; cy < 2; ++cy)
+        for (int cx = 0; cx < 2; ++cx) {
+            const int color = layout.cell[cy][cx];
+            const bool redRow = layout.cell[cy][0] == 0 || layout.cell[cy][1] == 0;
+            posOfSlot[cy * 2 + cx] = color == 0 ? 0 : (color == 2 ? 3 : (redRow ? 1 : 2));
+            const int slot = cy * 2 + cx;
+            d.blackDeclared[posOfSlot[slot]] =
+                useFrameBlack ? info.dynamicBlack[slot] : static_cast<int32_t>(meta.black[slot]);
+        }
+    // Peaks per slot (raw integers), then per position / channel.
+    uint16_t slotMax[4] = {0, 0, 0, 0};
+    for (uint32_t y = 0; y < h; ++y) {
+        const uint16_t* row = cfa + static_cast<size_t>(y) * w;
+        const int cy = static_cast<int>(y & 1u);
+        uint16_t m0 = slotMax[cy * 2], m1 = slotMax[cy * 2 + 1];
+        uint32_t x = 0;
+        for (; x + 1 < w; x += 2) { m0 = std::max(m0, row[x]); m1 = std::max(m1, row[x + 1]); }
+        if (x < w) m0 = std::max(m0, row[x]);
+        slotMax[cy * 2] = m0;
+        slotMax[cy * 2 + 1] = m1;
+    }
+    for (int slot = 0; slot < 4; ++slot) {
+        const int pos = posOfSlot[slot];
+        const int ch = layout.cell[slot / 2][slot % 2];
+        d.peakRawPos[pos] = std::max(d.peakRawPos[pos], slotMax[slot]);
+        d.peakRaw[ch] = std::max(d.peakRaw[ch], slotMax[slot]);
+    }
+    // Sites at the peak and above white (one pass; sites above white are an expected zero).
+    for (uint32_t y = 0; y < h; ++y) {
+        const uint16_t* row = cfa + static_cast<size_t>(y) * w;
+        const int cy = static_cast<int>(y & 1u);
+        for (uint32_t x = 0; x < w; ++x) {
+            const int ch = layout.cell[cy][x & 1u];
+            const uint16_t v = row[x];
+            if (v == d.peakRaw[ch]) d.atPeak[ch]++;
+            if (white > 0 && static_cast<int32_t>(v) > white) d.aboveWhite[ch]++;
+        }
+    }
+    // The project's own plateau detector: one answer for the scope and the develop path.
+    const RecoveryClipLevels lv = recoveryClipLevels(cfa, info, meta);
+    for (int c = 0; c < 3; ++c) {
+        d.nearPeak[c] = lv.plateau[c];
+        d.plateauThreshold[c] = lv.threshold[c];
+        d.reliablePlateau[c] = lv.threshold[c] < 1.0f;
+    }
+    return d;
 }
 
 } // namespace rawedit

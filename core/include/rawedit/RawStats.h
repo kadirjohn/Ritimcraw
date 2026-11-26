@@ -20,6 +20,7 @@
 #include <cstdint>
 
 #include <rawedit/Source.h>
+#include <rawedit/Develop.h>
 
 namespace rawedit {
 
@@ -80,5 +81,28 @@ RawHistogramStats rawHistogramStats(const uint16_t* cfa, uint32_t w, uint32_t h,
                                     const int32_t black[4],
                                     const int32_t blackFallback[4],
                                     int32_t white, int32_t whiteFallback);
+
+// D0 diagnostics (docs/DCG_PLAN.md): per-frame RAW level/peak/plateau facts
+// on the pre-develop CFA, with the SAME level resolution as Develop stage 1
+// and the project's OWN plateau detector (recoveryClipLevels) so the scope
+// and the develop path read one answer. Read-only: no pixel is touched.
+//
+// Position order for the 4-wide arrays: 0 = R, 1 = Gr (green on a red row),
+// 2 = Gb (green on a blue row), 3 = B. Channel order for the 3-wide arrays:
+// 0 = R, 1 = G (Gr and Gb together), 2 = B.
+struct RawDiagnostics {
+    bool valid = false;           // false for a null/empty frame
+    int32_t blackDeclared[4] = {-1, -1, -1, -1};  // R, Gr, Gb, B levels used
+    int32_t whiteDeclared = -1;   // the single white level used
+    uint16_t peakRawPos[4] = {0, 0, 0, 0};        // max raw code per position
+    uint16_t peakRaw[3] = {0, 0, 0};              // max raw code per channel
+    uint64_t atPeak[3] = {0, 0, 0};               // sites exactly at the channel max
+    uint64_t nearPeak[3] = {0, 0, 0};             // plateau support: within 0.4% (normalized) of it, incl. the peak
+    uint64_t aboveWhite[3] = {0, 0, 0};           // sites with raw > declared white
+    bool reliablePlateau[3] = {false, false, false};  // recoveryClipLevels found a sharp saturation plateau
+    float plateauThreshold[3] = {1.0f, 1.0f, 1.0f};   // its per-channel clip threshold (1.0 = none)
+};
+
+RawDiagnostics rawDiagnostics(const uint16_t* cfa, const FrameInfo& info, const RawMeta& meta);
 
 } // namespace rawedit

@@ -69,6 +69,12 @@ class RawHistogram(
     val blackUsed: IntArray,
     /** The white level ACTUALLY used (see [blackUsed]). */
     val whiteUsed: Int,
+    /**
+     * D0 RAW diagnostics (declared levels, peaks, plateau support, sites
+     * above white, the develop path's own plateau verdict). Null when the
+     * bridge sent the legacy 787-int layout or reported them absent.
+     */
+    val diagnostics: RawDiagnostics? = null,
 ) {
 
     /** The three CFA site colors; the ordinal doubles as the JNI channel index. */
@@ -124,7 +130,8 @@ class RawHistogram(
             other.whiteClips.contentEquals(whiteClips) &&
             other.blackClips.contentEquals(blackClips) &&
             other.samples.contentEquals(samples) &&
-            other.blackUsed.contentEquals(blackUsed)
+            other.blackUsed.contentEquals(blackUsed) &&
+            other.diagnostics == diagnostics
 
     override fun hashCode(): Int {
         var hash = frameIndex
@@ -138,6 +145,7 @@ class RawHistogram(
         hash = 31 * hash + blackClips.contentHashCode()
         hash = 31 * hash + samples.contentHashCode()
         hash = 31 * hash + blackUsed.contentHashCode()
+        hash = 31 * hash + (diagnostics?.hashCode() ?: 0)
         return hash
     }
 
@@ -180,6 +188,14 @@ class RawHistogram(
         const val JNI_LENGTH = 787
 
         /**
+         * The extended length: the legacy layout above plus the D0
+         * diagnostics appended at the END (slots 787..814, see
+         * [RawDiagnostics.fromJni]). [fromJni] accepts both lengths; the
+         * version stays 1 because no existing slot moved.
+         */
+        const val JNI_LENGTH_DIAG = 815
+
+        /**
          * The per-end RAW clipping threshold in sites: [CLIP_FRACTION]
          * of the channel's samples, at least one site, rounded to the
          * nearest whole site — the same formula as the processed
@@ -196,7 +212,7 @@ class RawHistogram(
          * papered over with guessed fields).
          */
         fun fromJni(a: IntArray): RawHistogram? {
-            if (a.size != JNI_LENGTH) return null
+            if (a.size != JNI_LENGTH && a.size != JNI_LENGTH_DIAG) return null
             if (a[0] != JNI_VERSION) return null
             // The trailer starts where the bins end: 4 header + 3*256
             // bins = 772. Derived here the same way the bridge derives
@@ -214,6 +230,7 @@ class RawHistogram(
                 samples = a.copyOfRange(t + 6, t + 9),
                 blackUsed = a.copyOfRange(t + 9, t + 13),
                 whiteUsed = a[t + 13],
+                diagnostics = if (a.size == JNI_LENGTH_DIAG) RawDiagnostics.fromJni(a) else null,
             )
         }
     }

@@ -2741,7 +2741,8 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderCached(
 // result; the two clip domains are NEVER compared (owner request
 // rgb-histogram-request.md line 21).
 //
-// jintArray LAYOUT (fixed, 787 ints):
+// jintArray LAYOUT (fixed, 815 ints; slots 0..786 are the original v1 layout,
+// 787..814 the D0 diagnostics appended at the END):
 //   [0]      = layout version (1 today; the Kotlin mapper rejects
 //              anything else)
 //   [1]      = frameIndex the stats describe (the stale guard: the
@@ -2763,6 +2764,18 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderCached(
 //                carried them, the container fallback otherwise
 //   [785]     = the white level actually used
 //   [786]     = reserved (0)
+//   D0 diagnostics (core RawDiagnostics, appended; position order R,Gr,Gb,B,
+//   channel order R,G,B):
+//   [787]      = diagnostics present (1) / absent (0)
+//   [788..791] = declared black per position R,Gr,Gb,B
+//   [792]      = declared white
+//   [793..796] = peak raw code per position R,Gr,Gb,B
+//   [797..799] = peak raw code per channel R,G,B
+//   [800..802] = sites exactly at the channel peak
+//   [803..805] = plateau support: sites within 0.4% (normalized) of the peak
+//   [806..808] = sites above the declared white (raw > white)
+//   [809..811] = reliable plateau per channel (recoveryClipLevels), 0/1
+//   [812..814] = its clip threshold x 1e6 (1000000 = no plateau)
 //
 // CACHE REUSE: the decoded pristine CFA is never decoded twice — the
 // entry's interactive cache (cachedCfa/cachedInfo/cachedFrameIndex)
@@ -2842,7 +2855,7 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeRawHistogram(
         // 3. Pack the compact array (layout above). The trailer offsets
         //    are derived, not restated: 4 header + 3*256 bins = 772, and
         //    each trailer block starts where the previous one ends.
-        constexpr int kOut = 787;
+        constexpr int kOut = 815;
         constexpr int kTrailer = 772; // 4 + 3 * 256
         std::vector<jint> out(kOut, 0);
         out[0] = 1; // layout version
@@ -2858,6 +2871,26 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeRawHistogram(
         for (int slot = 0; slot < 4; ++slot) out[kTrailer + 9 + slot] = stats.blackUsed[slot];
         out[kTrailer + 13] = stats.whiteUsed;
         out[kTrailer + 14] = 0; // reserved
+        // D0 diagnostics at the END (slot 787 on): same resolver as develop.
+        const rawedit::RawDiagnostics dg = rawedit::rawDiagnostics(
+            e.cachedCfa->data(), info, meta);
+        const auto clampI = [](uint64_t v) {
+            return static_cast<jint>(v > 0x7fffffffu ? 0x7fffffffu : v);
+        };
+        out[787] = dg.valid ? 1 : 0;
+        for (int i = 0; i < 4; ++i) {
+            out[788 + i] = dg.blackDeclared[i];
+            out[793 + i] = dg.peakRawPos[i];
+        }
+        out[792] = dg.whiteDeclared;
+        for (int c = 0; c < 3; ++c) {
+            out[797 + c] = dg.peakRaw[c];
+            out[800 + c] = clampI(dg.atPeak[c]);
+            out[803 + c] = clampI(dg.nearPeak[c]);
+            out[806 + c] = clampI(dg.aboveWhite[c]);
+            out[809 + c] = dg.reliablePlateau[c] ? 1 : 0;
+            out[812 + c] = static_cast<jint>(dg.plateauThreshold[c] * 1000000.0f + 0.5f);
+        }
         jintArray arr = env->NewIntArray(kOut);
         if (arr == nullptr) return nullptr;
         env->SetIntArrayRegion(arr, 0, kOut, out.data());

@@ -311,6 +311,12 @@
     <string name="editor_histogram">Histogram</string>
     <string name="editor_histogram_clipped">Clipped</string>
     <string name="editor_histogram_raw_clip">RAW clip</string>
+    <string name="editor_raw_diag_levels">Black %1$s | White %2$d | Above white %3$d</string>
+    <string name="editor_raw_diag_black_split">R%1$d Gr%2$d Gb%3$d B%4$d</string>
+    <string name="editor_raw_diag_channel">%1$s peak %2$d (x%3$d, near %4$d)%5$s | %6$s</string>
+    <string name="editor_raw_diag_greens">Gr %1$d Gb %2$d</string>
+    <string name="editor_raw_diag_plateau_yes">plateau yes @%1$s</string>
+    <string name="editor_raw_diag_plateau_no">no reliable plateau</string>
     <string name="editor_histogram_raw_unavailable">RAW: no sensor data</string>
     <string name="editor_histogram_raw_parade">RAW Parade</string>
     <string name="editor_histogram_raw_parade_show">Show RAW parade</string>
