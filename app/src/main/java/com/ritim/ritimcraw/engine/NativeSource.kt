@@ -492,6 +492,9 @@ class NativeSource private constructor(
          */
         @JvmStatic private external fun nativeRawHistogram(handle: Long, frameIndex: Int): IntArray?
 
+        /** D3: the clip's luma P85 at unit gain (> 0), 0 = nothing measurable, -1 = error. Engine thread only. */
+        @JvmStatic private external fun nativeMeasureHighlightKnee(handle: Long): Float
+
         // ---- DNG export JNI (decode frame -> writeCfaDng to a staging path) ----
 
         /**
@@ -1689,6 +1692,9 @@ class NativeSource private constructor(
 
         /** JNI bridge: pipeline stage of the last failed preview call. */
         internal fun jniPreviewErrorStage(): Int = nativePreviewErrorStage()
+
+        /** JNI bridge: see nativeMeasureHighlightKnee (engine thread only). */
+        internal fun jniMeasureHighlightKnee(handle: Long): Float = nativeMeasureHighlightKnee(handle)
 
         /** JNI bridge: see nativeRawHistogram (engine thread only). */
         internal fun jniRawHistogram(handle: Long, frameIndex: Int): IntArray? =

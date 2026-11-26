@@ -2856,6 +2856,34 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderCached(
 // missing frame or a decode failure returns nullptr; the UI shows the
 // RAW mode empty, never fabricated data.
 
+// D3 (adaptive Highlights knee): the clip's luma P85 at unit gain, measured ONCE per clip (core
+// measureHighlightKneeRef: 8 evenly spaced frames, binned thumbnail develop with a neutral grade,
+// pooled P85). Returns the ref (> 0), 0 when nothing could be measured, -1 on a bad handle / error.
+// Engine thread only; reads frames straight from the Source (never touches the interactive cache).
+JNIEXPORT jfloat JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativeMeasureHighlightKnee(
+        JNIEnv*, jclass, jlong handle) {
+    gLastErrorCode = 0;
+    gLastErrorStage = kStageFrameRead;
+    if (handle <= 0 || handle > kMaxSources) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageFrameRead,
+                 "invalid clip handle (recovery: reopen the clip)");
+        return -1.0f;
+    }
+    rawedit::Source* s = sourceFor(handle);
+    if (!s) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageFrameRead, gLastError);
+        return -1.0f;
+    }
+    try {
+        return rawedit::measureHighlightKneeRef(*s, 8, 480);
+    } catch (const std::exception& ex) {
+        setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageDevelop,
+                 std::string("highlight knee measure failed: ") + ex.what());
+        return -1.0f;
+    }
+}
+
 JNIEXPORT jintArray JNICALL
 Java_com_ritim_ritimcraw_engine_NativeSource_nativeRawHistogram(
         JNIEnv* env, jclass, jlong handle, jint frameIndex) {

@@ -12,6 +12,7 @@
 
 #include <rawedit/Develop.h>
 #include <rawedit/Source.h>
+#include <rawedit/Thumbnail.h>
 #include <rawedit/Transfer.h>
 
 #include <algorithm>
@@ -95,7 +96,10 @@ int main(int argc, char** argv) {
     }
     std::vector<float> s2 = samples;
     const float p50 = lumaQuantile(s2, 0.50f), p95 = lumaQuantile(s2, 0.95f), p99 = lumaQuantile(s2, 0.99f);
-    const float ref = lumaQuantile(samples, kHighlightKneePercentile);
+    // The value the app stores: the SAME core function (binned thumbnail develop, pooled P85).
+    const float ref = measureHighlightKneeRef(src, nFrames, 480);
+    std::printf("measureHighlightKneeRef (app path, 480px, %d frames) = %.5f ; full-res stride-16 P85 = %.5f\n",
+                nFrames, ref, lumaQuantile(samples, kHighlightKneePercentile));
     const float scale = std::pow(2.0f, ev);
     std::printf("clip=%s frames=%zu sampled=%d gainEv=%+.2f samples=%zu\n", argv[1], fc, nFrames, ev, samples.size());
     std::printf("unit-gain luma: P50=%.5f P85(ref)=%.5f P95=%.5f P99=%.5f\n", p50, ref, p95, p99);

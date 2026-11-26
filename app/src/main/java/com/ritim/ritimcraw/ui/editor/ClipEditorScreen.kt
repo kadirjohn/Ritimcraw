@@ -2008,6 +2008,27 @@ fun ClipEditorScreen(
             }
         }
 
+        // D3 (adaptive Highlights knee, owner decision 2026-11-26): the clip's luma P85 at unit gain is measured ONCE per
+        // clip (8 sample frames on the engine thread), stored with the grade (highlightKneeRef) and applied SILENTLY: it is
+        // measurement metadata, not a user edit, so it never enters the undo history. The knee itself is re-derived from it
+        // and the current Gain in the develop stage, so a Gain change needs no new measurement. An undo/redo that restores
+        // an older snapshot (ref 0 or another value) is re-pinned by the second effect to the clip's measured value.
+        var kneeRefMeasured by remember(sourceId) { mutableStateOf(initialGrade.highlightKneeRef) }
+        LaunchedEffect(sourceId, session) {
+            val s = session ?: return@LaunchedEffect
+            if (kneeRefMeasured > 0f) return@LaunchedEffect
+            val v = s.measureHighlightKneeRef().getOrNull()
+            if (v != null && v > 0f && v.isFinite()) kneeRefMeasured = v
+        }
+        LaunchedEffect(sourceId, kneeRefMeasured, grade.highlightKneeRef) {
+            if (kneeRefMeasured > 0f && grade.highlightKneeRef != kneeRefMeasured) {
+                val g = grade.copy(highlightKneeRef = kneeRefMeasured)
+                grade = g
+                onGradeChange(g)
+                applyTierEvent(SliderTiers.Event.GradeEdited)
+            }
+        }
+
         // A node slider drag fires many lists; the history merges them into one step and this job closes the
         // step once the edits pause (the node sliders report no drag end of their own).
         var nodeSettleJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
