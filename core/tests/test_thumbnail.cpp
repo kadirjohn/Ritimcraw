@@ -309,3 +309,72 @@ TEST_CASE("binning_rejects_invalid_input_without_throwing") {
     CHECK_FALSE(reduceCfaBinned(src.data(), 1, 64, 2, out));
     CHECK_FALSE(reduceCfaBinned(src.data(), 64, 64, 0, out));
 }
+
+TEST_CASE("reconstructed_binning_matches_plain_binning_when_unclipped") {
+    auto s = syntheticFlatRggb(64, 64, 0.35f);
+    std::vector<uint16_t> plain, recon;
+    REQUIRE(reduceCfaBinned(s.cfa.data(), s.info.width, s.info.height, 4, plain));
+    REQUIRE(reduceCfaBinnedReconstructed(s.cfa.data(), s.info, s.meta, 4, true, RawLevelsOverride(), recon));
+    CHECK(plain == recon);
+}
+
+TEST_CASE("binned_preview_of_partially_clipped_cells_stays_neutral_not_magenta") {
+    // Regression for tier-dependent pembe leke (magenta highlights):
+    // When a bin averages clipped bright cells (e.g. a thin lamp/neon stroke)
+    // with dark neighbor cells, plain raw binning dilutes the raw code below
+    // white so neither stage 3 nor highlightRecovery flags the clip, turning
+    // the bin magenta after WB and Highlights -100. Pre-binning reconstruction
+    // must keep both neutral and recovery preview tiers neutral.
+    const uint32_t w = 64, h = 64;
+    Synthetic s;
+    s.info.width = w; s.info.height = h; s.info.bitDepth = 16;
+    s.info.cfa = CfaPattern::RGGB;
+    s.info.activeArea = Rect{0, 0, int(w), int(h)};
+    for (int i = 0; i < 4; ++i) s.meta.black[i] = 64;
+    s.meta.white = 1023;
+    s.meta.asShotNeutral[0] = 1.0f / 2.56f;
+    s.meta.asShotNeutral[1] = 1.0f;
+    s.meta.asShotNeutral[2] = 1.0f / 1.98f;
+    s.meta.wbGains[0] = 2.56f; s.meta.wbGains[1] = 1.0f; s.meta.wbGains[2] = 1.98f;
+    s.meta.colorMatrix[0] = 1; s.meta.colorMatrix[4] = 1; s.meta.colorMatrix[8] = 1;
+
+    // Half of the cells in every 4x4 bin are fully clipped white (1023) and
+    // half are dark neutral (0.05 post-WB), so plain binning averages to ~543
+    // (well below 1023) and becomes strongly magenta after WB.
+    s.cfa.assign(size_t(w) * h, 0);
+    for (uint32_t y = 0; y < h; ++y) {
+        for (uint32_t x = 0; x < w; ++x) {
+            const bool clippedCell = ((x / 2) & 1) == 0;
+            if (clippedCell) {
+                s.cfa[size_t(y) * w + x] = 1023;
+            } else {
+                const int r = y & 1, c = x & 1;
+                const float gWb = (r == 0 && c == 0) ? 2.56f : ((r == 1 && c == 1) ? 1.98f : 1.0f);
+                const float raw = 64.0f + (0.05f / gWb) * 959.0f;
+                s.cfa[size_t(y) * w + x] = static_cast<uint16_t>(std::lround(raw));
+            }
+        }
+    }
+
+    for (bool rec : {false, true}) {
+        Grade g;
+        g.highlights = -100.0f;
+        g.highlightReconstruction = true;
+        g.highlightRecovery = rec;
+        const ImageF thumb = developThumbnail(s.cfa.data(), s.info, s.meta, g, 4);
+        REQUIRE(thumb.w > 0);
+        const float r = centerMean(thumb, 0), gr = centerMean(thumb, 1), b = centerMean(thumb, 2);
+        CAPTURE(rec);
+        CHECK(std::fabs(r - gr) < 0.02f);
+        CHECK(std::fabs(b - gr) < 0.02f);
+    }
+
+    // With both reconstruction and recovery explicitly off, the raw clip stays un-capped.
+    Grade off;
+    off.highlights = -100.0f;
+    off.highlightReconstruction = false;
+    off.highlightRecovery = false;
+    const ImageF thumbOff = developThumbnail(s.cfa.data(), s.info, s.meta, off, 4);
+    CHECK(centerMean(thumbOff, 0) > centerMean(thumbOff, 1) + 0.25f);
+    CHECK(centerMean(thumbOff, 2) > centerMean(thumbOff, 1) + 0.15f);
+}

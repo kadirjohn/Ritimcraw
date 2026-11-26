@@ -4993,6 +4993,7 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderFrameParc
         uint32_t reducedW = 0;
         uint32_t reducedH = 0;
         const std::vector<uint16_t>* reducedCfa = nullptr;
+        gles::DevelopGrade effectiveGrade = grade;
         if (strideN <= 1) {
             reducedCfa = cfa.get();
             reducedW = info.width;
@@ -5001,11 +5002,23 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderFrameParc
             reducedW = rawedit::thumbnailWidth(info.width, strideN);
             reducedH = rawedit::thumbnailHeight(info.height, strideN);
             thread_local std::vector<uint16_t> scratch;
-            if (!rawedit::reduceCfaBinned(cfa->data(), info.width, info.height, strideN, scratch)) {
+            const bool reconstructBeforeBin =
+                grade.highlightReconstruction || grade.highlightRecovery;
+            const bool reducedOk = reconstructBeforeBin
+                ? rawedit::reduceCfaBinnedReconstructed(
+                      cfa->data(), info, meta, strideN, grade.keepVignetting,
+                      rawedit::RawLevelsOverride(), scratch)
+                : rawedit::reduceCfaBinned(
+                      cfa->data(), info.width, info.height, strideN, scratch);
+            if (!reducedOk) {
                 setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageDevelop,
                          "develop: unsupported — the frame is too small to reduce "
                          "(recovery: re-import the clip)");
                 return nullptr;
+            }
+            if (reconstructBeforeBin) {
+                effectiveGrade.highlightReconstruction = false;
+                effectiveGrade.highlightRecovery = false;
             }
             reducedCfa = &scratch;
         }
@@ -5071,7 +5084,7 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderFrameParc
         req.zebraThreshold = zebraThreshold;
         req.zebraPeriod = zebraPeriod;
         req.zebraAlpha = zebraAlpha;
-        const gles::PreviewFrameResult res = session->renderFrame(req, grade);
+        const gles::PreviewFrameResult res = session->renderFrame(req, effectiveGrade);
         // The editor suppresses its CPU Image on success. A stats pack
         // (or the stats-off black 1x1 marker) cannot substitute for a
         // presented window frame. Route a failed present to CPU too.
