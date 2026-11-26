@@ -454,6 +454,10 @@
     <string name="exports_job_failed_written">Hiçbir şey yazılmadı.</string>
     <string name="exports_job_retry">Yeniden dene</string>
     <string name="exports_clear">Temizle</string>
+    <string name="exports_select">Seç</string>
+    <string name="exports_selection_count">%1$d öğe seçildi</string>
+    <string name="exports_selection_close">Seçimden çık</string>
+    <string name="exports_selection_delete">Dışa aktarımları sil</string>
     <string name="exports_delete_swipe">Dışa aktarımı sil</string>
     <!-- Export foreground notification (owner finding 2026-11-14): the
          visible side of the process priority that keeps a backgrounded
