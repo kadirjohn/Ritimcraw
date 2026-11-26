@@ -80,7 +80,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
@@ -762,6 +761,7 @@ private fun LibraryScreenContent(
                                 ) { row ->
                                     LibraryGridRowCells(
                                         row = row,
+                                        columns = gridColumns,
                                         thumbnailAt = thumbnailAt,
                                         thumbnailRevision = thumbnailRevision,
                                         selecting = selecting,
@@ -1457,6 +1457,7 @@ private fun LibraryRow(
 @Composable
 private fun LibraryGridRowCells(
     row: LibraryGridRows.Row,
+    columns: Int,
     thumbnailAt: (id: String) -> String?,
     thumbnailRevision: Int,
     selecting: Boolean,
@@ -1491,10 +1492,14 @@ private fun LibraryGridRowCells(
                 )
             }
         }
-        // The row's trailing empty slots keep no placeholder: the Row's
-        // spacedBy(8.dp) already leaves the remainder blank and the grid
-        // centers nothing — a short last row simply ends early (the
-        // same look the staggered grid gave a partial row).
+        // A partial LAST row pads its missing slots with equal-weight
+        // spacers: the weight shares then divide the row's width
+        // [columns] ways, so the real cells keep exactly their column
+        // width instead of stretching (a lone last clip renders at
+        // 1/columns width, the same as any other tile — never full-row).
+        repeat(columns - row.clips.size) {
+            Spacer(Modifier.weight(1f))
+        }
     }
 }
 
