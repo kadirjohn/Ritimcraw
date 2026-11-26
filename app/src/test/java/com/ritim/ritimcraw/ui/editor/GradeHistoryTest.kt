@@ -333,4 +333,210 @@ class GradeHistoryTest {
         history.recordNodes(listOf(node())) // equal to the top
         assertTrue(history.canRedo)
     }
+
+    // ---- open entry + single touch + settle + resetScope (the double-tap ORDER) ----
+
+    @Test
+    fun mark_tap_settle_tap_scope_collapses_the_whole_double_tap_into_one_step() {
+        // The device's exact call order: tap1's down marks (and settles any
+        // open entry first), tap1's jump records OPEN and its drag stop
+        // settles, tap2's down does NOT re-mark, tap2's jump records OPEN
+        // again (no inter-tap settle needed — the collapse filters on the
+        // cause, not the open flag), and the up runs the reset inside
+        // resetScope. ONE undo lands exactly on the pre-gesture grade.
+        val history = GradeHistory(initial)
+        val preGesture = gradeAt(1)
+        history.record(preGesture, GradeHistory.SLIDER_GESTURE)
+        history.settle()
+        history.markGestureBase()
+        history.record(gradeAt(2), GradeHistory.SLIDER_GESTURE)
+        history.settle()
+        history.record(gradeAt(3), GradeHistory.SLIDER_GESTURE) // tap2's jump, left open
+        val reset = gradeAt(4)
+        history.resetScope { history.record(reset) }
+        assertEquals(preGesture, history.undo())
+        assertTrue(history.canUndo)
+        assertEquals(reset, history.redo())
+        assertEquals(preGesture, history.undo())
+        assertEquals(initial, history.undo())
+        assertNull(history.undo())
+    }
+
+    @Test
+    fun the_second_touchs_mark_wins_and_a_stale_mark_never_swallows() {
+        // A single touch that never becomes a double-tap leaves its mark
+        // unconsumed; the NEXT touch's mark REPLACES it. A later reset
+        // collapses to the LATEST base — the stale first mark must not
+        // swallow the state that landed in between.
+        val history = GradeHistory(initial)
+        history.markGestureBase() // touch 1 (a lone tap)
+        history.record(gradeAt(1), GradeHistory.SLIDER_GESTURE)
+        history.settle()
+        assertTrue(history.canUndo) // the single touch made its own durable step
+        history.markGestureBase() // touch 2 replaces the mark
+        history.record(gradeAt(2), GradeHistory.SLIDER_GESTURE)
+        history.settle()
+        history.resetScope { history.record(gradeAt(3)) }
+        // The collapse kept the LATEST base (gradeAt(1)); a stale-mark win
+        // would return the initial grade here instead.
+        assertEquals(gradeAt(1), history.undo())
+        assertEquals(initial, history.undo())
+        assertNull(history.undo())
+        // Redo replays the crossed states forward: the touch, then the ONE
+        // reset step — never the tap2 jump in between (the collapse dropped
+        // it, so the redo stack holds exactly two entries, not three).
+        assertEquals(gradeAt(1), history.redo())
+        assertEquals(gradeAt(3), history.redo())
+    }
+
+    @Test
+    fun a_discrete_edit_between_the_taps_blocks_the_collapse_and_keeps_every_step() {
+        // Growth since the mark that contains a non-slider entry fails the
+        // cause check: the collapse declines and the reset records plainly.
+        // Undo must then walk back through EVERY step — a toggle between
+        // the two taps is never silently swallowed.
+        val history = GradeHistory(initial)
+        val marked = gradeAt(1)
+        history.record(marked, GradeHistory.SLIDER_GESTURE)
+        history.settle()
+        history.markGestureBase()
+        val toggled = gradeAt(2)
+        history.record(toggled) // discrete (null cause) between the taps
+        history.record(gradeAt(3), GradeHistory.SLIDER_GESTURE) // tap2's jump
+        history.settle()
+        history.resetScope { history.record(gradeAt(4)) }
+        assertEquals(gradeAt(3), history.undo())
+        assertEquals(toggled, history.undo())
+        assertEquals(marked, history.undo())
+        assertEquals(initial, history.undo())
+        assertNull(history.undo())
+    }
+
+    @Test
+    fun a_no_growth_tap_window_still_lands_the_reset_on_the_marked_grade() {
+        // The second tap lands where the thumb already is: the jump frame
+        // equals the top and records NOTHING, so the window shows no
+        // growth and the collapse declines — but the reset's undo still
+        // lands on the marked grade, the exact outcome a collapse gives.
+        val history = GradeHistory(initial)
+        val base = gradeAt(1)
+        history.record(base)
+        history.markGestureBase()
+        history.record(base, GradeHistory.SLIDER_GESTURE) // duplicate frame: no-op
+        val reset = gradeAt(2)
+        history.resetScope { history.record(reset) }
+        assertEquals(base, history.undo()) // one step back: the marked grade
+        assertEquals(reset, history.redo())
+    }
+
+    @Test
+    fun a_reset_scope_without_a_mark_records_plaintly() {
+        // resetScope entered without markGestureBase (null base): the
+        // collapse is a no-op and the reset is one PLAIN step. The scope
+        // must leave no half-state behind — a later mark + drag + reset
+        // still collapses normally.
+        val history = GradeHistory(initial)
+        val g1 = gradeAt(1)
+        history.resetScope { history.record(g1) }
+        assertTrue(history.canUndo)
+        assertEquals(initial, history.undo())
+        assertEquals(g1, history.redo())
+        history.settle()
+        history.markGestureBase()
+        history.record(gradeAt(2), GradeHistory.SLIDER_GESTURE)
+        history.settle()
+        history.resetScope { history.record(gradeAt(3)) }
+        assertEquals(g1, history.undo()) // the collapse dropped the drag
+        assertEquals(initial, history.undo())
+        assertNull(history.undo())
+    }
+
+    @Test
+    fun a_thrown_reset_scope_still_records_and_cleans_up_after_itself() {
+        // An exception inside the scope still runs the finally: the record
+        // landed (with its collapse) and BOTH the in-reset flag and the
+        // mark are cleared — a later resetScope cannot collapse against a
+        // dead base.
+        val history = GradeHistory(initial)
+        val dragged = gradeAt(1)
+        history.record(dragged, GradeHistory.SLIDER_GESTURE)
+        history.settle()
+        history.markGestureBase()
+        history.record(gradeAt(2), GradeHistory.SLIDER_GESTURE) // the double-tap's nudge
+        history.settle()
+        val reset = gradeAt(3)
+        val threw = try {
+            history.resetScope {
+                history.record(reset)
+                throw IllegalStateException("screen torn down mid-reset")
+            }
+            false
+        } catch (e: IllegalStateException) {
+            true
+        }
+        assertTrue(threw)
+        assertEquals(dragged, history.undo()) // the nudge collapsed, the reset recorded
+        assertEquals(reset, history.redo())
+        history.settle()
+        val nudge = gradeAt(4)
+        history.record(nudge, GradeHistory.SLIDER_GESTURE)
+        history.settle()
+        history.resetScope { history.record(reset) }
+        // The base was cleared by the aborted scope: this reset is a PLAIN
+        // step, so undo walks the nudge back individually — not swallowed.
+        assertEquals(nudge, history.undo())
+        assertEquals(reset, history.undo())
+        assertEquals(dragged, history.undo())
+        assertEquals(initial, history.undo())
+        assertNull(history.undo())
+    }
+
+    @Test
+    fun a_no_change_reset_keeps_redo_and_a_real_change_clears_it() {
+        val history = GradeHistory(initial)
+        val g1 = gradeAt(1)
+        history.record(g1)
+        assertEquals(initial, history.undo())
+        history.markGestureBase()
+        // The double-tap lands where the reset leaves the grade untouched:
+        // every record inside the window is a no-op, so the redo stack
+        // survives the whole gesture.
+        history.record(initial, GradeHistory.SLIDER_GESTURE)
+        history.settle()
+        history.resetScope { history.record(initial) }
+        assertTrue(history.canRedo)
+        assertEquals(g1, history.redo())
+        // A real change through the same shape: the push clears the redo
+        // stack, collapse or not (the classic undo rule).
+        assertEquals(initial, history.undo())
+        history.markGestureBase()
+        history.record(gradeAt(2), GradeHistory.SLIDER_GESTURE)
+        history.settle()
+        history.resetScope { history.record(gradeAt(3)) }
+        assertFalse(history.canRedo)
+        assertNull(history.redo())
+        assertEquals(initial, history.undo())
+        assertNull(history.undo())
+    }
+
+    @Test
+    fun at_the_capacity_boundary_the_mark_cannot_collapse_and_the_reset_records_plaintly() {
+        // Overflow vs the collapse contract: on a FULL stack the marked
+        // entry cannot survive a push (takeLast drops the oldest, size
+        // stays MAX_ENTRIES), so "the stack still matches the mark" is
+        // honestly false -- no growth is possible and no index matches.
+        // The reset records plainly and its undo lands on the tap jump,
+        // one step shallower than a mid-history double-tap would land.
+        val history = GradeHistory(initial)
+        repeat(GradeHistory.MAX_ENTRIES - 1) { step -> history.record(gradeAt(step + 1)) }
+        history.markGestureBase() // base.size == MAX_ENTRIES
+        val jump = gradeAt(GradeHistory.MAX_ENTRIES)
+        history.record(jump, GradeHistory.SLIDER_GESTURE) // the stack is full: the oldest falls
+        history.settle()
+        val reset = gradeAt(GradeHistory.MAX_ENTRIES + 1)
+        history.resetScope { history.record(reset) }
+        assertEquals(jump, history.undo()) // no collapse: the reset's undo is the jump
+        assertEquals(gradeAt(GradeHistory.MAX_ENTRIES - 1), history.undo())
+        assertTrue(history.canUndo) // the surviving states still serve undos
+    }
 }
