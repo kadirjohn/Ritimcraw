@@ -51,7 +51,7 @@ import com.ritim.ritimcraw.data.GradeK
 object GradeParcel {
 
     /** The one length the decode accepts; any other length is a refusal. */
-    const val SLOT_COUNT = 30
+    const val SLOT_COUNT = 38
 
     const val SLOT_CHROMA_DENOISE = 0
     const val SLOT_NOISE_REDUCTION = 1
@@ -83,6 +83,14 @@ object GradeParcel {
     const val SLOT_KEEP_VIGNETTING = 27
     const val SLOT_TONEMAP = 28
     const val SLOT_HIGHLIGHT_RECOVERY = 29
+    const val SLOT_RAW_LEVELS_WHITE = 30
+    const val SLOT_RAW_LEVELS_BLACK_R = 31
+    const val SLOT_RAW_LEVELS_BLACK_GR = 32
+    const val SLOT_RAW_LEVELS_BLACK_GB = 33
+    const val SLOT_RAW_LEVELS_BLACK_B = 34
+    const val SLOT_RAW_LEVELS_CLIP_R = 35
+    const val SLOT_RAW_LEVELS_CLIP_G = 36
+    const val SLOT_RAW_LEVELS_CLIP_B = 37
 
     /** Slot names, index-aligned, for honest refusal messages. */
     private val SLOT_NAMES = arrayOf(
@@ -116,6 +124,14 @@ object GradeParcel {
             "keepVignetting",
             "tonemap",
             "highlightRecovery",
+            "rawLevelsWhite",
+            "rawLevelsBlackR",
+            "rawLevelsBlackGr",
+            "rawLevelsBlackGb",
+            "rawLevelsBlackB",
+            "rawLevelsClipR",
+            "rawLevelsClipG",
+            "rawLevelsClipB",
     )
 
     /** The typed decode target: every scalar field, booleans as Boolean. */
@@ -150,6 +166,14 @@ object GradeParcel {
         val keepVignetting: Boolean,
         val tonemap: Int,
         val highlightRecovery: Boolean,
+        val rawLevelsWhite: Float,
+        val rawLevelsBlackR: Float,
+        val rawLevelsBlackGr: Float,
+        val rawLevelsBlackGb: Float,
+        val rawLevelsBlackB: Float,
+        val rawLevelsClipR: Float,
+        val rawLevelsClipG: Float,
+        val rawLevelsClipB: Float,
     )
 
     /**
@@ -190,6 +214,14 @@ object GradeParcel {
         if (grade.keepVignetting) 1.0f else 0.0f,
         grade.tonemap.toFloat(),
         if (grade.highlightRecovery) 1.0f else 0.0f,
+        grade.rawLevelsWhite,
+        grade.rawLevelsBlackR,
+        grade.rawLevelsBlackGr,
+        grade.rawLevelsBlackGb,
+        grade.rawLevelsBlackB,
+        grade.rawLevelsClipR,
+        grade.rawLevelsClipG,
+        grade.rawLevelsClipB,
     )
 
     /**
@@ -279,6 +311,14 @@ object GradeParcel {
             keepVignetting = parcel[SLOT_KEEP_VIGNETTING] != 0.0f,
             tonemap = parcel[SLOT_TONEMAP].toInt(),
             highlightRecovery = parcel[SLOT_HIGHLIGHT_RECOVERY] != 0.0f,
+            rawLevelsWhite = parcel[SLOT_RAW_LEVELS_WHITE],
+            rawLevelsBlackR = parcel[SLOT_RAW_LEVELS_BLACK_R],
+            rawLevelsBlackGr = parcel[SLOT_RAW_LEVELS_BLACK_GR],
+            rawLevelsBlackGb = parcel[SLOT_RAW_LEVELS_BLACK_GB],
+            rawLevelsBlackB = parcel[SLOT_RAW_LEVELS_BLACK_B],
+            rawLevelsClipR = parcel[SLOT_RAW_LEVELS_CLIP_R],
+            rawLevelsClipG = parcel[SLOT_RAW_LEVELS_CLIP_G],
+            rawLevelsClipB = parcel[SLOT_RAW_LEVELS_CLIP_B],
         )
     }
 

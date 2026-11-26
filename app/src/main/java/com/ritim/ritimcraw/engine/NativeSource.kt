@@ -2,6 +2,7 @@ package com.ritim.ritimcraw.engine
 
 import android.graphics.Rect
 import com.ritim.ritimcraw.BuildConfig
+import com.ritim.ritimcraw.data.RawLevels
 import java.nio.ByteBuffer
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -388,6 +389,14 @@ class NativeSource private constructor(
             lutOutGamut: Int,
             lutOutTransfer: Int,
             chainWire: FloatArray?,
+            rawLevelsWhite: Float,
+            rawLevelsBlackR: Float,
+            rawLevelsBlackGr: Float,
+            rawLevelsBlackGb: Float,
+            rawLevelsBlackB: Float,
+            rawLevelsClipR: Float,
+            rawLevelsClipG: Float,
+            rawLevelsClipB: Float,
         ): IntArray?
 
         /**
@@ -451,6 +460,14 @@ class NativeSource private constructor(
             lutOutGamut: Int,
             lutOutTransfer: Int,
             chainWire: FloatArray?,
+            rawLevelsWhite: Float,
+            rawLevelsBlackR: Float,
+            rawLevelsBlackGr: Float,
+            rawLevelsBlackGb: Float,
+            rawLevelsBlackB: Float,
+            rawLevelsClipR: Float,
+            rawLevelsClipG: Float,
+            rawLevelsClipB: Float,
         ): IntArray?
 
         /** rawedit::ErrorCode of the last failed preview call (0 ok, 1 truncated, 2 badHeader, 3 ioError, 4 unsupported). */
@@ -1549,6 +1566,16 @@ class NativeSource private constructor(
             lutOutTransfer: Int,
             /** F1-6: the v2 node chain's wire (null = the legacy fast path, byte-identical). */
             chainWire: FloatArray? = null,
+            /**
+             * D1 (docs/DCG_PLAN.md, report P1): the per-clip RAW Levels
+             * override's eight slots, appended LAST with sentinel defaults
+             * (null override = every slot -1 = metadata semantics, the
+             * pre-D1 resolution bit-identical). The null-vs-slots fold is
+             * [RawLevels.isDefault]; the
+             * bridge packs them into the RawLevelsOverride developCpu
+             * resolves by.
+             */
+            rawLevels: RawLevels? = null,
         ): IntArray? = nativePreviewRender(
             handle, frameIndex,
             exposureEv, highlights, tempK, tint,
@@ -1564,6 +1591,11 @@ class NativeSource private constructor(
             maxDim,
             lutRole, lutInGamut, lutInTransfer, lutOutGamut, lutOutTransfer,
             chainWire,
+            rawLevels?.white ?: -1f, rawLevels?.blackR ?: -1f,
+            rawLevels?.blackGr ?: -1f, rawLevels?.blackGb ?: -1f,
+            rawLevels?.blackB ?: -1f,
+            rawLevels?.clipR ?: -1f, rawLevels?.clipG ?: -1f,
+            rawLevels?.clipB ?: -1f,
         )
 
         /** JNI bridge: cached interactive render; see nativePreviewSessionRenderCached. */
@@ -1616,6 +1648,12 @@ class NativeSource private constructor(
             lutOutTransfer: Int,
             /** F1-6: the v2 node chain's wire (null = the legacy fast path, byte-identical). */
             chainWire: FloatArray? = null,
+            /**
+             * D1 (docs/DCG_PLAN.md, report P1): the per-clip RAW Levels
+             * override's eight slots, appended LAST with sentinel defaults
+             * ([jniPreviewRender]'s own doc).
+             */
+            rawLevels: RawLevels? = null,
         ): IntArray? = nativePreviewSessionRenderCached(
             handle, frameIndex,
             exposureEv, highlights, tempK, tint,
@@ -1631,6 +1669,11 @@ class NativeSource private constructor(
             maxDim,
             lutRole, lutInGamut, lutInTransfer, lutOutGamut, lutOutTransfer,
             chainWire,
+            rawLevels?.white ?: -1f, rawLevels?.blackR ?: -1f,
+            rawLevels?.blackGr ?: -1f, rawLevels?.blackGb ?: -1f,
+            rawLevels?.blackB ?: -1f,
+            rawLevels?.clipR ?: -1f, rawLevels?.clipG ?: -1f,
+            rawLevels?.clipB ?: -1f,
         )
 
         /** JNI bridge: rawedit::ErrorCode of the last failed preview call. */

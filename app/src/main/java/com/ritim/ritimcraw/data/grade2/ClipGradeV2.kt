@@ -736,6 +736,16 @@ fun ClipGradeV2.toGradeKLenient(): GradeK {
         splitHighlightHue = legacy.splitHighlightHue,
         splitBalance = legacy.splitBalance,
         lutInterp = output.legacy.lutInterp,
+        // D1: the override folds onto GradeK's flat parcel fields (the
+        // sentinels when null — metadata semantics).
+        rawLevelsWhite = develop.rawLevels?.white ?: -1f,
+        rawLevelsBlackR = develop.rawLevels?.blackR ?: -1f,
+        rawLevelsBlackGr = develop.rawLevels?.blackGr ?: -1f,
+        rawLevelsBlackGb = develop.rawLevels?.blackGb ?: -1f,
+        rawLevelsBlackB = develop.rawLevels?.blackB ?: -1f,
+        rawLevelsClipR = develop.rawLevels?.clipR ?: -1f,
+        rawLevelsClipG = develop.rawLevels?.clipG ?: -1f,
+        rawLevelsClipB = develop.rawLevels?.clipB ?: -1f,
     )
 }
 
@@ -761,6 +771,16 @@ fun GradeK.toClipGradeV2(): ClipGradeV2 = ClipGradeV2(
         temporalStrength = temporalStrength,
         sharpness = sharpness,
         detail = detail,
+        // D1: the flat parcel fields fold back into the value type (null
+        // when every slot is the sentinel — the omit-when-default write).
+        rawLevels = if (rawLevelsWhite < 0f && rawLevelsBlackR < 0f &&
+            rawLevelsBlackGr < 0f && rawLevelsBlackGb < 0f && rawLevelsBlackB < 0f &&
+            rawLevelsClipR < 0f && rawLevelsClipG < 0f && rawLevelsClipB < 0f
+        ) null else RawLevels(
+            white = rawLevelsWhite, blackR = rawLevelsBlackR, blackGr = rawLevelsBlackGr,
+            blackGb = rawLevelsBlackGb, blackB = rawLevelsBlackB,
+            clipR = rawLevelsClipR, clipG = rawLevelsClipG, clipB = rawLevelsClipB,
+        ),
     ),
     legacy = LegacyControlsV2(
         highlights = highlights,

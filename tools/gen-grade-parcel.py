@@ -85,6 +85,23 @@ SCHEMA = [
     ("keepVignetting", "bool", "true"),
     ("tonemap", "int", "0"),
     ("highlightRecovery", "bool", "false"),
+    # D1 (docs/DCG_PLAN.md, report P1): the per-clip reversible RAW Levels
+    # override, eight float slots appended AT THE END. Values are RAW code
+    # units; the sentinel -1.0 = "not set" (that slot resolves the way the
+    # pipeline always resolved: frame dynamic levels > container metadata),
+    # and -1.0 is a legal negative the decode returns verbatim. The clip
+    # thresholds are 0..1 normalized. All eight default to the sentinel, so
+    # a default grade's parcel carries no override and the develop output
+    # is bit-identical to the pre-D1 pipeline (the golden-preservation
+    # rule; pinned by core/tests/test_raw_levels.cpp and the JVM locks).
+    ("rawLevelsWhite", "float", "-1.0"),
+    ("rawLevelsBlackR", "float", "-1.0"),
+    ("rawLevelsBlackGr", "float", "-1.0"),
+    ("rawLevelsBlackGb", "float", "-1.0"),
+    ("rawLevelsBlackB", "float", "-1.0"),
+    ("rawLevelsClipR", "float", "-1.0"),
+    ("rawLevelsClipG", "float", "-1.0"),
+    ("rawLevelsClipB", "float", "-1.0"),
 ]
 
 # Trailing // comments the committed struct members carry (added by hand in
@@ -366,20 +383,44 @@ def gen_cpp():
 
     # The session-side fold: the request-visible fields = the schema minus
     # the temporal pair (which dies at the bridge's temporal merge, before
-    # the request exists). Generated like everything else - the session
-    # overloads must not hand-mirror the field list.
-    request_fields = [row for row in SCHEMA if row[0] not in ("temporalNr", "temporalStrength")]
+    # the request exists) and minus the D1 rawLevels octet (the GPU request
+    # does not carry the RAW Levels override — binding it to the shader
+    # pipeline is an owner decision per the D1 plan, "GPU binding
+    # FORBIDDEN" for the logic slice; the CPU export consumes the octet
+    # through the rawedit side instead). Generated like everything else -
+    # the session overloads must not hand-mirror the field list.
+    request_fields = [row for row in SCHEMA if row[0] not in (
+        "temporalNr", "temporalStrength",
+        "rawLevelsWhite", "rawLevelsBlackR", "rawLevelsBlackGr",
+        "rawLevelsBlackGb", "rawLevelsBlackB",
+        "rawLevelsClipR", "rawLevelsClipG", "rawLevelsClipB",
+    )]
     applies = []
     for name, _kind, _default in request_fields:
         applies.append("    req->%s = grade.%s;" % (name, name))
 
-    # The CPU-side fold: ALL 30 schema fields (the temporal pair included -
-    # rawedit::Grade carries them so the whole grade pipeline transports the
-    # controls; the bridge consumes the temporal stage before developCpu).
-    # lutStrength is NOT a schema field (per-job LUT binding group): the
-    # caller sets it from its own flat param after this fold.
+    # The CPU-side fold: the schema minus the D1 rawLevels octet. The
+    # temporal pair stays (rawedit::Grade carries it so the whole grade
+    # pipeline transports the controls; the bridge consumes the temporal
+    # stage before developCpu). lutStrength is NOT a schema field (per-job
+    # LUT binding group): the caller sets it from its own flat param after
+    # this fold. The rawLevels octet rides the parcel but NOT this fold:
+    # the override is a rawedit::RawLevelsOverride (Develop.h), a value
+    # type SEPARATE from rawedit::Grade (it overrides the sensor
+    # calibration, not a look control), so the bridge builds it from the
+    # decoded struct explicitly (jni_bridge's rawLevelsFromParcel) and
+    # hands it to developCpu as the appended last parameter — the same
+    # "caller sets it from its own flat param" discipline lutStrength
+    # already follows.
+    rawedit_excluded = (
+        "rawLevelsWhite", "rawLevelsBlackR", "rawLevelsBlackGr",
+        "rawLevelsBlackGb", "rawLevelsBlackB",
+        "rawLevelsClipR", "rawLevelsClipG", "rawLevelsClipB",
+    )
     rawedit_copies = []
     for name, _kind, _default in SCHEMA:
+        if name in rawedit_excluded:
+            continue
         rawedit_copies.append("    out->%s = grade.%s;" % (name, name))
 
     return """// GENERATED FILE - DO NOT EDIT. Regenerate with:
