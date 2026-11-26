@@ -454,6 +454,7 @@
     <string name="exports_job_failed_written">Hiçbir şey yazılmadı.</string>
     <string name="exports_job_retry">Yeniden dene</string>
     <string name="exports_clear">Temizle</string>
+    <string name="exports_delete_swipe">Dışa aktarımı sil</string>
     <!-- Export foreground notification (owner finding 2026-11-14): the
          visible side of the process priority that keeps a backgrounded
          export alive. IMPORTANCE_LOW channel — silent, no heads-up. -->

@@ -113,6 +113,38 @@ class ExportRowModelTest {
         assertFalse(ExportRowModel.isCancellable(State.CANCELLED))
     }
 
+    // ---- isDeletable (owner request 2026-11-26: individual rows) ----
+
+    @Test
+    fun terminal_rows_are_deletable() {
+        // DONE/FAILED/CANCELLED are history: swipe and select-mode delete
+        // remove them (the record only, like clear-all).
+        assertTrue(ExportRowModel.isDeletable(State.DONE))
+        assertTrue(ExportRowModel.isDeletable(State.FAILED))
+        assertTrue(ExportRowModel.isDeletable(State.CANCELLED))
+    }
+
+    @Test
+    fun the_two_live_states_are_never_deletable() {
+        // A live job can only be cancelled — deleting one would orphan
+        // the encoder the queue still drives. The swipe never confirms
+        // and the store's delete repeats the rule at its write.
+        assertFalse(ExportRowModel.isDeletable(State.QUEUED))
+        assertFalse(ExportRowModel.isDeletable(State.RUNNING))
+    }
+
+    @Test
+    fun deletable_is_the_exact_complement_of_cancellable() {
+        // The two rules partition the state space: every state offers
+        // exactly one of the two actions.
+        for (state in State.values()) {
+            assertTrue(
+                "state ${state.name} must be exactly one of cancellable/deletable",
+                ExportRowModel.isCancellable(state) != ExportRowModel.isDeletable(state),
+            )
+        }
+    }
+
     private fun report(mime: String, steps: List<String> = emptyList()) =
         com.ritim.ritimcraw.export.ExportReport(
             "enc", true, mime, 1920, 1080, 30.0, 10, "VBR", null, 1f, 1, 128, 1, 10.0,

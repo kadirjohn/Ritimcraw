@@ -53,6 +53,18 @@ object ExportRowModel {
     fun isCancellable(state: State): Boolean =
         state == State.QUEUED || state == State.RUNNING
 
+    /**
+     * Whether the row is deletable (owner request 2026-11-26: swipe or
+     * select delete of individual export rows): TERMINAL rows only — the
+     * exact complement of [isCancellable]. A live row (QUEUED/RUNNING)
+     * can only be cancelled; deleting one would orphan the encoder the
+     * queue still drives, so neither the swipe (the dismiss never
+     * confirms) nor the store's delete ([ExportStore.delete] repeats
+     * the rule at its write) can remove it. Terminal rows are history —
+     * deleting removes the record only, like clear-all.
+     */
+    fun isDeletable(state: State): Boolean = !isCancellable(state)
+
     /** Where a DONE card's thumbnail comes from. */
     enum class ThumbSource { OUTPUT_VIDEO, SOURCE_STORE }
 

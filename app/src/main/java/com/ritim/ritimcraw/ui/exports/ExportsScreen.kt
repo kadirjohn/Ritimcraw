@@ -22,10 +22,15 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.material3.SwipeToDismissBox
+import androidx.compose.material3.SwipeToDismissBoxDefaults
+import androidx.compose.material3.SwipeToDismissBoxState
+import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -96,6 +101,19 @@ import com.ritim.ritimcraw.util.Format
  * export cooperatively at the next frame boundary — the row settles as
  * CANCELLED within one frame, which reads as immediate on the frame tick
  * cadence (the persisted progress writes are throttled to 500ms anyway).
+ *
+ * DELETE (owner request 2026-11-26: individual export rows): a TERMINAL
+ * row (DONE/FAILED/CANCELLED — never the two live states; a live job
+ * can only be cancelled, deleting one would orphan the encoder) swipes
+ * away LEFT or RIGHT (material3 1.3.0's [SwipeToDismissBox], the
+ * verified API on this classpath, both directions anchored to delete
+ * through the state's confirmValueChange) and lands in [onDelete] ->
+ * the store's delete(ids), which removes the job RECORD only, exactly
+ * like Clear-all (the output file under files/exports and the published
+ * media-store row are never touched; see ExportStore.delete). Deletion
+ * is irreversible; NO undo snackbar was added — a true undo needs
+ * position-true re-insertion this append-only store cannot do, and the
+ * owner did not ask. A DONE row's tap keeps its open behavior.
  */
 @Composable
 fun ExportsScreen(
@@ -106,6 +124,11 @@ fun ExportsScreen(
     // Cancel action for the two live states (see the CANCEL note above):
     // the shell routes it to the queue's cancel(job.id).
     onCancel: (ExportJob) -> Unit = {},
+    // Delete action (owner request 2026-11-26: individual export rows):
+    // the shell routes it to the store's delete(ids) — a swipe-to-dismiss
+    // on a terminal row lands here. The store repeats the live-guard
+    // under its own lock.
+    onDelete: (Set<String>) -> Unit = {},
     // sourceId -> display name (owner request §2b): rows show the clip's
     // real file name; the id is the fallback for unknown/missing sources.
     sourceNames: Map<String, String> = emptyMap(),
@@ -166,10 +189,133 @@ fun ExportsScreen(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 items(jobs, key = { it.id }) { job ->
-                    ExportJobCard(job, sourceNames, onRetry, onOpen, onCancel, exportDir, thumbnailStore)
+                    // Swipe-to-delete (owner request 2026-11-26): a
+                    // TERMINAL row swipes away in BOTH directions; a live
+                    // row (QUEUED/RUNNING) has NO dismiss anchors and NO
+                    // gesture — the plain card, cancel only (deleting a
+                    // live job would orphan the encoder).
+                    if (ExportRowModel.isDeletable(job.state)) {
+                        DismissableJobCard(
+                            job = job,
+                            sourceNames = sourceNames,
+                            onRetry = onRetry,
+                            onOpen = onOpen,
+                            onCancel = onCancel,
+                            onDelete = onDelete,
+                            exportDir = exportDir,
+                            thumbnailStore = thumbnailStore,
+                        )
+                    } else {
+                        ExportJobCard(job, sourceNames, onRetry, onOpen, onCancel, exportDir, thumbnailStore)
+                    }
                 }
             }
         }
+    }
+}
+
+/**
+ * A terminal row wrapped in the swipe-to-delete box (owner request
+ * 2026-11-26): SwipeToDismissBox — material3 1.3.0, the verified API on
+ * this classpath — with BOTH directions enabled, so a swipe left OR
+ * right on a finished/cancelled/failed row deletes it. The background
+ * reveals the trash glyph in the theme's error role as the row slides
+ * (start side for a rightward swipe, end side for a leftward one —
+ * the [SwipeToDismissBoxState.dismissDirection] read); the delete fires
+ * through the state's [confirmValueChange] returning true, the row's
+ * own gate of the store's live-guard. The row's tap behavior is
+ * unchanged (a DONE row opens; FAILED keeps Retry) — the box only adds
+ * the horizontal gesture.
+ *
+ * Deleting is IRREVERSIBLE and there is no undo snackbar: the store's
+ * delete removes the RECORD only (exactly what clear-all does — the
+ * output file and the published row are never touched), and a true
+ * undo would need position-true re-insertion this append-only store
+ * cannot do (the owner did not ask; see ExportStore.delete).
+ */
+@Composable
+private fun DismissableJobCard(
+    job: ExportJob,
+    sourceNames: Map<String, String>,
+    onRetry: (ExportJob) -> Unit,
+    onOpen: (ExportJob) -> Unit,
+    onCancel: (ExportJob) -> Unit,
+    onDelete: (Set<String>) -> Unit,
+    exportDir: File?,
+    thumbnailStore: ThumbnailStore?,
+) {
+    val deleteDescription = stringResource(R.string.exports_delete_swipe)
+    // The state is built through the PUBLIC constructor with plain
+    // remember (keyed by the job's id), not
+    // rememberSwipeToDismissBoxState: the saveable variant restores
+    // currentValue, and a dismissed-then-refused row (a Retry racing the
+    // swipe flipped it live — the caller's isDeletable routing then
+    // unwraps the box) could resurrect its saved "dismissed" value when
+    // the SAME id later turns terminal again — a ghost row slid
+    // off-screen with its gesture dead. Plain remember ties the state
+    // to the row's terminal STINT: disposed with the wrapper, fresh on
+    // the next one; a half-swipe lost to a process death restoring
+    // settled is the right outcome anyway.
+    val density = LocalDensity.current
+    val threshold = SwipeToDismissBoxDefaults.positionalThreshold
+    val state = remember(job.id, density) {
+        SwipeToDismissBoxState(
+            initialValue = SwipeToDismissBoxValue.Settled,
+            density = density,
+            // The delete rides confirmValueChange: it runs exactly when
+            // the swipe crosses the dismiss threshold (or a fling
+            // targets the anchor) and the box settles into the dismissed
+            // anchor — the row then leaves with the store's write. The
+            // lambda returns TRUE for every value (the settle/finally
+            // paths in the box's internal AnchoredDraggableState treat
+            // a veto as a rollback, and vetoing Settled can strand the
+            // row between anchors with the gesture disabled): a swipe
+            // that settles back never reaches the delete, and a delete
+            // the store's live-guard refuses simply unwraps the row —
+            // the next jobs refresh recomposes it as the plain live
+            // card with a fresh state.
+            confirmValueChange = { value ->
+                if (value != SwipeToDismissBoxValue.Settled) {
+                    onDelete(setOf(job.id))
+                }
+                true
+            },
+            positionalThreshold = threshold,
+        )
+    }
+    SwipeToDismissBox(
+        state = state,
+        enableDismissFromStartToEnd = true,
+        enableDismissFromEndToStart = true,
+        backgroundContent = {
+            // The revealed background (the official sample's fillMaxSize
+            // Box): the error-container wash with the trash glyph pinned
+            // to the side the row slides away from (leading for a
+            // rightward swipe, trailing for a leftward one — the
+            // [SwipeToDismissBoxState.dismissDirection] read), all in
+            // the theme's error roles — never a hardcoded color.
+            val direction = state.dismissDirection
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .clip(RoundedCornerShape(20.dp))
+                    .background(MaterialTheme.colorScheme.errorContainer),
+                contentAlignment = if (direction == SwipeToDismissBoxValue.StartToEnd) {
+                    Alignment.CenterStart
+                } else {
+                    Alignment.CenterEnd
+                },
+            ) {
+                Icon(
+                    painterResource(R.drawable.ic_delete),
+                    contentDescription = deleteDescription,
+                    tint = MaterialTheme.colorScheme.onErrorContainer,
+                    modifier = Modifier.padding(horizontal = 24.dp),
+                )
+            }
+        },
+    ) {
+        ExportJobCard(job, sourceNames, onRetry, onOpen, onCancel, exportDir, thumbnailStore)
     }
 }
 
