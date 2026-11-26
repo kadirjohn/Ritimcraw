@@ -472,15 +472,54 @@ TEST_CASE("sequence_writes_frames_naming_progress") {
     for (size_t i = 0; i < 3; ++i) {
         const std::vector<uint8_t> b = readFile(res.writtenPaths[i].c_str());
         const auto tags = parseIfd(b);
-        // The base tags all present and correct.
+        // The base tags all present and correct — the FULL task list
+        // (BlackLevel, WhiteLevel, CFAPattern, ColorMatrix1,
+        // ActiveArea) verified with the tag reader's type/count/value.
         CHECK(tagShort(tags, 262) == 32803);
         CHECK(tagLong(tags, 279) == 64u * 48u * 2u);
+        // BlackLevel (50714): SHORT x4, all 64 (the fixture's black).
+        const Tag black = get(tags, 50714);
+        CHECK(black.type == 3);
+        CHECK(black.count == 4);
+        for (int k = 0; k < 4; ++k)
+            CHECK(rd16(black.value, static_cast<size_t>(k) * 2) == 64);
+        // WhiteLevel (50717): LONG x1, 1023.
         CHECK(tagLong(tags, 50717) == 1023u);
+        // CFAPattern (33422): BYTE x4, RGGB = 0,1,1,2.
+        const Tag pat = get(tags, 33422);
+        CHECK(pat.type == 1);
+        CHECK(pat.count == 4);
+        CHECK(pat.value[0] == 0);
+        CHECK(pat.value[1] == 1);
+        CHECK(pat.value[2] == 1);
+        CHECK(pat.value[3] == 2);
+        // ColorMatrix1 (50721): SRATIONAL x9, the fixture's identity
+        // (1,0,0 / 0,1,0 / 0,0,1) as 1e6-denominator rationals.
+        const Tag cm = get(tags, 50721);
+        CHECK(cm.type == 10);
+        CHECK(cm.count == 9);
+        for (int k = 0; k < 9; ++k) {
+            const int32_t num = static_cast<int32_t>(rd32(cm.value, k * 8));
+            const uint32_t den = rd32(cm.value, k * 8 + 4);
+            CHECK(den == 1000000u);
+            CHECK(num == ((k % 4 == 0) ? 1000000 : 0));
+        }
+        // ActiveArea (50829): LONG x4, the full 64x48 frame.
+        const Tag area = get(tags, 50829);
+        CHECK(area.type == 4);
+        CHECK(area.count == 4);
+        CHECK(rd32(area.value, 0) == 0u);
+        CHECK(rd32(area.value, 4) == 0u);
+        CHECK(rd32(area.value, 8) == 48u);
+        CHECK(rd32(area.value, 12) == 64u);
         // The sequence tags: this frame's code and the exact rational.
         const Tag tc = get(tags, 51043);
+        CHECK(tc.type == 1);
         CHECK(tc.count == 8);
         CHECK((tc.value[3] & 0x7f) == i); // frame field = i
         const Tag fr = get(tags, 51044);
+        CHECK(fr.type == 5);
+        CHECK(fr.count == 1);
         CHECK(rd32(fr.value, 0) == 25u);
         CHECK(rd32(fr.value, 4) == 1u);
         // The CFA data is byte-identical to the frame the provider
