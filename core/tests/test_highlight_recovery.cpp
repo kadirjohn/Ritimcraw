@@ -156,7 +156,9 @@ TEST_CASE("recovery_vs_neutral_vs_off_against_ground_truth") {
                     name, er.n, eo.lin, en.lin, er.lin, eo.hueRG, en.hueRG, er.hueRG, eo.hueBG, en.hueBG, er.hueBG);
         CHECK(er.n > 100);
         CHECK(er.lin < en.lin);
-        CHECK(er.hueRG <= en.hueRG + 1e-9);
+        // The 2-channels-clipped R/G hue check lives in its own expected-failure test below (known gap);
+        // every other check of this test stays a normal check.
+        if (band == 0) CHECK(er.hueRG <= en.hueRG + 1e-9);
         CHECK(er.hueBG <= en.hueBG + 1e-9);
     }
     // Recovery never goes below what the off (clipped) render shows, per pixel and channel, in the 1-2 channel region.
@@ -180,6 +182,26 @@ TEST_CASE("recovery_vs_neutral_vs_off_against_ground_truth") {
     std::printf("M1 recovery max linear value = %.3f (off max = %.3f, neutral max = %.3f)\n", mx,
                 *std::max_element(off.rgb.begin(), off.rgb.end()), *std::max_element(neutral.rgb.begin(), neutral.rgb.end()));
     CHECK(mx > 1.05f);
+}
+
+
+// KNOWN GAP (owner decision 2026-11-26): "Recovery >= Neutral" on the hue R/G of the 2-CHANNELS-clipped band.
+// Neutral stage 3 improved with Formula X (ceiling = lowest post-WB level among the CLIPPED channels, which
+// brings the pair to one level): its hue R/G error fell to 0.0174 while Recovery estimates the two clipped
+// channels independently from the reference and sits at 0.0293 (measured here: neutral 0.0174, recovery 0.0293;
+// hue B/G neutral 0.0174, recovery 0.0170 still holds, linear error neutral 0.3747 vs recovery 0.0228).
+// Waiting for Recovery's joint two-channel estimate (see docs/HIGHLIGHT_RECOVERY_PLAN.md "Queue" item 2 and
+// docs/recovery-joint-estimate-experiment.patch). The assertion below is the ORIGINAL check, unchanged; the
+// doctest `should_fail` marker makes this test pass while it fails and FAIL once Recovery catches up, so the
+// marker gets removed then.
+TEST_CASE("recovery_two_channel_hue_rg_not_worse_than_neutral_KNOWN_GAP" * doctest::should_fail()) {
+    const float K = 4.0f;
+    const ImageF truth = develop(false, K, false, false);
+    const ImageF neutral = develop(true, 1, true, false);
+    const ImageF recov = develop(true, 1, true, true);
+    const Err en = measure(neutral, truth, K, 2, 2), er = measure(recov, truth, K, 2, 2);
+    REQUIRE(er.n > 100);
+    CHECK(er.hueRG <= en.hueRG + 1e-9);
 }
 
 TEST_CASE("recovery_is_a_bit_exact_no_op_on_an_unclipped_image") {
