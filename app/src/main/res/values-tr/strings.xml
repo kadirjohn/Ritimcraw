@@ -453,7 +453,8 @@
     <string name="exports_job_failed_cause">Neden: %1$s</string>
     <string name="exports_job_failed_written">Hiçbir şey yazılmadı.</string>
     <string name="exports_job_retry">Yeniden dene</string>
-    <string name="exports_clear">Temizle</string>
+    <string name="exports_clear">Tümünü temizle</string>
+    <string name="exports_clear_content_description">Tüm dışa aktarımları temizle</string>
     <string name="exports_select">Seç</string>
     <string name="exports_selection_count">%1$d öğe seçildi</string>
     <string name="exports_selection_close">Seçimden çık</string>

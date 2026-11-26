@@ -218,11 +218,12 @@ fun ExportsScreen(
             ScreenHeader(
                 title = stringResource(R.string.exports_title),
                 actions = {
-                    // Select (owner request 2026-11-26): an ICON that
-                    // opens multi-select mode, to the left of Clear.
-                    // Both hide when there is nothing to act on (the
-                    // jobs.isEmpty condition the plain Clear button
-                    // always had).
+                    // Header rework (owner request 2026-11-26): Select as
+                    // an ICON to the left of Clear-all, Clear-all a trash
+                    // icon + red "Clear all" text (the theme's error role
+                    // — never a hardcoded hex). Both hide when there is
+                    // nothing to act on (the jobs.isEmpty condition the
+                    // plain Clear button always had).
                     if (jobs.isNotEmpty()) {
                         // Select opens multi-select mode with the first
                         // deletable row checked (the mode lives while
@@ -237,8 +238,20 @@ fun ExportsScreen(
                                 contentDescription = stringResource(R.string.exports_select),
                             )
                         }
+                        // Clear-all: the trash glyph + the existing Clear
+                        // callback and meaning (job records only — never
+                        // the output files on disk), in the error role.
                         TextButton(onClick = onClear) {
-                            Text(stringResource(R.string.exports_clear))
+                            Icon(
+                                painterResource(R.drawable.ic_delete),
+                                contentDescription = stringResource(R.string.exports_clear_content_description),
+                                modifier = Modifier.size(18.dp),
+                            )
+                            Text(
+                                stringResource(R.string.exports_clear),
+                                color = MaterialTheme.colorScheme.error,
+                                modifier = Modifier.padding(start = 6.dp),
+                            )
                         }
                     }
                 },
