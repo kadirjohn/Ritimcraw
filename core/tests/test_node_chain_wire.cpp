@@ -12,6 +12,8 @@
 #include "doctest.h"
 
 #include <cmath>
+#include <cstdio>
+#include <fstream>
 #include <vector>
 
 #include "../../app/src/main/cpp/gles/NodeChainWire.h"
@@ -318,6 +320,56 @@ TEST_CASE("the wire's constants agree with the Kotlin mirror's caps") {
     // header; this side pins the same invariants the decode relies on.
     CHECK(gles::kNodeChainWireMaxNodes == static_cast<int>(rawedit::kMaxNodes));
     CHECK(gles::kNodeChainWireHeader == 3);
-    CHECK(gles::kNodeChainWireStride == 34);
+    CHECK(gles::kNodeChainWireStride == 35);   // F1-8d: +34 = the node LUT registry handle
+    CHECK(gles::kNodeChainLutHandle == 34);
     CHECK(gles::kNodeChainWireOutput == 6);
+}
+
+// F1-8d: a node LUT crosses the wire as a registry handle; the decode hands the node the registry-owned LUT.
+TEST_CASE("decode: a node LUT handle resolves to the registered cube, an unknown handle is refused") {
+    // A 2x2x2 identity cube on disk, registered the way nativeRegisterNodeLut does.
+    const std::string path = "node_lut_test_identity.cube";
+    {
+        std::ofstream f(path);
+        f << "LUT_3D_SIZE 2\n";
+        for (int b = 0; b < 2; ++b)
+            for (int g = 0; g < 2; ++g)
+                for (int r = 0; r < 2; ++r) f << r << " " << g << " " << b << "\n";
+    }
+    std::string err;
+    const int handle = gles::NodeLutRegistry::add(path, &err);
+    REQUIRE_MESSAGE(handle > 0, err);
+    CHECK(gles::NodeLutRegistry::add(path) == handle);          // cached by path: the same handle
+    CHECK(gles::NodeLutRegistry::get(handle) != nullptr);
+    CHECK(gles::NodeLutRegistry::get(0) == nullptr);
+    CHECK(gles::NodeLutRegistry::get(handle + 100) == nullptr);
+    CHECK(gles::NodeLutRegistry::add("no_such_file.cube", &err) == 0);
+    CHECK_FALSE(err.empty());
+
+    std::vector<float> w(gles::kNodeChainWireHeader + gles::kNodeChainWireStride + gles::kNodeChainWireOutput, 0.0f);
+    w[0] = 1.0f;
+    float* r = w.data() + gles::kNodeChainWireHeader;
+    r[gles::kNodeChainEnabled] = 1.0f;
+    r[gles::kNodeChainMix] = 1.0f;
+    r[gles::kNodeChainContrast] = 1.0f;
+    r[gles::kNodeChainSat] = 1.0f;
+    r[gles::kNodeChainHasLut] = 1.0f;
+    r[gles::kNodeChainLutMix] = 0.5f;
+    r[gles::kNodeChainLutHandle] = static_cast<float>(handle);
+    gles::NodeChainDecoded d;
+    REQUIRE(gles::decodeNodeChainWire(w.data(), static_cast<int>(w.size()), &d));
+    REQUIRE(d.nodes.size() == 1);
+    CHECK(d.nodes[0].lut == gles::NodeLutRegistry::get(handle));
+    CHECK(d.nodes[0].lutMix == 0.5f);
+    CHECK(d.nodes[0].hasLut());
+
+    r[gles::kNodeChainLutHandle] = static_cast<float>(handle + 100);   // not registered
+    CHECK_FALSE(gles::decodeNodeChainWire(w.data(), static_cast<int>(w.size()), &d));
+    CHECK(d.error.find("not registered") != std::string::npos);
+
+    r[gles::kNodeChainHasLut] = 0.0f;                                  // no LUT: the handle slot is ignored
+    r[gles::kNodeChainLutHandle] = 0.0f;
+    REQUIRE(gles::decodeNodeChainWire(w.data(), static_cast<int>(w.size()), &d));
+    CHECK(d.nodes[0].lut == nullptr);
+    std::remove(path.c_str());
 }

@@ -6262,6 +6262,9 @@ private fun ColorPanel(
             onNodesChange = onNodesChange,
             onOutputChange = onOutputChange,
             onDragActiveChange = onDragActiveChange,
+            lutEntries = lutEntries,
+            lutImportError = lutImportError,
+            onImportLut = onImportLut,
         )
         EditorCategories.COLOR_LOOK -> ColorLookBody(
             grade = grade,

@@ -41,6 +41,9 @@ internal fun NodesBody(
     onNodesChange: (List<GradeNodeV2>) -> Unit,
     onOutputChange: (com.ritim.ritimcraw.data.grade2.OutputTransformV2) -> Unit = {},
     onDragActiveChange: (Boolean) -> Unit = {},
+    lutEntries: List<com.ritim.ritimcraw.data.LutInfo> = emptyList(),
+    lutImportError: String? = null,
+    onImportLut: () -> Unit = {},
 ) {
     val sel = if (selected >= 0) selected.coerceIn(0, (nodes.size - 1).coerceAtLeast(0)) else -1
     Column(
@@ -102,6 +105,7 @@ internal fun NodesBody(
                     stringResource(R.string.node_tab_wheels),
                     stringResource(R.string.node_tab_curves),
                     stringResource(R.string.node_tab_adjust),
+                    stringResource(R.string.node_tab_lut),
                 ),
                 selectedIndex = tab.ordinal,
                 onSelect = { tab = NodeTab.entries[it] },
@@ -122,6 +126,18 @@ internal fun NodesBody(
                 node = node,
                 curve = curve,
                 onCurveSelect = { curve = it },
+                onNodeChange = { edit(it) },
+                onDragActiveChange = onDragActiveChange,
+            )
+            return@Column
+        }
+        if (tab == NodeTab.LUT) {
+            NodeLutPage(
+                nodes = nodes,
+                index = sel,
+                lutEntries = lutEntries,
+                lutImportError = lutImportError,
+                onImportLut = onImportLut,
                 onNodeChange = { edit(it) },
                 onDragActiveChange = onDragActiveChange,
             )

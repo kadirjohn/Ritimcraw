@@ -2408,6 +2408,24 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeRegisterRecoveryShaders(
     gles::setRecoveryShaderSources(text(pre), text(block0), text(blockUp), text(composite));
 }
 
+// F1-8d node LUTs: registers (parses once, cached by path) the .cube at [path] and returns its handle for the
+// node chain wire's LUT slot, or 0 when the file does not parse (the reason lands in the last-error channel).
+JNIEXPORT jint JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativeRegisterNodeLut(JNIEnv* env, jclass, jstring path) {
+    if (path == nullptr) return 0;
+    const char* c = env->GetStringUTFChars(path, nullptr);
+    if (c == nullptr) return 0;
+    const std::string p(c);
+    env->ReleaseStringUTFChars(path, c);
+    std::string error;
+    const int handle = gles::NodeLutRegistry::add(p, &error);
+    if (handle == 0) {
+        setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageDevelop,
+                 "node LUT: " + error + " (recovery: re-import the .cube file)");
+    }
+    return handle;
+}
+
 // Export sub-stage timing toggle (commit (d)): same companion-init pattern
 // as nativeSetStabDebugLog — the gate flips on only in debug builds, and a
 // release build reads it once per boundary as a relaxed load.

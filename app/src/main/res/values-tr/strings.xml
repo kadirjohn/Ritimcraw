@@ -710,6 +710,8 @@
     <string name="node_lut_none">Yok</string>
     <string name="node_lut_mix">LUT karışımı</string>
     <string name="node_lut_reset">LUT\'u sıfırla</string>
+    <string name="node_lut_empty">Henüz LUT yok. Bir .cube dosyası içe aktarın.</string>
+    <string name="node_lut_limit">Bir zincirde en fazla %1$d node LUT taşıyabilir.</string>
     <!-- F1-8d: Output kartı (OpenDRT) (Türkçe metinler sahibin gözden geçirmesine açık) -->
     <string name="node_output_chip">Çıktı</string>
     <string name="node_output_chip_desc">Çıktı dönüşümü</string>

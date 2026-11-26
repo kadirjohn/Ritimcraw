@@ -102,6 +102,7 @@ class NodeChainWireTest {
             "kNodeChainHasCurves" to NodeChainWire.SLOT_HAS_CURVES,
             "kNodeChainHasLut" to NodeChainWire.SLOT_HAS_LUT,
             "kNodeChainLutMix" to NodeChainWire.SLOT_LUT_MIX,
+            "kNodeChainLutHandle" to NodeChainWire.SLOT_LUT_HANDLE,
         )
         for ((cppName, kotlinSlot) in slots) {
             assertEquals("slot $cppName drifted - fix BOTH mirrors",
@@ -244,13 +245,16 @@ class NodeChainWireTest {
     }
 
     @Test
-    fun a_lut_carrying_chain_refuses_honestly() {
+    fun a_lut_carrying_chain_without_a_loadable_cube_refuses_honestly() {
+        // F1-8d: node LUTs ride as registry handles now; with no resolver installed (the default) the cube cannot
+        // be loaded, and the encoder still refuses (never drops the LUT silently). The old text said the LUT leg
+        // was unwired; the refusal itself is unchanged.
         val grade = ClipGradeV2(nodes = listOf(GradeNodeV2(lutId = "cube-2")))
         try {
             NodeChainWire.encode(grade, grade.nodes)
             fail("expected IllegalStateException for a LUT-carrying chain")
         } catch (expected: IllegalStateException) {
-            assertTrue(expected.message!!.contains("node-LUT leg"))
+            assertTrue(expected.message!!.contains("could not be loaded"))
         }
     }
 
@@ -485,5 +489,70 @@ class NodeChainWireTest {
         val cwp = OpenDrtPacks.resolve(OpenDrtPacks.Spec(cwp = 3, cwpLimit = 0.4f))
         assertEquals(2f, cwp[2], 0f) // cwp resolved to INTERNAL 2 (D65)
         assertEquals(0.4f, cwp[12], 0f) // cwp_lm carries the limit
+    }
+
+    // ---- F1-8d: node LUTs ride the record as a registry handle ----
+
+    private fun withLutResolver(path: (String) -> String?, register: (String) -> Int, body: () -> Unit) {
+        val oldPath = NodeLutHandles.pathFor
+        val oldReg = NodeLutHandles.register
+        NodeLutHandles.clearForTest()
+        NodeLutHandles.pathFor = path
+        NodeLutHandles.register = register
+        try { body() } finally {
+            NodeLutHandles.pathFor = oldPath
+            NodeLutHandles.register = oldReg
+            NodeLutHandles.clearForTest()
+        }
+    }
+
+    @Test fun a_node_with_a_resolvable_lut_carries_hasLut_and_its_handle() {
+        var registered = 0
+        withLutResolver({ id -> "/luts/$id.cube" }, { registered++; 7 }) {
+            val node = GradeNodeV2(lutId = "abc123", lutMix = 0.6f)
+            val wire = NodeChainWire.encode(ClipGradeV2(), listOf(GradeNodeV2(sat = 1.1f), node))
+            val b = NodeChainWire.HEADER + NodeChainWire.STRIDE
+            assertEquals(1f, wire[b + NodeChainWire.SLOT_HAS_LUT], 0f)
+            assertEquals(0.6f, wire[b + NodeChainWire.SLOT_LUT_MIX], 0f)
+            assertEquals(7f, wire[b + NodeChainWire.SLOT_LUT_HANDLE], 0f)
+            // The plain node next to it carries no LUT.
+            val a = NodeChainWire.HEADER
+            assertEquals(0f, wire[a + NodeChainWire.SLOT_HAS_LUT], 0f)
+            assertEquals(0f, wire[a + NodeChainWire.SLOT_LUT_HANDLE], 0f)
+            // The handle is cached by id: a second encode does not register again.
+            NodeChainWire.encode(ClipGradeV2(), listOf(node))
+            assertEquals(1, registered)
+        }
+    }
+
+    @Test fun an_unresolvable_node_lut_is_refused_never_dropped() {
+        // No path for the id (missing blob) and a path whose parse fails (register answers 0).
+        withLutResolver({ null }, { 3 }) {
+            try {
+                NodeChainWire.encode(ClipGradeV2(), listOf(GradeNodeV2(lutId = "gone", lutMix = 1f)))
+                org.junit.Assert.fail("a missing cube must be refused")
+            } catch (e: IllegalStateException) {
+                assertTrue(e.message!!.contains("could not be loaded"))
+            }
+        }
+        withLutResolver({ "/luts/x.cube" }, { 0 }) {
+            try {
+                NodeChainWire.encode(ClipGradeV2(), listOf(GradeNodeV2(lutId = "bad", lutMix = 1f)))
+                org.junit.Assert.fail("a failed parse must be refused")
+            } catch (e: IllegalStateException) {
+                assertTrue(e.message!!.contains("could not be loaded"))
+            }
+        }
+    }
+
+    @Test fun a_lut_at_zero_mix_is_not_resolved_and_carries_nothing() {
+        var registered = 0
+        withLutResolver({ "/luts/x.cube" }, { registered++; 5 }) {
+            val wire = NodeChainWire.encode(ClipGradeV2(), listOf(GradeNodeV2(lutId = "abc", lutMix = 0f)))
+            val b = NodeChainWire.HEADER
+            assertEquals(0f, wire[b + NodeChainWire.SLOT_HAS_LUT], 0f)
+            assertEquals(0f, wire[b + NodeChainWire.SLOT_LUT_HANDLE], 0f)
+            assertEquals(0, registered)
+        }
     }
 }

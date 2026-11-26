@@ -220,6 +220,11 @@ class NativeSource private constructor(
          * BuildConfig.DEBUG, so release builds stay silent.
          */
         @JvmStatic private external fun nativeSetStabDebugLog(enabled: Boolean)
+        /** F1-8d: parses/caches the .cube at [path] and returns its node-chain-wire handle (> 0), 0 on failure. */
+        @JvmStatic private external fun nativeRegisterNodeLut(path: String): Int
+        internal fun jniRegisterNodeLut(path: String): Int =
+            if (!nativeAvailable) 0 else runCatching { nativeRegisterNodeLut(path) }.getOrDefault(0)
+
         @JvmStatic private external fun nativeRegisterRecoveryShaders(
             pre: String, block0: String, blockUp: String, composite: String,
         )
