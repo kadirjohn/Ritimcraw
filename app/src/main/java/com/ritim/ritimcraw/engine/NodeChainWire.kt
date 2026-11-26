@@ -49,6 +49,7 @@ import com.ritim.ritimcraw.data.grade2.OutputTransformV2
  *     +31 hasCurves (0/1 — any of curveY/R/G/B non-identity)
  *     +32 hasLut (0/1 — lutId != null AND lutMix > 0.0001f, core's gate)
  *     +33 lutMix (0..1; the LUT's mix into the node's DI value)
+ *     +34 lutHandle (NodeLutRegistry handle, F1-8d; 0 when hasLut = 0)
  *   then the curve block, node by node in chain order, ONLY for nodes
  *     with hasCurves=1:
  *     per node: [channelMask, then per PRESENT channel in Y,R,G,B
@@ -62,12 +63,12 @@ import com.ritim.ritimcraw.data.grade2.OutputTransformV2
  *          outputMode is 0, always present so the length contract is
  *          one formula).
  *
- * The node LUTs do NOT ride this wire (the strings-separately rule, the
- * stage-24 lutPath precedent): a NODES grade with node LUTs is refused
- * honestly by the sePosed binding until the LUT-carrying follow-up —
- * [encode] throws, the render falls back to CPU paths that CAN run it
- * (developCpu's applyNodes carries node LUTs through core). hasLut rides
- * the record so the refusal is a caught, honest one, not a silent drop.
+ * Node LUTs (F1-8d) ride the record as a small HANDLE (+34): the cube is
+ * registered natively once (NodeLutHandles / NodeLutRegistry, parsed by
+ * core's parseCubeFile) and decodeNodeChainWire turns the handle back into
+ * the registry-owned Lut the core GradeNode borrows. A LUT that cannot be
+ * resolved (no resolver, missing file, parse failure) is refused honestly
+ * by [encode] (it throws), never silently dropped.
  *
  * WIRE RULES (GradeParcel's own): append-only slots, booleans 0.0/1.0,
  * NaN/Infinity refused, the length and [0]/[2] must AGREE (a miscounted
@@ -76,7 +77,7 @@ import com.ritim.ritimcraw.data.grade2.OutputTransformV2
 object NodeChainWire {
 
     const val HEADER = 3
-    const val STRIDE = 34
+    const val STRIDE = 35
     const val OUTPUT = 6
 
     // Per-node record slots (STRIDE of them; NodeChainWire.h mirrors).
@@ -100,6 +101,7 @@ object NodeChainWire {
     const val SLOT_HAS_CURVES = 31
     const val SLOT_HAS_LUT = 32
     const val SLOT_LUT_MIX = 33
+    const val SLOT_LUT_HANDLE = 34
 
     // The output block's slots (HEADER + n * STRIDE + curve block).
     const val SLOT_OUT_LOOK = 0
@@ -119,16 +121,21 @@ object NodeChainWire {
      * encoder is the NODES branch's packer and refuses (never truncates)
      * anything it cannot carry honestly:
      *   - a chain past the N1 cap;
-     *   - a node carrying a LUT (the strings-separately leg is not wired
-     *     yet — the CPU path renders it, the GPU binding must not pretend).
+     *   - a node whose LUT cannot be resolved to a native handle (F1-8d).
      */
     fun encode(grade: ClipGradeV2, nodes: List<GradeNodeV2>): FloatArray {
         if (nodes.size > MAX_NODES) {
             refuse("node chain wire: ${nodes.size} nodes exceed the N1 cap $MAX_NODES (recovery: the editor caps the chain at 8)")
         }
+        val lutHandles = IntArray(nodes.size)
         nodes.forEachIndexed { i, n ->
-            if (n.lutId != null && n.lutMix > 0.0001f) {
-                refuse("node chain wire: node $i carries a LUT — the node-LUT leg rides the CPU path until its follow-up (recovery: render this clip on the CPU path)")
+            val id = n.lutId
+            if (id != null && n.lutMix > 0.0001f) {
+                val h = NodeLutHandles.handleFor(id)
+                if (h <= 0) {
+                    refuse("node chain wire: node $i names LUT $id which could not be loaded (recovery: re-import the .cube file or clear the node's LUT)")
+                }
+                lutHandles[i] = h
             }
         }
         // The curve block: per node with hasCurves, [mask, per-present-
@@ -186,8 +193,9 @@ object NodeChainWire {
             out[b + SLOT_HAS_CURVES] = if (n.curveY.isIdentity() && n.curveR.isIdentity() &&
                 n.curveG.isIdentity() && n.curveB.isIdentity()
             ) 0.0f else 1.0f
-            out[b + SLOT_HAS_LUT] = 0.0f // the refusal above keeps this 0
+            out[b + SLOT_HAS_LUT] = if (lutHandles[i] > 0) 1.0f else 0.0f
             out[b + SLOT_LUT_MIX] = n.lutMix.coerceIn(0f, 1f)
+            out[b + SLOT_LUT_HANDLE] = lutHandles[i].toFloat()
         }
         // The curve block, then the output tail.
         var p = HEADER + nodes.size * STRIDE

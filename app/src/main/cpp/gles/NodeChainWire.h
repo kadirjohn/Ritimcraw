@@ -30,10 +30,12 @@
 
 #include <rawedit/ColorModel.h>
 
+#include "NodeLutRegistry.h"
+
 namespace gles {
 
 constexpr int kNodeChainWireHeader = 3;
-constexpr int kNodeChainWireStride = 34;
+constexpr int kNodeChainWireStride = 35;
 constexpr int kNodeChainWireOutput = 6;
 constexpr int kNodeChainWireMaxNodes = 8;  // rawedit::kMaxNodes
 
@@ -58,6 +60,7 @@ constexpr int kNodeChainLogHigh = 30;
 constexpr int kNodeChainHasCurves = 31;
 constexpr int kNodeChainHasLut = 32;
 constexpr int kNodeChainLutMix = 33;
+constexpr int kNodeChainLutHandle = 34;  // NodeLutRegistry handle (0 = none); meaningful when hasLut == 1
 // The output block's slots (add header + n*stride + curve block).
 constexpr int kNodeChainOutLook = 0;
 constexpr int kNodeChainOutTonescale = 1;
@@ -164,7 +167,18 @@ inline bool decodeNodeChainWire(const float* w, int length, NodeChainDecoded* d)
         g.logLow = r[kNodeChainLogLow];
         g.logHigh = r[kNodeChainLogHigh];
         g.lutMix = r[kNodeChainLutMix];
-        g.lut = nullptr;  // the strings-separately leg; the encoder refused LUTs
+        g.lut = nullptr;
+        if (r[kNodeChainHasLut] == 1.0f) {
+            // F1-8d: the LUT rides as a registry handle; an unknown handle is a refusal, never a silent drop.
+            const int handle = static_cast<int>(r[kNodeChainLutHandle]);
+            g.lut = NodeLutRegistry::get(handle);
+            if (g.lut == nullptr) {
+                char buf[112];
+                std::snprintf(buf, sizeof(buf),
+                              "node chain wire: node %d names LUT handle %d which is not registered", i, handle);
+                return refuse(buf);
+            }
+        }
     }
     // The curve block: per hasCurves node, [channelMask, per-PRESENT
     // channel in Y,R,G,B order: count, pairs...]. The mask is the bit set

@@ -719,6 +719,8 @@
     <string name="node_lut_none">None</string>
     <string name="node_lut_mix">LUT mix</string>
     <string name="node_lut_reset">Reset LUT</string>
+    <string name="node_lut_empty">No LUTs yet. Import a .cube file.</string>
+    <string name="node_lut_limit">At most %1$d nodes of a chain can carry a LUT.</string>
     <!-- F1-8d: the output card (OpenDRT) -->
     <string name="node_output_chip">Output</string>
     <string name="node_output_chip_desc">Output transform</string>
