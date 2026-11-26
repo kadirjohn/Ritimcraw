@@ -1258,6 +1258,32 @@ RawLevelsCandidate measureRawLevelsCandidate(const uint16_t* cfa,
     return out;
 }
 
+float highlightKnee(float ref, float gainScale) {
+    if (!(ref > 0.0f) || !std::isfinite(ref) || !(gainScale > 0.0f) || !std::isfinite(gainScale))
+        return kHighlightKneeMax;
+    const float k = ref * gainScale;
+    return std::min(std::max(k, kHighlightKneeMin), kHighlightKneeMax);
+}
+
+void appendLumaSamples(const ImageF& img, size_t stride, std::vector<float>& out) {
+    if (stride == 0) stride = 1;
+    const size_t px = static_cast<size_t>(img.w) * img.h;
+    for (size_t p = 0; p < px; p += stride) {
+        const float r = img.rgb[p * 3], g = img.rgb[p * 3 + 1], b = img.rgb[p * 3 + 2];
+        const float y = 0.2126f * r + 0.7152f * g + 0.0722f * b;
+        if (std::isfinite(y) && y >= 0.0f) out.push_back(y);
+    }
+}
+
+float lumaQuantile(std::vector<float>& samples, float p) {
+    if (samples.empty()) return 0.0f;
+    const float q = std::min(std::max(p, 0.0f), 1.0f);
+    const size_t k = std::min(samples.size() - 1,
+                              static_cast<size_t>(q * static_cast<float>(samples.size() - 1) + 0.5f));
+    std::nth_element(samples.begin(), samples.begin() + static_cast<std::ptrdiff_t>(k), samples.end());
+    return samples[k];
+}
+
 ImageF developCpu(const uint16_t* cfa, const FrameInfo& info, const RawMeta& meta, const Grade& grade, const Lut* lut, const CompiledLutBinding* binding, const RawLevelsOverride& rawLevels) {
     const uint32_t w = info.width;
     const uint32_t h = info.height;
@@ -1667,7 +1693,9 @@ ImageF developCpu(const uint16_t* cfa, const FrameInfo& info, const RawMeta& met
     // already compresses those values; at 0.18 the same measurement gives ~8.6/255 (6x) and 10.5% of pixels change by
     // >= 2 codes instead of 1.7%. Earlier history: 0.75 -> 0.40 (2026-11-25).
     if (grade.highlights != 0.0f) {
-        const float knee = 0.18f;
+        // D3 (2026-11-26): the knee follows the clip (P85 of its own post-Gain luma, bounded);
+        // an unmeasured grade (highlightKneeRef == 0) keeps the legacy 0.18 exactly.
+        const float knee = highlightKnee(grade.highlightKneeRef, std::pow(2.0f, grade.exposureEv));
         const float span = 1.0f - knee;
         const float s = -grade.highlights / 100.0f; // recovery -> +1, lift -> -1
         for (size_t i = 0; i < img.rgb.size(); i += 3) {

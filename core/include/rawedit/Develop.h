@@ -307,7 +307,32 @@ struct Grade {
     float splitShadowHue = -1.0f;    // degrees, -1 = off
     float splitHighlightHue = -1.0f; // degrees, -1 = off
     float splitBalance = 0.0f;       // [-100,100], crossover shift
+    // Adaptive Highlights knee (owner decision D3, 2026-11-26): the clip's own
+    // luma P85 measured ONCE per clip at unit gain (stage-13 linear luma, see
+    // measureHighlightKneeRef in Develop.h below) and stored with the grade. The
+    // stage-15 knee is then highlightKnee(ref, 2^exposureEv). 0 = unmeasured =
+    // the legacy fixed knee 0.18 (bit-identical to the pre-D3 pipeline). Appended
+    // last so every earlier field/JNI/parcel position stays stable.
+    float highlightKneeRef = 0.0f;
 };
+
+// ---- Adaptive Highlights knee (D3) ----
+// The Highlights stage works above a knee. A fixed 0.18 leaves a dark clip (the
+// DCG night frames: almost every pixel below 0.18 after Gain) with nothing to act
+// on, so the knee follows the clip: the start of its top ~15% of linear luma after
+// Gain, bounded so very dark or very bright clips stay sane.
+//   knee = clamp(P85_unitGain * gainScale, kHighlightKneeMin, kHighlightKneeMax)
+// kHighlightKneeMax equals the legacy knee, so a clip whose top 15% already starts
+// above 0.18 is bit-identical to today. P85 is measured at unit gain and scaled by
+// 2^ev here, which is exactly the post-Gain percentile (Gain is a uniform scale),
+// so a Gain change re-derives the knee with no re-measurement.
+constexpr float kHighlightKneeMax = 0.18f;
+constexpr float kHighlightKneeMin = 0.02f;
+constexpr float kHighlightKneePercentile = 0.85f;
+
+// ref <= 0 or non-finite (unmeasured) -> kHighlightKneeMax. gainScale = 2^exposureEv
+// (the SAME float stage 14 multiplies by; the GPU passes its uExposure uniform).
+float highlightKnee(float ref, float gainScale);
 
 // Linear RGB float image, row-major, 3 floats per pixel (r, g, b).
 struct ImageF {
@@ -315,6 +340,14 @@ struct ImageF {
     uint32_t h = 0;
     std::vector<float> rgb;
 };
+
+// Rec.709 luma of every `stride`-th pixel of a linear image, appended to `out`
+// (negatives and non-finite values are skipped).
+void appendLumaSamples(const ImageF& img, size_t stride, std::vector<float>& out);
+
+// The p-quantile (0..1) of the samples (nth_element; the vector is reordered).
+// Empty input -> 0.
+float lumaQuantile(std::vector<float>& samples, float p);
 
 // Internal stage helpers shared by developCpu and developEncoded: the
 // encoded (Mi-Log) path runs the SAME denoise stages (7-8), detail stages
