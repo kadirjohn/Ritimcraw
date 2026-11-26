@@ -158,6 +158,11 @@ echo "== building tests =="
 # hr_trace <clip.mcraw> <frame> [x y] [ev hl chroma nr] — per-stage trace of one pixel (the lilac-streak measurement).
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/hr_trace.cpp" \
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/hr_trace"
+# hr_equivalence record|verify <dir> / bench [w h r] / benchdev <clip> <f> — byte-equality oracle for the
+# recovery CPU reference (night A6): pins recoverClippedHighlights output bit-by-bit across reworks.
+# Run by hand (`record` a baseline, `verify` it after the change); not a self-contained test.
+"$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/hr_equivalence.cpp" \
+  "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/hr_equivalence"
 # p5_compare <clip.mcraw> <frame> <maxDim> <outPrefix> — P5 old-vs-binned preview reduction on a real frame
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/p5_compare.cpp" \
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/p5_compare"
