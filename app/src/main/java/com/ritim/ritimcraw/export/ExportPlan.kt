@@ -1,5 +1,7 @@
 package com.ritim.ritimcraw.export
 
+import com.ritim.ritimcraw.export.hevc.HevcPreflight
+import com.ritim.ritimcraw.export.hevc.HevcProfile
 import kotlin.math.roundToInt
 
 /** The world facts a plan resolves against (everything except the user's settings). */
@@ -11,10 +13,37 @@ data class ExportInput(
     val fps: Double,
 )
 
-/** App-level capabilities that are not encoder facts. */
+/**
+ * The resolved output's color tags (package E2-a). [SDR] is today's
+ * writer contract (BT709 / limited / SMPTE170m); [Hlg] carries
+ * [HevcProfile.HLG]'s MediaFormat contract as plan DATA so the format
+ * builder branches on a sealed fact, never on re-derived constants.
+ * HDR10/DV are NOT here: only HLG crossed its gate (E2's scope).
+ */
+sealed class ExportColorTags(val colorStandard: Int, val colorRange: Int, val colorTransfer: Int) {
+    /** Today's contract: BT709(1) / limited(2) / SMPTE170m(3). */
+    data object SDR : ExportColorTags(1, 2, 3)
+
+    /** HevcProfile.HLG: BT2020(6) / limited(2) / HLG(7, ARIB STD-B67). */
+    data object Hlg : ExportColorTags(
+        HevcProfile.HLG.colorStandard,
+        HevcProfile.HLG.colorRange,
+        HevcProfile.HLG.colorTransfer,
+    )
+}
+
+/**
+ * App-level capabilities that are not encoder facts. [hlgGate] carries
+ * the HLG preflight's PROBED facts (package E2-a; null = no gate
+ * verdict): with it the planner can let dynamicRange=HLG through;
+ * without it the E1 wall stands and HLG resolves to SDR with
+ * [ExportIssue.Kind.DYNAMIC_RANGE_UNAVAILABLE] — today's behavior, unchanged.
+ */
 data class ExportContext(
     /** True once a 10-bit render path exists and is usable for this job (package E1d). False in E1a-c. */
     val tenBitPathAvailable: Boolean = false,
+    /** The HLG gate facts (package E2-a); null = HLG cannot be verified on this device. */
+    val hlgGate: HevcPreflight.HevcProbeResult? = null,
 )
 
 /**
@@ -59,6 +88,13 @@ data class ExportIssue(
 
         /** HLG/HDR10/DV wanted: not available yet, the file is SDR. */
         DYNAMIC_RANGE_UNAVAILABLE,
+
+        /**
+         * HLG resolved through the API-34 fallback gate: supported, but
+         * the preflight's trial encode has not verified it (E2-a). INFO:
+         * the export is planned and honest; the trial is the device leg's.
+         */
+        HLG_TRIAL_REQUIRED,
 
         /** The encoder does not offer this rate mode: the plan uses another. */
         RATE_MODE_UNSUPPORTED,
@@ -105,6 +141,13 @@ data class ExportPlan(
     val height: Int,
     val audioKbps: Int,
     val issues: List<ExportIssue>,
+    /**
+     * The output's color tags (E2-a): SDR everywhere until the planner
+     * lets dynamicRange=HLG through the gate, then HLG's contract.
+     * [ExportFormats.video] branches on this, never on the enum alone —
+     * the plan is the single resolved truth.
+     */
+    val colorTags: ExportColorTags = ExportColorTags.SDR,
     /**
      * True for [legacy]: a job queued before E1. The format builder then
      * emits exactly the keys the writer always set (no KEY_BITRATE_MODE).
@@ -251,12 +294,48 @@ object ExportPlanner {
     ): ExportPlan {
         val issues = ArrayList<ExportIssue>()
         var eff = settings
+        var colorTags: ExportColorTags = ExportColorTags.SDR
+        var hlgResolved = false
         fun warn(kind: ExportIssue.Kind, fix: ExportSettings?, vararg args: String) {
             issues += ExportIssue(kind, ExportIssue.Severity.WARNING, args.toList(), fix)
         }
 
-        // 1. Dynamic range: only SDR is selectable in E1.
-        if (eff.dynamicRange != ExportDynamicRange.SDR) {
+        // 1. Dynamic range. Only SDR is selectable in E1; HLG crosses
+        // ONLY when its gate was probed and the preflight verdict is
+        // Supported (E2-a: HevcProfile/preflight wired into the planner —
+        // previously the E1 wall resolved every non-SDR range to SDR).
+        // HDR10/DV still hit the wall: nothing produces them yet.
+        if (eff.dynamicRange == ExportDynamicRange.HLG) {
+            val gate = context.hlgGate
+            val verdict = gate?.let { HevcPreflight.decide(HevcProfile.HLG, it) }
+            if (verdict is HevcPreflight.HevcVerdict.Supported) {
+                // The HLG contract: HEVC Main10, 10-bit, BT2020/HLG/limited.
+                // The request is brought TO the profile; nothing the user
+                // asked below it survives silently (codec/bitDepth are
+                // HLG's own — the tags below carry the rest).
+                if (gate!!.deviceApiLevel < HevcProfile.HLG.feature!!.requiredApiLevel) {
+                    // The API-34 path (hdr-editing fallback): Supported but
+                    // trialEncodeRequired — the plan records it as an issue
+                    // so the report is honest about the unverified gate.
+                    issues += ExportIssue(
+                        ExportIssue.Kind.HLG_TRIAL_REQUIRED, ExportIssue.Severity.INFO,
+                        listOf(verdict.codecName),
+                    )
+                }
+                eff = eff.copy(
+                    dynamicRange = ExportDynamicRange.HLG,
+                    codec = ExportCodec.HEVC,
+                    bitDepth = 10,
+                    profile = HevcProfile.HLG.profile,
+                )
+                colorTags = ExportColorTags.Hlg
+                hlgResolved = true
+            } else {
+                val fix = eff.copy(dynamicRange = ExportDynamicRange.SDR)
+                warn(ExportIssue.Kind.DYNAMIC_RANGE_UNAVAILABLE, fix, eff.dynamicRange.name)
+                eff = fix
+            }
+        } else if (eff.dynamicRange != ExportDynamicRange.SDR) {
             val fix = eff.copy(dynamicRange = ExportDynamicRange.SDR)
             warn(ExportIssue.Kind.DYNAMIC_RANGE_UNAVAILABLE, fix, eff.dynamicRange.name)
             eff = fix
@@ -264,7 +343,14 @@ object ExportPlanner {
 
         // 2. Bit depth: 10 only with a 10-bit render path; anything but 8/10 is 8.
         if (eff.bitDepth != 10 && eff.bitDepth != 8) eff = eff.copy(bitDepth = 8)
-        if (eff.bitDepth == 10 && !context.tenBitPathAvailable) {
+        // A gate-resolved HLG plan IS the 10-bit GPU path's Main10 job:
+        // the preflight verdict required the 10-bit-capable encoder and
+        // the tags below, so a 10-bit-less "HLG" would be a lie. Without
+        // a 10-bit render path HLG resolves to SDR at step 1 instead
+        // (the gate and tenBitPathAvailable are decided together by the
+        // integrator — ExportSheetModel.tenBitContext's shape, extended
+        // in E2-b when the HLG shader path lands).
+        if (!hlgResolved && eff.bitDepth == 10 && !context.tenBitPathAvailable) {
             val fix = eff.copy(bitDepth = 8)
             warn(ExportIssue.Kind.TEN_BIT_UNAVAILABLE, fix)
             eff = fix
@@ -327,6 +413,22 @@ object ExportPlanner {
             warn(ExportIssue.Kind.PROFILE_UNSUPPORTED, fix, eff.profile.toString())
             eff = fix
             profile = if (eff.codec == ExportCodec.AVC) ExportPlan.AVC_PROFILE_HIGH else null
+            if (hlgResolved) {
+                // Main10 IS the HLG profile: an encoder that does not list
+                // it cannot encode HLG either, so the plan degrades the
+                // whole range to SDR (never a "Main10-less HLG" file) and
+                // says so — the preflight's own refusal stage in plan form.
+                val sdrFix = eff.copy(
+                    dynamicRange = ExportDynamicRange.SDR,
+                    codec = ExportCodec.AVC, bitDepth = 8,
+                    profile = ExportPlan.AVC_PROFILE_HIGH,
+                )
+                warn(ExportIssue.Kind.DYNAMIC_RANGE_UNAVAILABLE, sdrFix, ExportDynamicRange.HLG.name)
+                eff = sdrFix
+                colorTags = ExportColorTags.SDR
+                hlgResolved = false
+                profile = ExportPlan.AVC_PROFILE_HIGH
+            }
         }
 
         // 5. Bitrate.
@@ -387,6 +489,7 @@ object ExportPlanner {
             height = input.height,
             audioKbps = audio,
             issues = issues,
+            colorTags = colorTags,
         )
     }
 

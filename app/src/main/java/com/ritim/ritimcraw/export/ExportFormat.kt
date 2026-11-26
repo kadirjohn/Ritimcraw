@@ -56,9 +56,18 @@ object ExportFormats {
         v[MediaFormat.KEY_FRAME_RATE] = frameRateValue(plan.fps)
         v[MediaFormat.KEY_I_FRAME_INTERVAL] = keyframeValue(plan.keyframeIntervalSec)
         plan.profile?.let { v[MediaFormat.KEY_PROFILE] = it }
-        v[MediaFormat.KEY_COLOR_STANDARD] = MediaFormat.COLOR_STANDARD_BT709
-        v[MediaFormat.KEY_COLOR_RANGE] = MediaFormat.COLOR_RANGE_LIMITED
-        v[MediaFormat.KEY_COLOR_TRANSFER] = MediaFormat.COLOR_TRANSFER_SDR_VIDEO
+        // The color keys come from the PLAN's resolved tags (E2-a): SDR is
+        // exactly today's constants (BT709 / limited / SDR video — the
+        // YuvConverter's matrix, unchanged for every existing plan); the
+        // HLG branch writes HevcProfile.HLG's contract (BT2020 / limited /
+        // HLG) — never re-derived constants, so the tags cannot drift from
+        // the preflight's model. KEY_HDR_STATIC_INFO is NEVER set for HLG
+        // (scene-referred: no per-frame HDR metadata; the SDR branch has
+        // never set it either).
+        val tags = plan.colorTags
+        v[MediaFormat.KEY_COLOR_STANDARD] = tags.colorStandard
+        v[MediaFormat.KEY_COLOR_RANGE] = tags.colorRange
+        v[MediaFormat.KEY_COLOR_TRANSFER] = tags.colorTransfer
         return FormatSpec(plan.mime, plan.width, plan.height, v)
     }
 
