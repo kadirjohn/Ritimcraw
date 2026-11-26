@@ -51,6 +51,66 @@ namespace rawedit {
 // The EXIF-domain tags live in IFD0 (single-IFD writer): the DNG SDK and
 // LibRaw both read FNumber/FocalLength/DateTimeOriginal from the main IFD.
 //
+// TIMECODE / FRAME RATE (CinemaDNG sequence support, docs/
+// CINEMADNG_EXPORT_PLAN.md R1-3, night E-D3 2026-11-27): a sequence
+// export writes the CinemaDNG identity tags on every frame so a reader
+// (Resolve, MotionCam) can group the folder into one clip and place it
+// on a timeline. Both default to ABSENT and an absent option writes NO
+// tag — the same honesty rule as DngExtraMeta — so a default
+// DngSequenceMeta produces a file byte-identical to the writer without
+// it (pinned by test_dng "dng_sequence_meta_default_is_byte_identical").
+//   - TimeCodes (51043): 8 raw bytes, the DNG 1.4 SMPTE timecode layout
+//     (see smpteTimeCodes): hour/min/sec/frame plus the two flag bytes.
+//     The caller passes the START code of frame 0; per-frame codes are
+//     derived by DngSequence, which owns the fps-based arithmetic.
+//   - FrameRate (51044): one RATIONAL. Written as the exact rational the
+//     caller names (e.g. 24000/1001 for 23.976) — never a 1e6-denominator
+//     approximation, so 29.97 reads back as 30000/1001, the value Resolve
+//     and the DNG spec's drop-frame convention expect.
+struct DngSequenceMeta {
+    bool hasTimeCodes = false;    // false = omit tag 51043
+    uint8_t timeCodes[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+    bool hasFrameRate = false;     // false = omit tag 51044
+    uint32_t frameRateNum = 0;    // rational numerator (e.g. 30000)
+    uint32_t frameRateDen = 0;    // rational denominator (e.g. 1001)
+};
+
+// The DNG 1.4 TimeCodes (51043) byte layout, SMPTE 12M: 8 bytes =
+//   [0] hours (bits 0-5) + bgf8 flag (bit 7, 1 when 24 fps)
+//   [1] minutes + colorFrame flag (bit 7)
+//   [2] seconds + field flag (bit 7)
+//   [3] frame + fhf flag (bit 7, 1 for interlaced field 1)
+//   [4] dropped-frame flag (bit 0, 1 when fps uses drop-frame: 29.97)
+//   [5] user-bits binary group flags
+//   [6] user bits
+//   [7] user bits
+// The fps flag bits follow the convention the tinydng reference writer
+// and the DNG SDK both write for a base rate of 24/25/30 fps
+// (TIFFTAG_TIMECODE is a BYTE[8] in both). Writes the code for frame
+// number frameOffset at fps into out (the caller derives a per-frame
+// code from the sequence's start code, which this helper decodes:
+// hours/min/sec/frame carry over and the FRAME field advances by
+// frameOffset under the fps's frame-per-second rollover).
+//   - fps 24 (exact or 23.976): bgf8 = 1, df = 0
+//   - fps 25: bgf8 = 0, df = 0
+//   - fps 30 (exact or 29.97): bgf8 = 0, df = 1 only for 29.97-style
+//     drop-frame rates (df=0 for exact 30)
+//   - anything else: flags 0 (reported, never guessed — the caller
+//     passes a rate this helper classifies honestly; the classification
+//     itself is tested).
+void smpteTimeCodes(int hour, int minute, int second, int frame,
+                    int frameOffset, double fps, uint8_t out[8]);
+
+// Decodes the fps classification of smpteTimeCodes back out of 8 flag
+// bytes: (bgf8, dropFrame). Pure; testable without a file.
+void smpteFpsFlags(double fps, uint8_t flagsOut[2]);
+
+// Writes the raw 8-byte SMPTE code as the TimeCodes tag verbatim (the
+// caller owns the arithmetic; this overload writes exactly what it is
+// given — the byte layout contract, no classification).
+void smpteTimeCodesRaw(const uint8_t in[8], int frameOffset, double fps,
+                       uint8_t out[8]);
+
 // NOISE (G4, the deliberate omission): neither arm writes NoiseProfile
 // (51041) or a noise opcode. The source's NoiseProfile is per CFA slot in
 // the normalized-signal domain; for the CFA file it would need a
@@ -109,5 +169,25 @@ Result<void> writeLinearDng(const std::string& path, const uint16_t* rgb,
 Result<void> writeLinearDng(const std::string& path, const uint16_t* rgb,
                             const FrameInfo& frame, const RawMeta& meta,
                             const DngExtraMeta& extra);
+
+// The same CFA file plus the CinemaDNG sequence tags in seq (see
+// DngSequenceMeta, R1-3): TimeCodes 51043 (8 bytes, verbatim — the
+// caller derived the per-frame code) and FrameRate 51044 (the exact
+// rational given). A default seq writes NO tag and produces a file
+// byte-identical to the no-seq overload (the DngExtraMeta honesty
+// rule). The sequence tags sort after every base and extra tag
+// (51043/51044 > 50964), so the IFD stays ascending.
+Result<void> writeCfaDng(const std::string& path, const uint16_t* cfa,
+                         const FrameInfo& frame, const RawMeta& meta,
+                         const DngExtraMeta& extra,
+                         const DngSequenceMeta& seq);
+
+// The same Linear file plus both optional tag sets (extra + seq). A
+// default seq writes no sequence tag: byte-identical to the extra-only
+// overload.
+Result<void> writeLinearDng(const std::string& path, const uint16_t* rgb,
+                            const FrameInfo& frame, const RawMeta& meta,
+                            const DngExtraMeta& extra,
+                            const DngSequenceMeta& seq);
 
 } // namespace rawedit

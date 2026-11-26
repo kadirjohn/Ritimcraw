@@ -64,6 +64,10 @@ constexpr uint16_t kTagFocalLengthIn35mm = 41989;
 constexpr uint16_t kTagLensModel = 42036;
 constexpr uint16_t kTagUniqueCameraModel = 50708;
 constexpr uint16_t kTagForwardMatrix1 = 50964;
+// CinemaDNG sequence tags (R1-3, docs/CINEMADNG_EXPORT_PLAN.md; the
+// tinydng reference writer's TIFFTAG_TIMECODE/TIFFTAG_FPS spellings).
+constexpr uint16_t kTagTimeCodes = 51043;
+constexpr uint16_t kTagFrameRate = 51044;
 // PhotometricInterpretation VALUES (the tag itself is 262).
 constexpr uint16_t kPhotometricCfa = 32803;
 constexpr uint16_t kPhotometricLinearRaw = 34892;
@@ -216,6 +220,34 @@ std::vector<ExtraTag> buildExtras(const DngExtraMeta& x) {
     return out;
 }
 
+// The CinemaDNG sequence tags (R1-3) as extras: TimeCodes (51043, BYTE
+// x8, the caller's verbatim SMPTE bytes) and FrameRate (51044, RATIONAL
+// x1, the EXACT rational the caller named — never a 1e6 approximation,
+// so 29.97 writes 30000/1001). Both are ABSENT by default; the caller
+// that sets hasTimeCodes/hasFrameRate owns the arithmetic. Appended after
+// buildExtras' tags: 51043/51044 sort after every base (<= 50829) and
+// provenance (<= 50964) tag, so the merged IFD stays ascending.
+void appendSequenceTags(const DngSequenceMeta& seq,
+                        std::vector<ExtraTag>& out) {
+    if (seq.hasTimeCodes) {
+        ExtraTag t;
+        t.tag = kTagTimeCodes;
+        t.type = kTypeByte;
+        t.count = 8;
+        t.bytes.assign(seq.timeCodes, seq.timeCodes + 8);
+        out.push_back(std::move(t));
+    }
+    if (seq.hasFrameRate && seq.frameRateDen != 0) {
+        ExtraTag t;
+        t.tag = kTagFrameRate;
+        t.type = kTypeRational;
+        t.count = 1;
+        put32(t.bytes, seq.frameRateNum);
+        put32(t.bytes, seq.frameRateDen);
+        out.push_back(std::move(t));
+    }
+}
+
 // Bytes the extras add to the external payload (word-aligned: TIFF value
 // offsets must be even, so each external value is padded to even length).
 uint32_t extrasPayloadBytes(const std::vector<ExtraTag>& extras) {
@@ -273,6 +305,104 @@ std::string dngDateTimeUtc(int64_t epochMs) {
 }
 
 Result<void> writeCfaDng(const std::string& path, const uint16_t* cfa,
+                         const FrameInfo& frame, const RawMeta& meta,
+                         const DngExtraMeta& extra) {
+    return writeCfaDng(path, cfa, frame, meta, extra, DngSequenceMeta{});
+}
+
+Result<void> writeLinearDng(const std::string& path, const uint16_t* rgb,
+                            const FrameInfo& frame, const RawMeta& meta,
+                            const DngExtraMeta& extra) {
+    return writeLinearDng(path, rgb, frame, meta, extra, DngSequenceMeta{});
+}
+
+// The SMPTE 12M classification the TimeCodes flag bytes carry (the
+// bgf8/drop-frame conventions of the tinydng reference writer and the
+// DNG SDK): 24-family rates set bgf8; 29.97-family rates set drop-frame;
+// exact 30 and 25 set neither. An unclassifiable rate writes no flag —
+// reported honestly, never guessed (the caller passing such a rate is
+// the sequence planner's contract, tested here).
+void smpteFpsFlags(double fps, uint8_t flagsOut[2]) {
+    uint8_t bgf8 = 0;
+    uint8_t drop = 0;
+    if (fps > 0.0 && std::isfinite(fps)) {
+        const double r23976 = 24000.0 / 1001.0;
+        const double r2997 = 30000.0 / 1001.0;
+        const double eps = 1e-6;
+        if (std::fabs(fps - 24.0) < eps || std::fabs(fps - r23976) < eps ||
+            std::fabs(fps - 48.0) < eps || std::fabs(fps - 48000.0 / 1001.0) < eps) {
+            bgf8 = 1;
+        } else if (std::fabs(fps - r2997) < eps ||
+                   std::fabs(fps - 60000.0 / 1001.0) < eps) {
+            drop = 1;
+        }
+        // 25 and exact 30: no flag (the SMPTE layout's meaning).
+    }
+    flagsOut[0] = bgf8;
+    flagsOut[1] = drop;
+}
+
+// The DNG 1.4 TimeCodes (51043) byte layout: hour/min/sec/frame with the
+// flag bit (0x80) on each, then the flag bytes [4]=drop-frame,
+// [5]=user-bits group flags, [6..7]=user bits (0 when the caller carried
+// none). frameOffset advances the frame field under the fps's
+// frames-per-second rollover (the integer fps the layout encodes: 24, 25
+// or 30 — a 29.97 source rolls at 30 with the drop-frame flag set in the
+// START code the caller derived; the drop arithmetic itself is the
+// sequence planner's, not the tag layout's).
+void smpteTimeCodesRaw(const uint8_t in[8], int frameOffset, double fps,
+                       uint8_t out[8]) {
+    // The integer rate the frame field rolls at: 23.976 family rolls at
+    // 24, 29.97 family at 30, else round(fps) clamped to [1, 60].
+    int perSecond = 0;
+    if (fps > 0.0 && std::isfinite(fps)) {
+        const double eps = 1e-6;
+        if (std::fabs(fps - 24000.0 / 1001.0) < eps) perSecond = 24;
+        else if (std::fabs(fps - 30000.0 / 1001.0) < eps) perSecond = 30;
+        else if (std::fabs(fps - 60000.0 / 1001.0) < eps) perSecond = 60;
+        else {
+            const double r = std::round(fps);
+            if (r >= 1.0 && r <= 60.0) perSecond = static_cast<int>(r);
+        }
+    }
+    int hour = static_cast<int>(in[0] & 0x7f);
+    int minute = static_cast<int>(in[1] & 0x7f);
+    int second = static_cast<int>(in[2] & 0x7f);
+    int frame = static_cast<int>(in[3] & 0x7f);
+    if (frameOffset != 0 && perSecond > 0) {
+        long total = static_cast<long>(frame) + frameOffset;
+        if (total < 0) total = 0; // a caller error stays honest, not wraps
+        second += static_cast<int>(total / perSecond);
+        frame = static_cast<int>(total % perSecond);
+        minute += static_cast<int>(second / 60);
+        second %= 60;
+        hour += static_cast<int>(minute / 60);
+        minute %= 60;
+        hour %= 24;
+    }
+    uint8_t flags[2] = {0, 0};
+    smpteFpsFlags(fps, flags);
+    out[0] = static_cast<uint8_t>(hour | (flags[0] ? 0x80 : 0));
+    out[1] = static_cast<uint8_t>(minute);
+    out[2] = static_cast<uint8_t>(second);
+    out[3] = static_cast<uint8_t>(frame);
+    out[4] = flags[1];
+    out[5] = in[5];
+    out[6] = in[6];
+    out[7] = in[7];
+}
+
+void smpteTimeCodes(int hour, int minute, int second, int frame,
+                    int frameOffset, double fps, uint8_t out[8]) {
+    uint8_t start[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+    start[0] = static_cast<uint8_t>(hour & 0x7f);
+    start[1] = static_cast<uint8_t>(minute & 0x7f);
+    start[2] = static_cast<uint8_t>(second & 0x7f);
+    start[3] = static_cast<uint8_t>(frame & 0x7f);
+    smpteTimeCodesRaw(start, frameOffset, fps, out);
+}
+
+Result<void> writeCfaDng(const std::string& path, const uint16_t* cfa,
                          const FrameInfo& frame, const RawMeta& meta) {
     return writeCfaDng(path, cfa, frame, meta, DngExtraMeta{});
 }
@@ -284,7 +414,8 @@ Result<void> writeLinearDng(const std::string& path, const uint16_t* rgb,
 
 Result<void> writeCfaDng(const std::string& path, const uint16_t* cfa,
                          const FrameInfo& frame, const RawMeta& meta,
-                         const DngExtraMeta& extra) {
+                         const DngExtraMeta& extra,
+                         const DngSequenceMeta& seq) {
     if (cfa == nullptr)
         return Result<void>::fail(ErrorCode::Unsupported, "cfa buffer is null");
     if (frame.width == 0 || frame.height == 0)
@@ -330,7 +461,8 @@ Result<void> writeCfaDng(const std::string& path, const uint16_t* cfa,
     activeArea.type = kTypeLong;
     activeArea.count = 4;
 
-    const std::vector<ExtraTag> extras = buildExtras(extra);
+    std::vector<ExtraTag> extras = buildExtras(extra);
+    appendSequenceTags(seq, extras);
     const uint32_t ifdOffset = 8;
     const size_t entryCount = 21 + extras.size();
     const uint32_t payloadOffset =
@@ -543,7 +675,8 @@ const char* const kLinearDngStages =
 
 Result<void> writeLinearDng(const std::string& path, const uint16_t* rgb,
                             const FrameInfo& frame, const RawMeta& meta,
-                            const DngExtraMeta& extra) {
+                            const DngExtraMeta& extra,
+                            const DngSequenceMeta& seq) {
     if (rgb == nullptr)
         return Result<void>::fail(ErrorCode::Unsupported, "rgb buffer is null");
     if (frame.width == 0 || frame.height == 0)
@@ -601,7 +734,8 @@ Result<void> writeLinearDng(const std::string& path, const uint16_t* rgb,
     activeArea.type = kTypeLong;
     activeArea.count = 4;
 
-    const std::vector<ExtraTag> extras = buildExtras(extra);
+    std::vector<ExtraTag> extras = buildExtras(extra);
+    appendSequenceTags(seq, extras);
     const uint32_t ifdOffset = 8;
     const size_t entryCount = 21 + extras.size();
     const uint32_t payloadOffset =
