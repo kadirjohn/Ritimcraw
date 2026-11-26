@@ -370,4 +370,45 @@ class NodeCurveOpsTest {
         assertFalse(back.nodes[1] == edited[1])
         assertTrue(back.nodes[1].curveY.isIdentity())
     }
+
+    @Test
+    fun plotRect_isNeverNegative_forCollapsedOrTinyCanvases() {
+        for ((w, h) in listOf(0f to 0f, 5f to 700f, 700f to 0f, 700f to 19f, 700f to 20f, 1f to 1f, 40f to 40f)) {
+            val r = NodeCurveOps.plotRect(w, h, 35f)
+            assertTrue("w=$w h=$h", r.width >= 1f && r.height >= 1f && r.left >= 0f && r.top >= 0f)
+        }
+    }
+
+    @Test
+    fun plotRect_normalCanvas_keepsTheInset() {
+        val r = NodeCurveOps.plotRect(1000f, 770f, 35f)
+        assertEquals(35f, r.left, 0f)
+        assertEquals(35f, r.top, 0f)
+        assertEquals(930f, r.width, 0f)
+        assertEquals(700f, r.height, 0f)
+    }
+
+    @Test
+    fun hitTestMaths_usesThePlotRect_identityCornersAreBottomLeftAndTopRight() {
+        val w = 1000f
+        val h = 770f
+        val r = NodeCurveOps.plotRect(w, h, 35f)
+        // Pad bottom-left (y down) is curve (0, 0); pad top-right is curve (1, 1): the identity ascends.
+        val (x0, y0) = NodeCurveOps.pointerToCurve(r.left, r.top + r.height, w, h, 35f)
+        val (x1, y1) = NodeCurveOps.pointerToCurve(r.left + r.width, r.top, w, h, 35f)
+        assertEquals(0f, x0, 1e-6f); assertEquals(0f, y0, 1e-6f)
+        assertEquals(1f, x1, 1e-6f); assertEquals(1f, y1, 1e-6f)
+        // The draw's mapping (rect + curveToPadY) lands the identity's ends on those same pixels.
+        assertEquals(r.top + r.height, r.top + NodeCurveOps.curveToPadY(0f) * r.height, 1e-3f)
+        assertEquals(r.top, r.top + NodeCurveOps.curveToPadY(1f) * r.height, 1e-3f)
+        // A tap at the middle of the plot is curve (0.5, 0.5).
+        val (mx, my) = NodeCurveOps.pointerToCurve(r.left + r.width / 2, r.top + r.height / 2, w, h, 35f)
+        assertEquals(0.5f, mx, 1e-6f); assertEquals(0.5f, my, 1e-6f)
+    }
+
+    @Test
+    fun pointerToCurve_onCollapsedCanvas_staysInUnitSquare() {
+        val (x, y) = NodeCurveOps.pointerToCurve(300f, 12f, 700f, 0f, 35f)
+        assertTrue(x in 0f..1f && y in 0f..1f)
+    }
 }

@@ -232,11 +232,25 @@ object NodeCurveOps {
      * math and the draw share one frame; the page remembers the size it drew with.
      */
     fun pointerToCurve(px: Float, py: Float, w: Float, h: Float, insetPx: Float): Pair<Float, Float> {
-        val iw = (w - 2 * insetPx).coerceAtLeast(1f)
-        val ih = (h - 2 * insetPx).coerceAtLeast(1f)
-        val x = ((px - insetPx) / iw).coerceIn(0f, 1f)
-        val y = padToCurveY(((py - insetPx) / ih).coerceIn(0f, 1f))
+        val r = plotRect(w, h, insetPx)
+        val x = ((px - r.left) / r.width).coerceIn(0f, 1f)
+        val y = padToCurveY(((py - r.top) / r.height).coerceIn(0f, 1f))
         return x to y
+    }
+
+    /** The plot's inner rectangle in canvas pixels (y down). Width and height are always >= 1. */
+    data class PlotRect(val left: Float, val top: Float, val width: Float, val height: Float)
+
+    /**
+     * The ONE plot frame the draw and the gestures share. The inset is clamped so it never eats more
+     * than half of the smaller side, and the inner size never drops below 1px: a collapsed or not yet
+     * measured canvas (w or h of 0, or smaller than 2 * inset) yields a tiny positive rect, never a
+     * negative one (a negative height flips the drawn identity line to descending).
+     */
+    fun plotRect(w: Float, h: Float, insetPx: Float): PlotRect {
+        val maxIns = ((minOf(w, h) - 1f) / 2f).coerceAtLeast(0f)
+        val ins = insetPx.coerceIn(0f, maxIns)
+        return PlotRect(ins, ins, (w - 2 * ins).coerceAtLeast(1f), (h - 2 * ins).coerceAtLeast(1f))
     }
 
     private fun dist(p: Pair<Float, Float>, x: Float, y: Float): Float {

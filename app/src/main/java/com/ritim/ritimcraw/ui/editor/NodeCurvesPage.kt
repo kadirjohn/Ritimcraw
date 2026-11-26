@@ -8,7 +8,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.requiredHeight
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.ColorScheme
@@ -20,7 +20,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
@@ -32,12 +31,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import com.ritim.ritimcraw.R
 import com.ritim.ritimcraw.data.grade2.GradeNodeV2
@@ -126,6 +123,8 @@ private fun curveLabel(id: NodeCurveId): String = stringResource(
     },
 )
 
+private val PLOT_HEIGHT = 220.dp
+
 private fun pointsReadout(n: Int): String = String.format(Locale.ROOT, "%d / %d", n, NodeCurveOps.MAX_POINTS)
 
 /**
@@ -146,28 +145,27 @@ private fun CurveCanvas(
     val latestChange by rememberUpdatedState(onNodeChange)
     val onDragActive by rememberUpdatedState(onDragActiveChange)
     var dragIndex by remember(curve) { mutableIntStateOf(-1) }
-    var sizePx by remember { mutableStateOf(IntSize.Zero) }
     val scheme = MaterialTheme.colorScheme
     // The plot keeps its thumb circles inside the boundary: 10px inset (a 8px radius point at the rim).
     val inset = 10.dp
     Box(
         Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp)
-            .heightIn(min = 200.dp)
-            .onSizeChanged { sizePx = it },
+            .padding(horizontal = 16.dp),
     ) {
         Canvas(
             Modifier
                 .fillMaxWidth()
-                .heightIn(min = 200.dp)
+                // requiredHeight: deterministic, NOT coerced by a bounded parent (the min-only heightIn
+                // collapsed on the device); the gestures read the canvas' OWN size, the draw's size.
+                .requiredHeight(PLOT_HEIGHT)
                 .semantics { this.contentDescription = contentDescription }
                 .pointerInput(curve) {
                     detectTapGestures(
                         onDoubleTap = { pos ->
                             val ins = inset.toPx()
                             val (cx, cy) = NodeCurveOps.pointerToCurve(
-                                pos.x, pos.y, sizePx.width.toFloat(), sizePx.height.toFloat(), ins,
+                                pos.x, pos.y, size.width.toFloat(), size.height.toFloat(), ins,
                             )
                             val hit = NodeCurveOps.hitTest(latestNode, curve, cx, cy)
                             if (hit >= 0) {
@@ -184,7 +182,7 @@ private fun CurveCanvas(
                             onDragActive(true)
                             val ins = inset.toPx()
                             val (cx, cy) = NodeCurveOps.pointerToCurve(
-                                pos.x, pos.y, sizePx.width.toFloat(), sizePx.height.toFloat(), ins,
+                                pos.x, pos.y, size.width.toFloat(), size.height.toFloat(), ins,
                             )
                             val hit = NodeCurveOps.hitTest(latestNode, curve, cx, cy)
                             if (hit >= 0) {
@@ -207,7 +205,7 @@ private fun CurveCanvas(
                         val ins = inset.toPx()
                         val (cx, cy) = NodeCurveOps.pointerToCurve(
                             change.position.x, change.position.y,
-                            sizePx.width.toFloat(), sizePx.height.toFloat(), ins,
+                            size.width.toFloat(), size.height.toFloat(), ins,
                         )
                         latestChange(NodeCurveOps.setPointAt(latestNode, curve, dragIndex, cx, cy))
                     }
@@ -215,11 +213,12 @@ private fun CurveCanvas(
         ) {
             val w = size.width.toFloat()
             val h = size.height.toFloat()
-            val ins = inset.toPx()
-            val iw = w - 2 * ins
-            val ih = h - 2 * ins
-            fun px(x: Float) = ins + x * iw
-            fun py(y: Float) = ins + NodeCurveOps.curveToPadY(y) * ih
+            val r = NodeCurveOps.plotRect(w, h, inset.toPx())
+            val ins = r.left
+            val iw = r.width
+            val ih = r.height
+            fun px(x: Float) = r.left + x * iw
+            fun py(y: Float) = r.top + NodeCurveOps.curveToPadY(y) * ih
             // The plot frame: a hairline border (outlineVariant, the pad rim's role).
             drawRect(
                 color = scheme.outlineVariant,
