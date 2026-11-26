@@ -29,22 +29,22 @@ interface ProxyWriteHandle {
  * Pure-JVM proxy cache (docs/PROXY_PLAN.md section 3).
  *
  * Layout, per key base name B = "<fingerprint>-<sigHash>":
- *  - `B.mp4` + `B.manifest` : a published entry. The manifest (key=value text; the plan's "json" role,
- *    JVM unit tests have no JSON library) holds the signature hash, video byte size, duration, frame count,
+ *  - `B.mp4` + `B.json` : a published entry. The manifest is JSON ([ProxyManifestCodec], the same
+ *    in-repo helpers as project.json; decision 2026-11-26) and holds the signature hash, video byte size, duration, frame count,
  *    creation time and — when begun through the [begin] signature overload — the full signature fields
  *    ([ProxyEntry.signatureLine]). Last access = the manifest file's mtime (touch = setLastModified, no rewrite).
- *  - `B.mp4.tmp` / `B.manifest.tmp` : an in-progress write.
+ *  - `B.mp4.tmp` / `B.json.tmp` : an in-progress write.
  *
  * Protocol:
  *  1. [begin] removes stale tmp for the key and hands out a handle; the writer fills `videoFile` (`B.mp4.tmp`).
  *  2. commit: old manifest is dropped first, the manifest tmp is written, then `.mp4.tmp -> .mp4`
- *     and, LAST, `.manifest.tmp -> .manifest` (each an atomic Files.move). A reader recognises an entry only through
+ *     and, LAST, `.json.tmp -> .json` (each an atomic Files.move). A reader recognises an entry only through
  *     its manifest, so a crash at any point leaves either nothing or an unreadable leftover.
- *  3. [lookup] is the single gate for playback: only a manifest whose signature hash matches the key and whose
+ *  3. [playable] is the single gate for playback: only a manifest whose signature hash matches the key and whose
  *     video exists with exactly the recorded size resolves. A `.tmp` never resolves. A hit touches last access.
- *  4. [sweep] (run at startup, before any job) deletes every `*.tmp`, every `.mp4` without a manifest and
- *     every manifest without a `.mp4`, except the tmp of handles currently open.
- *  5. [evictToCap] deletes least-recently-used entries until total <= cap (protected keys, the key of an
+ *  4. [sweep] (run at startup, before any job) deletes every `*.tmp`, every `.mp4` without a manifest,
+ *     every manifest without a `.mp4` and every manifest that cannot be parsed, except the tmp of handles currently open.
+ *  5. [evictToCap] deletes least-recently-used entries until total <= cap (protected keys, the keys of [protectSource], the key of an
  *     open handle and, after each commit, the committed key are never evicted). An entry bigger than the cap
  *     is not published.
  * There is no resume: an interrupted build restarts from scratch.
@@ -53,14 +53,16 @@ interface ProxyWriteHandle {
  */
 class ProxyCache(
     private val storage: ProxyStorage,
-    private val capBytes: Long = ProxyPolicy().capBytes,
+    private val capBytes: Long = PROXY_CAP_DEFAULT_BYTES,
+    /** In-use / being-rebuilt keys never evicted; P3 plugs the playback source here ([ProxyProtectSource]). */
+    private val protectSource: ProxyProtectSource = ProxyProtectSource.NONE,
     private val clock: () -> Long = System::currentTimeMillis,
 ) {
     private val lock = Any()
     private val open = HashSet<String>() // base names with a live handle
 
     private fun mp4(k: ProxyKey) = k.baseName + ".mp4"
-    private fun man(k: ProxyKey) = k.baseName + ".manifest"
+    private fun man(k: ProxyKey) = k.baseName + ".json"
 
     fun begin(key: ProxyKey): ProxyWriteHandle = synchronized(lock) { beginLocked(key, null) }
 
@@ -81,15 +83,31 @@ class ProxyCache(
         return Handle(key, signatureLine)
     }
 
-    fun lookup(key: ProxyKey): ProxyEntry? = synchronized(lock) {
+    /**
+     * THE gate (name decided 2026-11-26: "playable"): the complete, validated proxy for [key], or null.
+     * Playback only ever opens what this returns. A hit touches last access (LRU).
+     */
+    fun playable(key: ProxyKey): ProxyEntry? = synchronized(lock) {
         val e = readEntry(key) ?: return null
         val now = clock()
         storage.setLastModified(man(key), now)
         e.copy(lastAccessMs = now)
     }
 
-    /** Like [lookup] but does not touch last access. */
-    fun peek(key: ProxyKey): ProxyEntry? = synchronized(lock) { readEntry(key) }
+    /**
+     * [playable] for a signature: additionally, when the manifest kept the full signature text it
+     * must equal [ProxySignature.canonical], so even a (practically impossible) hash collision
+     * cannot serve a proxy built with other settings.
+     */
+    fun playable(signature: ProxySignature): ProxyEntry? = synchronized(lock) {
+        val key = signature.key()
+        val e = readEntry(key) ?: return null
+        if (e.signatureLine != null && e.signatureLine != signature.canonical()) return null
+        playable(key)
+    }
+
+    /** Like [playable] but does not touch last access. */
+    fun peekPlayable(key: ProxyKey): ProxyEntry? = synchronized(lock) { readEntry(key) }
 
     /** Remove stale leftovers. Returns the number of files deleted. */
     fun sweep(): Int = synchronized(lock) {
@@ -100,8 +118,8 @@ class ProxyCache(
             val base = name.substringBefore('.')
             val stale = when {
                 name.endsWith(TMP) -> base !in open
-                name.endsWith(".mp4") -> (base + ".manifest") !in set
-                name.endsWith(".manifest") -> (base + ".mp4") !in set
+                name.endsWith(".mp4") -> (base + ".json") !in set
+                name.endsWith(".json") -> (base + ".mp4") !in set || readManifest(name) == null
                 else -> false
             }
             if (stale && storage.delete(name)) n++
@@ -152,9 +170,10 @@ class ProxyCache(
         val all = allEntries()
         var total = all.sumOf { it.bytes }
         val evicted = ArrayList<ProxyKey>()
+        val protectedByAll = protectSource.protectedKeys()
         for (e in all.sortedWith(compareBy({ it.lastAccessMs }, { it.createdAtMs }, { it.key.baseName }))) {
             if (total <= capBytes) break
-            if (e.key in protect || e.key.baseName in open) continue
+            if (e.key in protect || e.key in protectedByAll || e.key.baseName in open) continue
             clear(e.key)
             total -= e.bytes
             evicted += e.key
@@ -165,9 +184,9 @@ class ProxyCache(
     // ---- internals (lock held) ----
 
     private fun allEntries(): List<ProxyEntry> = storage.names()
-        .filter { it.endsWith(".manifest") }
+        .filter { it.endsWith(".json") }
         .mapNotNull { n ->
-            val base = n.removeSuffix(".manifest")
+            val base = n.removeSuffix(".json")
             val i = base.indexOf('-')
             if (i <= 0) return@mapNotNull null
             val key = try {
@@ -178,22 +197,23 @@ class ProxyCache(
             readEntry(key)
         }
 
+    private fun readManifest(name: String): ProxyManifest? =
+        storage.read(name)?.let { ProxyManifestCodec.parse(it) }
+
     private fun readEntry(key: ProxyKey): ProxyEntry? {
-        val bytes = storage.read(man(key)) ?: return null
-        val p = java.util.Properties()
-        try { p.load(bytes.inputStream()) } catch (_: Exception) { return null }
-        if (p.getProperty("sigHash") != key.sigHash || p.getProperty("fingerprint") != key.fingerprint) return null
-        val size = p.getProperty("videoBytes")?.toLongOrNull() ?: return null
+        val m = readManifest(man(key)) ?: return null
+        if (m.sigHash != key.sigHash || m.fingerprint != key.fingerprint) return null
+        val size = m.videoBytes
         if (size <= 0 || !storage.exists(mp4(key)) || storage.size(mp4(key)) != size) return null
         return ProxyEntry(
             key = key,
             file = storage.fileFor(mp4(key)),
             bytes = size,
-            durationUs = p.getProperty("durationUs")?.toLongOrNull() ?: -1,
-            frameCount = p.getProperty("frameCount")?.toLongOrNull() ?: -1,
-            createdAtMs = p.getProperty("createdAtMs")?.toLongOrNull() ?: 0,
+            durationUs = m.durationUs,
+            frameCount = m.frameCount,
+            createdAtMs = m.createdAtMs,
             lastAccessMs = storage.lastModified(man(key)),
-            signatureLine = p.getProperty("sig"),
+            signatureLine = m.signature,
         )
     }
 
@@ -216,15 +236,9 @@ class ProxyCache(
                 return null
             }
             val now = clock()
-            val text = buildString {
-                append("fingerprint=").append(key.fingerprint).append('\n')
-                append("sigHash=").append(key.sigHash).append('\n')
-                append("videoBytes=").append(size).append('\n')
-                append("durationUs=").append(durationUs).append('\n')
-                append("frameCount=").append(frameCount).append('\n')
-                append("createdAtMs=").append(now).append('\n')
-                if (signatureLine != null) append("sig=").append(signatureLine).append('\n')
-            }
+            val text = ProxyManifestCodec.render(
+                ProxyManifest(key.fingerprint, key.sigHash, size, durationUs, frameCount, now, signatureLine),
+            )
             try {
                 storage.delete(man(key))                 // old entry stops resolving before its video is replaced
                 storage.write(tmpM, text.toByteArray(Charsets.UTF_8))

@@ -12,13 +12,20 @@ data class ProxyClipInfo(
 )
 
 /**
+ * Default cache cap: 20 GiB (20 * 2^30 = 21_474_836_480 bytes). Owner-approved 2026-11-26
+ * ("the 20 GB cap is APPROVED"); the binary reading is used because filesystems and
+ * `StatFs` report binary sizes. Single source of truth for [ProxyPolicy] and [ProxyCache].
+ */
+const val PROXY_CAP_DEFAULT_BYTES: Long = 20L shl 30
+
+/**
  * Owner-approved defaults (docs/PROXY_PLAN.md, decisions of 2026-11-25):
  * automatic proxy for 8K and 4K60 encoded clips, MCRAW proxy opt-in, 20 GB cap.
  */
 data class ProxyPolicy(
     val autoEncoded: Boolean = true,
     val autoMcraw: Boolean = false,
-    val capBytes: Long = 20L shl 30,
+    val capBytes: Long = PROXY_CAP_DEFAULT_BYTES,
 ) {
     /** Pure decision: should a proxy be queued automatically for [clip]. */
     fun shouldAutoGenerate(clip: ProxyClipInfo): Boolean = when (clip.kind) {

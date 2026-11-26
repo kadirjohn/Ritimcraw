@@ -31,7 +31,14 @@ class DirProxyStorage(private val root: File) : ProxyStorage {
     override fun setLastModified(name: String, ms: Long) = fileFor(name).setLastModified(ms)
     override fun read(name: String): ByteArray? =
         try { fileFor(name).readBytes() } catch (_: java.io.IOException) { null }
-    override fun write(name: String, bytes: ByteArray) { fileFor(name).writeBytes(bytes) }
+    /** Writes and fsyncs, so a later atomic rename never publishes bytes still only in the page cache. */
+    override fun write(name: String, bytes: ByteArray) {
+        java.io.FileOutputStream(fileFor(name)).use { out ->
+            out.write(bytes)
+            out.flush()
+            out.fd.sync()
+        }
+    }
     override fun fileFor(name: String): File {
         require(name.isNotEmpty() && '/' !in name && '\\' !in name && name != "." && name != "..") { "bad name: $name" }
         return File(root, name)

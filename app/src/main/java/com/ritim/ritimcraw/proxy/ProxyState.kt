@@ -19,6 +19,10 @@ class ProxyStateMap {
     fun failureCount(key: ProxyKey): Int = synchronized(lock) { failures[key] ?: 0 }
     fun failureReason(key: ProxyKey): String? = synchronized(lock) { reasons[key] }
     fun isPaused(): Boolean = synchronized(lock) { paused }
+    /** Keys currently Building: a [ProxyProtectSource] (an entry being rebuilt is never evicted). */
+    fun buildingSource(): ProxyProtectSource = ProxyProtectSource {
+        synchronized(lock) { states.filterValues { it == ProxyState.Building }.keys.toSet() }
+    }
     fun queued(): List<ProxyKey> = synchronized(lock) { queue.toList() }
 
     /** Queue [key] unless it is already Queued/Building/Ready. [front] = the clip the user just opened. */
