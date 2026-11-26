@@ -1341,35 +1341,20 @@ fun AppNav(
         ) {
         if (systemMonitorVisible) SystemMonitorBar()
         // Wide windows (tablets, unfolded foldables, >= 600dp): the
-        // destinations move from the bottom bar to a NavigationRail on the
-        // start edge (Material adaptive guidance) so the content keeps its
-        // height and the nav stays in thumb reach on a large screen.
+        // destinations move from the bottom bar to a NavigationRail.
+        // The rail docks on the END edge (owner request 2026-11-27: the
+        // app is right-handed focused — the editor's own category rail
+        // already docks on the right, so the browse rail joins it there
+        // and the nav stays in the right thumb's reach). Row order does
+        // the docking: the weighted content Box composes FIRST, the rail
+        // AFTER it, so the rail lands at the Row's end edge (right in
+        // LTR); the Spacers' weight(1f) centering, the items and the
+        // insets are unchanged.
         Row(
             Modifier
                 .fillMaxWidth()
                 .weight(1f)
         ) {
-        if (wideNav && showNav) {
-            NavigationRail {
-                Spacer(Modifier.weight(1f))
-                Destination.entries.forEach { d ->
-                    val selected = destination == d
-                    NavigationRailItem(
-                        selected = selected,
-                        onClick = { destination = d },
-                        icon = {
-                            Icon(
-                                if (selected) d.filled else d.outlined,
-                                contentDescription = stringResource(d.labelRes),
-                            )
-                        },
-                        label = { Text(stringResource(d.labelRes)) },
-                        modifier = Modifier.padding(vertical = 4.dp),
-                    )
-                }
-                Spacer(Modifier.weight(1f))
-            }
-        }
         Box(
             Modifier
                 .fillMaxHeight()
@@ -2709,12 +2694,40 @@ fun AppNav(
                 )
             }
             }
+        // The rail AFTER the content Box: the Row's children in order
+        // are content-then-rail, so the weighted Box takes the start
+        // share and the rail lands on the END edge (right in LTR) —
+        // the same docking the editor's own category rail uses. The
+        // rail's internals are unchanged from the start-edge layout:
+        // the Spacers' weight(1f) center the items, the insets stay
+        // the stock NavigationRail's own.
+        if (wideNav && showNav) {
+            NavigationRail {
+                Spacer(Modifier.weight(1f))
+                Destination.entries.forEach { d ->
+                    val selected = destination == d
+                    NavigationRailItem(
+                        selected = selected,
+                        onClick = { destination = d },
+                        icon = {
+                            Icon(
+                                if (selected) d.filled else d.outlined,
+                                contentDescription = stringResource(d.labelRes),
+                            )
+                        },
+                        label = { Text(stringResource(d.labelRes)) },
+                        modifier = Modifier.padding(vertical = 4.dp),
+                    )
+                }
+                Spacer(Modifier.weight(1f))
+            }
+        }
         }
         }
     }
 }
 
-/** Window width from which the browse nav becomes a start-edge rail. */
+/** Window width from which the browse nav becomes an end-edge rail. */
 private const val WIDE_NAV_MIN_WIDTH_DP = 600
 
 private class Stores(
