@@ -239,4 +239,19 @@ ImageF developEncoded(const YuvFrame& frame, const Grade& grade, bool isBt709, c
     return out;
 }
 
+// A7 night 2026-11-26: the striped emit plan (see Transfer.h). Row counts
+// are floored to even (the chroma phase — an odd boundary would shift the
+// chroma by one row) with a floor of 2; the ranges tile [0, height) exactly.
+std::vector<std::pair<uint32_t, uint32_t>> planEncodedStripes(uint32_t height, uint32_t stripeRows) {
+    std::vector<std::pair<uint32_t, uint32_t>> out;
+    if (height == 0)
+        return out;
+    uint32_t rows = stripeRows & ~1u;
+    if (rows < 2)
+        rows = 2;
+    for (uint32_t y0 = 0; y0 < height; y0 += rows)
+        out.emplace_back(y0, std::min(y0 + rows, height));
+    return out;
+}
+
 } // namespace rawedit

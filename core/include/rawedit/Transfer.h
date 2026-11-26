@@ -12,6 +12,7 @@
 #pragma once
 
 #include <cstdint>
+#include <utility>
 #include <vector>
 
 #include <rawedit/Develop.h>
@@ -112,5 +113,45 @@ struct YuvFrame {
 //   two pipelines stay in lockstep. Appended AFTER lut with a nullptr
 //   default so no existing call site changes.
 ImageF developEncoded(const YuvFrame& frame, const Grade& grade, bool isBt709, const Lut* lut = nullptr, const CompiledLutBinding* binding = nullptr);
+
+// ---- Striped (row-streaming) encoded develop, A7 night 2026-11-26 ----
+//
+// developEncoded develops exactly the rows its YuvFrame holds, so a frame
+// handed over in horizontal STRIPES develops with peak memory bounded by
+// the stripe, not the frame — the export CPU fallback's 8K path (a whole
+// 7680x4320 develop holds a 33 MP ImageF plus its stage planes at once; a
+// stripe holds stripeRows + 2*margin rows of the same). The stripe must
+// carry the vertical context the windowed stages read. The stacked reach
+// (the stage CHAIN, each stage reading the previous one's rows — derived
+// and then measured, A7 night sweep, core/tests/test_develop_stripes.cpp):
+// the per-pixel grade loop is row-local; denoiseChroma's separable
+// Gaussian reaches 4 rows (step 2, taps at +-2*step); denoiseLuma's 3x3
+// reads post-chroma rows (+-1 -> reach 5); the sharpness unsharp mask
+// reads post-luma rows (+-2 -> reach 7); the detail unsharp mask reads
+// post-sharp rows (+-2 -> reach 9). The margin must cover the FULL chain:
+// >= 9 — and EVEN (chroma row r serves luma rows 2r and 2r+1, so an odd
+// view top y0 - M with y0 even shifts the chroma phase by one row: the
+// measured sweep fails at EVERY odd margin, all fixtures). 10 is the
+// smallest even value >= 9. Margins below 10 can pass on CONTENT LUCK (the
+// deep-chain taps only sometimes round to a different float — the sweep's
+// small fixtures passed at 6, the 960-wide ones failed there); the
+// equality suite with adversarial fixtures locks the honest bound.
+//
+// Bit-exactness contract (locked by core/tests/test_develop_stripes.cpp):
+// a stripe view holding source rows [max(0,y0-M), min(H,y1+M)) develops
+// rows [y0,y1) BIT-IDENTICALLY to the same rows of the whole-frame
+// developEncoded — every emitted row's +-4 neighborhood lies inside the
+// view, so no windowed tap and no edge clamp differs; the margin rows are
+// context the caller discards. Stripe row boundaries must be EVEN (the
+// chroma phase; see the margin record above); the view's chroma starts at
+// the chroma row of its first luma row.
+constexpr uint32_t kEncodedStripeMargin = 10;
+
+// Partitions [0, height) into emit ranges [y0, y1): every y0 even (the
+// chroma phase), y1 - y0 <= stripeRows (clamped even, at least 2), the
+// ranges cover the frame exactly with no gap or overlap. The caller
+// develops each range with kEncodedStripeMargin rows of context above and
+// below and keeps exactly the range's rows.
+std::vector<std::pair<uint32_t, uint32_t>> planEncodedStripes(uint32_t height, uint32_t stripeRows);
 
 } // namespace rawedit
