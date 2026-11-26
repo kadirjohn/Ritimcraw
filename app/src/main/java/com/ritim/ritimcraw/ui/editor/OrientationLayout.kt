@@ -96,7 +96,9 @@ object OrientationLayout {
      * the single-column layout; in the two-column layout it is what the
      * panel leaves (60-70%) — or the FULL width when the panel is hidden
      * (section 17.3: collapsing the adjustment area expands the preview
-     * horizontally).
+     * horizontally). The wiring's steady state equals this share: the
+     * panel column's width is the band share of the same base and the
+     * preview is the flexing weighted column that takes the remainder.
      */
     fun previewWidthFraction(panelVisible: Boolean, widthDp: Int, heightDp: Int): Float =
         when {
@@ -104,6 +106,26 @@ object OrientationLayout {
             !panelVisible -> 1f
             else -> 1f - panelWidthFraction(widthDp)
         }
+
+    /**
+     * The panel column's share while the landscape hide/show SLIDES
+     * (owner request 2026-11-27): the visible endpoint is the same
+     * responsive band share [panelWidthFraction] returns, the hidden
+     * endpoint is 0, and [slide] interpolates between them — the
+     * portrait sheet's "the panel's height IS the drag offset" model
+     * carried to the landscape's horizontal axis. The wiring multiplies
+     * this share by its MEASURED base (the Row width minus the fixed
+     * rail column) inside a layout-phase modifier, so the slide
+     * re-measures without recomposing the screen (the portrait sheet's
+     * offset-read mechanism, mirrored).
+     *
+     * Degenerate inputs are clamped: [slide] is coerced into 0..1 and a
+     * non-two-column workspace has no panel column at all.
+     */
+    fun panelWidthFractionSliding(slide: Float, widthDp: Int, heightDp: Int): Float {
+        if (!isTwoColumn(widthDp, heightDp)) return 0f
+        return panelWidthFraction(widthDp) * slide.coerceIn(0f, 1f)
+    }
 
     /**
      * The category rail's width band (owner layout-refactor spec 2026-11-12

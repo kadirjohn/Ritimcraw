@@ -320,4 +320,33 @@ object PanelSheet {
      */
     fun panelAfterCategoryTap(current: PanelState): PanelState =
         if (current == PanelState.COLLAPSED) PanelState.NORMAL else current
+
+    /**
+     * The LANDSCAPE rail tap decision (owner request 2026-11-27): in the
+     * two-column workspace the category rail is the panel's only
+     * navigation, and a tap on the rail item whose category is ALREADY
+     * selected while the panel column is visible HIDES the column — the
+     * landscape's panel-dismiss gesture. Every other tap keeps today's
+     * routing: a different category only switches (the panel never
+     * moves on a switch), and while the column is hidden every tap
+     * reopens it (section 10.3's "selecting a category reveals the
+     * controls" carried into the landscape workspace).
+     *
+     * PORTRAIT IS UNTOUCHED: the bottom bar's tap keeps
+     * [panelAfterCategoryTap]'s rule — a tap while open never moves the
+     * portrait sheet; the hide-on-tap is a landscape-only addition by
+     * the owner's ask, so the two decisions stay separate functions
+     * rather than one mode-flagged router.
+     *
+     * Pure so the rail's tap routing is JVM-testable headless; the
+     * wiring (ClipEditorScreen) applies it beside the shared tab switch
+     * — both navs read the same category Int (layout-refactor spec
+     * section 6), and the tab stays selected while hidden, exactly as
+     * the portrait bar keeps the category highlighted while collapsed.
+     */
+    fun landscapeRailTapHidesPanel(
+        selected: Int,
+        tapped: Int,
+        panelVisible: Boolean,
+    ): Boolean = panelVisible && tapped == selected
 }

@@ -194,4 +194,74 @@ class OrientationLayoutTest {
         // value, not a hardcoded one.
         assertEquals(64, OrientationLayout.railWidthDp(widthDp = 800, heightDp = 400))
     }
+
+    // ---- sliding panel share (owner request 2026-11-27: the landscape
+    // hide/show becomes a smooth slide between the same band endpoints) ----
+
+    @Test
+    fun slide_one_is_the_visible_band_share() {
+        // The slide's open endpoint is byte-identical to the steady
+        // visible layout: the same responsive band fraction the weighted
+        // column always used.
+        assertEquals(
+            OrientationLayout.panelWidthFraction(800),
+            OrientationLayout.panelWidthFractionSliding(slide = 1f, widthDp = 800, heightDp = 400),
+            0f,
+        )
+    }
+
+    @Test
+    fun slide_zero_hides_the_panel_column() {
+        // The closed endpoint removes the column's footprint: the preview
+        // (the flexing weighted column) takes the whole width.
+        assertEquals(
+            0f,
+            OrientationLayout.panelWidthFractionSliding(slide = 0f, widthDp = 800, heightDp = 400),
+            0f,
+        )
+    }
+
+    @Test
+    fun slide_interpolates_between_the_endpoints() {
+        // A mid-slide value is the band share scaled by the slide — the
+        // portrait sheet's "height IS the offset" model, horizontal.
+        val open = OrientationLayout.panelWidthFraction(800)
+        assertEquals(
+            open * 0.5f,
+            OrientationLayout.panelWidthFractionSliding(slide = 0.5f, widthDp = 800, heightDp = 400),
+            1e-4f,
+        )
+    }
+
+    @Test
+    fun slide_is_clamped_into_the_unit_interval() {
+        // A caller handing a value outside 0..1 (a reversed animation
+        // overshoot, a restored state) never leaves the band's endpoints.
+        assertEquals(
+            OrientationLayout.panelWidthFraction(800),
+            OrientationLayout.panelWidthFractionSliding(slide = 1.5f, widthDp = 800, heightDp = 400),
+            0f,
+        )
+        assertEquals(
+            0f,
+            OrientationLayout.panelWidthFractionSliding(slide = -0.25f, widthDp = 800, heightDp = 400),
+            0f,
+        )
+    }
+
+    @Test
+    fun no_sliding_share_outside_the_two_column_workspace() {
+        // Portrait/square: there is no panel column to slide — the
+        // share is 0 whatever the slide value.
+        assertEquals(
+            0f,
+            OrientationLayout.panelWidthFractionSliding(slide = 1f, widthDp = 400, heightDp = 800),
+            0f,
+        )
+        assertEquals(
+            0f,
+            OrientationLayout.panelWidthFractionSliding(slide = 1f, widthDp = 600, heightDp = 600),
+            0f,
+        )
+    }
 }
