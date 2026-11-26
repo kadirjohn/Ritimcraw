@@ -312,8 +312,11 @@ class NodeWheelOpsTest {
 
     @Test
     fun readout_formats_extremes_and_zeros_without_locale_help() {
-        assertEquals("x +1.00  y +1.00", NodeWheelOps.puckReadout(NodeWheelV2(1f, 1f, 0.9f)))
-        assertEquals("x -1.00  y -1.00", NodeWheelOps.puckReadout(NodeWheelV2(-1f, -1f, 0.9f)))
+        // A corner puck is outside the unit disc: the readout clamps it
+        // radially (owner decision 2026-11-26), so (1,1) reads 0.71/0.71.
+        assertEquals("x +0.71  y +0.71", NodeWheelOps.puckReadout(NodeWheelV2(1f, 1f, 0.9f)))
+        assertEquals("x -0.71  y -0.71", NodeWheelOps.puckReadout(NodeWheelV2(-1f, -1f, 0.9f)))
+        assertEquals("x +1.00  y +0.00", NodeWheelOps.puckReadout(NodeWheelV2(1f, 0f, 0.9f)))
         // The STORED path never holds -0.0 (setPuck normalizes), so the
         // readout of every stored identity is +0.00 both axes.
         val stored = NodeWheelOps.get(NodeWheelOps.setPuck(neutral, NodeWheelId.LOG_HI, 0.001f, -0.001f), NodeWheelId.LOG_HI)

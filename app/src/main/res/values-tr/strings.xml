@@ -684,4 +684,32 @@
     <string name="node_wheel_master">Ana seviye</string>
     <string name="node_wheel_reset">Tekerleği sıfırla</string>
     <string name="node_wheel_pad_desc">%1$s tekerleği, renk için sürükleyin, ortalamak için çift dokunun</string>
+    <!-- F1-8c: node eğriler sayfası (Türkçe metinler sahibin gözden geçirmesine açık) -->
+    <string name="node_tab_curves">Eğriler</string>
+    <string name="node_curve_y">Luma</string>
+    <string name="node_curve_r">Kırmızı</string>
+    <string name="node_curve_g">Yeşil</string>
+    <string name="node_curve_b">Mavi</string>
+    <string name="node_curve_reset">Eğriyi sıfırla</string>
+    <string name="node_curve_canvas_desc">%1$s eğrisi, biçimlendirmek için noktaları sürükleyin, sıfırlamak için boş yere çift dokunun</string>
+    <!-- F1-8d: node LUT sayfası (Türkçe metinler sahibin gözden geçirmesine açık) -->
+    <string name="node_tab_lut">LUT</string>
+    <string name="node_lut_none">Yok</string>
+    <string name="node_lut_mix">LUT karışımı</string>
+    <string name="node_lut_reset">LUT\'u sıfırla</string>
+    <!-- F1-8d: Output kartı (OpenDRT) (Türkçe metinler sahibin gözden geçirmesine açık) -->
+    <string name="node_output_chip">Çıktı</string>
+    <string name="node_output_chip_desc">Çıktı dönüşümü</string>
+    <string name="node_output_mode_legacy">Legacy</string>
+    <string name="node_output_mode_opendrt">OpenDRT</string>
+    <string name="node_output_legacy_hint">Ton eşleme ve LUT, Görünüm sekmesinde kalır.</string>
+    <string name="node_output_look">Görünüm</string>
+    <string name="node_output_tonescale">Ton ölçeği</string>
+    <string name="node_output_cwp">Renk ağırlığı</string>
+    <string name="node_output_cwp_limit">Ağırlık sınırı</string>
+    <string name="node_output_grey">Gri</string>
+    <string name="node_output_display">Ekran</string>
+    <string name="node_output_display_srgb">sRGB 2.2</string>
+    <string name="node_output_display_1886">Rec.1886</string>
+    <string name="node_output_display_hlg">HLG 1000</string>
 </resources>

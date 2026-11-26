@@ -58,6 +58,8 @@ fun NodeStrip(
     onReset: (Int) -> Unit,
     onDuplicate: (Int) -> Unit,
     onDelete: (Int) -> Unit,
+    outputSelected: Boolean = false,
+    onSelectOutput: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     Row(
@@ -97,6 +99,33 @@ fun NodeStrip(
                 modifier = Modifier.padding(horizontal = 8.dp).testTag("addNodeLimit"),
             )
         }
+        // F1-8d: the Output chip, the strip's END (the design's undeleteable Output card). Same chip shape
+        // as a node, no number: the label carries it. A tap opens the Output page; the node chips close it.
+        OutputChip(selected = outputSelected, onClick = onSelectOutput)
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun OutputChip(selected: Boolean, onClick: () -> Unit) {
+    val scheme = MaterialTheme.colorScheme
+    Row(
+        Modifier
+            .height(48.dp).widthIn(min = 48.dp)
+            .clip(RoundedCornerShape(if (selected) 22.dp else 14.dp))
+            .background(if (selected) scheme.primaryContainer else scheme.surfaceVariant)
+            .combinedClickable(role = Role.Button, onClick = onClick)
+            .padding(horizontal = 14.dp)
+            .testTag("outputChip"),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            stringResource(R.string.node_output_chip),
+            color = if (selected) scheme.onPrimaryContainer else scheme.onSurface,
+            style = MaterialTheme.typography.labelLarge,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
     }
 }
 
