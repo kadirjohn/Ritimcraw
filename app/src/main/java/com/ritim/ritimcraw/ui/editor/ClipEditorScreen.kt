@@ -6407,6 +6407,33 @@ private fun DetailPanel(
             },
             onDragActiveChange = onDragActiveChange,
         )
+        // Glitter suppression (opt-in, default off): ONE compact toggle next to chroma NR. Toggles ONLY
+        // GradeK.glitterSuppress as one discrete undo step (the onReset route, like Highlight Recovery).
+        run {
+            val on = grade.glitterSuppress
+            val desc = stringResource(R.string.editor_glitter_suppress_desc)
+            val content: @Composable RowScope.() -> Unit = {
+                Icon(
+                    painter = painterResource(R.drawable.ic_glitter_suppress),
+                    contentDescription = null,
+                    modifier = Modifier.size(20.dp),
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(stringResource(R.string.editor_glitter_suppress))
+            }
+            val buttonModifier = Modifier
+                .heightIn(min = 48.dp)
+                .semantics {
+                    contentDescription = desc
+                    stateDescription = if (on) "on" else "off"
+                }
+            val toggle = { onReset(grade.copy(glitterSuppress = !grade.glitterSuppress)) }
+            if (on) {
+                FilledTonalButton(onClick = toggle, modifier = buttonModifier, content = content)
+            } else {
+                OutlinedButton(onClick = toggle, modifier = buttonModifier, content = content)
+            }
+        }
         // Temporal NR: MCRAW only, and part of the Noise Reduction family
         // (the plan's first header groups it with the spatial pair — it is
         // the third denoise control). The switch settles immediately at the
