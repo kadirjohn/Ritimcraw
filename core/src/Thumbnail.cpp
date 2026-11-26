@@ -97,7 +97,8 @@ bool reduceCfaBinned(const uint16_t* cfa, uint32_t width, uint32_t height,
 
 ImageF developThumbnail(const uint16_t* cfa, const FrameInfo& info,
                         const RawMeta& meta, const Grade& grade, int strideEvery,
-                        const Lut* lut, const CompiledLutBinding* binding) {
+                        const Lut* lut, const CompiledLutBinding* binding,
+                        const RawLevelsOverride& rawLevels) {
     ImageF img;
 
     const uint32_t w = info.width;
@@ -119,7 +120,7 @@ ImageF developThumbnail(const uint16_t* cfa, const FrameInfo& info,
     FrameInfo smallInfo = info;
     smallInfo.width = outW;
     smallInfo.height = outH;
-    img = developCpu(small.data(), smallInfo, meta, grade, lut, binding);
+    img = developCpu(small.data(), smallInfo, meta, grade, lut, binding, rawLevels);
     return img;
 }
 

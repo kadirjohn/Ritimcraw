@@ -58,9 +58,17 @@ struct DevelopGrade {
     bool keepVignetting = true;
     int tonemap = 0;
     bool highlightRecovery = false;  // highlight recovery (replaces stage 3 with a real re-estimate)
+    float rawLevelsWhite = -1.0f;
+    float rawLevelsBlackR = -1.0f;
+    float rawLevelsBlackGr = -1.0f;
+    float rawLevelsBlackGb = -1.0f;
+    float rawLevelsBlackB = -1.0f;
+    float rawLevelsClipR = -1.0f;
+    float rawLevelsClipG = -1.0f;
+    float rawLevelsClipB = -1.0f;
 };
 
-constexpr int kGradeParcelSlotCount = 30;
+constexpr int kGradeParcelSlotCount = 38;
 
 constexpr int kGradeParcelChromaDenoise = 0;
 constexpr int kGradeParcelNoiseReduction = 1;
@@ -92,6 +100,14 @@ constexpr int kGradeParcelHighlightReconstruction = 26;
 constexpr int kGradeParcelKeepVignetting = 27;
 constexpr int kGradeParcelTonemap = 28;
 constexpr int kGradeParcelHighlightRecovery = 29;
+constexpr int kGradeParcelRawLevelsWhite = 30;
+constexpr int kGradeParcelRawLevelsBlackR = 31;
+constexpr int kGradeParcelRawLevelsBlackGr = 32;
+constexpr int kGradeParcelRawLevelsBlackGb = 33;
+constexpr int kGradeParcelRawLevelsBlackB = 34;
+constexpr int kGradeParcelRawLevelsClipR = 35;
+constexpr int kGradeParcelRawLevelsClipG = 36;
+constexpr int kGradeParcelRawLevelsClipB = 37;
 
 // Slot names, index-aligned, for honest refusal messages.
 inline constexpr const char* kGradeParcelSlotNames[] = {
@@ -125,6 +141,14 @@ inline constexpr const char* kGradeParcelSlotNames[] = {
 "keepVignetting",
 "tonemap",
 "highlightRecovery",
+"rawLevelsWhite",
+"rawLevelsBlackR",
+"rawLevelsBlackGr",
+"rawLevelsBlackGb",
+"rawLevelsBlackB",
+"rawLevelsClipR",
+"rawLevelsClipG",
+"rawLevelsClipB",
 };
 
 // Decodes the flat parcel into [out] by NAME. Returns false with the full
@@ -206,6 +230,14 @@ inline bool decodeGradeParcel(const float* parcel, int length, DevelopGrade* out
     out->keepVignetting = parcel[kGradeParcelKeepVignetting] != 0.0f;
     out->tonemap = static_cast<int>(parcel[kGradeParcelTonemap]);
     out->highlightRecovery = parcel[kGradeParcelHighlightRecovery] != 0.0f;
+    out->rawLevelsWhite = parcel[kGradeParcelRawLevelsWhite];
+    out->rawLevelsBlackR = parcel[kGradeParcelRawLevelsBlackR];
+    out->rawLevelsBlackGr = parcel[kGradeParcelRawLevelsBlackGr];
+    out->rawLevelsBlackGb = parcel[kGradeParcelRawLevelsBlackGb];
+    out->rawLevelsBlackB = parcel[kGradeParcelRawLevelsBlackB];
+    out->rawLevelsClipR = parcel[kGradeParcelRawLevelsClipR];
+    out->rawLevelsClipG = parcel[kGradeParcelRawLevelsClipG];
+    out->rawLevelsClipB = parcel[kGradeParcelRawLevelsClipB];
     return true;
 }
 

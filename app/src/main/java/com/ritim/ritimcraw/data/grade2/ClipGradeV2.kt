@@ -3,6 +3,7 @@ package com.ritim.ritimcraw.data.grade2
 import com.ritim.ritimcraw.data.GradeK
 import com.ritim.ritimcraw.data.LutInterpK
 import com.ritim.ritimcraw.data.ProjectJson
+import com.ritim.ritimcraw.data.RawLevels
 
 /** One float as the wire writes it (the v1 renderer's own rule). */
 internal fun num(v: Float): String = v.toString()
@@ -371,6 +372,17 @@ data class DevelopV2(
     val temporalStrength: Float = 0f,
     val sharpness: Float = 0f,
     val detail: Float = 0f,
+    /**
+     * D1 (docs/DCG_PLAN.md, report P1): the per-clip reversible RAW Levels
+     * override, or null = metadata semantics (the default). Written ONLY
+     * when set (omit-when-default — a null writes NO key, so every file
+     * this build writes for an untouched clip stays byte-identical and old
+     * projects load with metadata semantics); parsed back as null when the
+     * key is absent OR fails validation (a malformed record degrades to the
+     * metadata view, the row-tolerant rule — the render never consumes a
+     * half-set override).
+     */
+    val rawLevels: RawLevels? = null,
 ) {
     companion object {
         internal fun parse(m: Any?): DevelopV2 {
@@ -391,7 +403,39 @@ data class DevelopV2(
                 temporalStrength = (m["temporalStrength"] as? Double)?.toFloat() ?: 0f,
                 sharpness = (m["sharpness"] as? Double)?.toFloat() ?: 0f,
                 detail = (m["detail"] as? Double)?.toFloat() ?: 0f,
+                rawLevels = parseRawLevels(m["rawLevels"]),
             )
+        }
+
+        /**
+         * One rawLevels record: each value is read independently with the
+         * sentinel fallback (a missing key = that slot is not set, the
+         * same per-slot semantics the override itself resolves by — a
+         * white-only record is legal and overrides only the white). A
+         * record whose values are ALL sentinels is the neutral default
+         * and parses as null; a record with an INVALID value (out of
+         * range, a white at or below a set black) parses as null too —
+         * the row-tolerant refusal, never a half-set guess.
+         */
+        internal fun parseRawLevels(v: Any?): RawLevels? {
+            if (v !is Map<*, *>) return null
+            val lv = RawLevels(
+                white = (v["white"] as? Double)?.toFloat() ?: -1f,
+                blackR = (v["blackR"] as? Double)?.toFloat() ?: -1f,
+                blackGr = (v["blackGr"] as? Double)?.toFloat() ?: -1f,
+                blackGb = (v["blackGb"] as? Double)?.toFloat() ?: -1f,
+                blackB = (v["blackB"] as? Double)?.toFloat() ?: -1f,
+                clipR = (v["clipR"] as? Double)?.toFloat() ?: -1f,
+                clipG = (v["clipG"] as? Double)?.toFloat() ?: -1f,
+                clipB = (v["clipB"] as? Double)?.toFloat() ?: -1f,
+            )
+            // A record that is all-sentinels is the neutral default: keep
+            // the null (no override) — the honest reading of "nothing set".
+            if (lv.isDefault()) return null
+            // A malformed record (out of range, white below a black) never
+            // reaches the render: parse as null (metadata semantics).
+            if (lv.validate() != null) return null
+            return lv
         }
     }
 }
@@ -468,7 +512,23 @@ object GradeV2Fiber {
             .append(",\"temporalStrength\":").append(num(d.temporalStrength))
             .append(",\"sharpness\":").append(num(d.sharpness))
             .append(",\"detail\":").append(num(d.detail))
-            .append('}')
+        // D1 rawLevels: omit-when-default — a null override writes NO key,
+        // so files this build writes for an untouched clip stay
+        // byte-identical to the pre-D1 format (the whole-group rule, all
+        // eight values when set: a partial record never exists on the wire).
+        if (d.rawLevels != null) {
+            val lv = d.rawLevels
+            sb.append(",\"rawLevels\":{\"white\":").append(num(lv.white))
+                .append(",\"blackR\":").append(num(lv.blackR))
+                .append(",\"blackGr\":").append(num(lv.blackGr))
+                .append(",\"blackGb\":").append(num(lv.blackGb))
+                .append(",\"blackB\":").append(num(lv.blackB))
+                .append(",\"clipR\":").append(num(lv.clipR))
+                .append(",\"clipG\":").append(num(lv.clipG))
+                .append(",\"clipB\":").append(num(lv.clipB))
+                .append('}')
+        }
+        sb.append('}')
         // legacy: every field renders (the legacy block is a whole unit;
         // neutral values are as meaningful as set ones here).
         val l = g.legacy
@@ -676,6 +736,16 @@ fun ClipGradeV2.toGradeKLenient(): GradeK {
         splitHighlightHue = legacy.splitHighlightHue,
         splitBalance = legacy.splitBalance,
         lutInterp = output.legacy.lutInterp,
+        // D1: the override folds onto GradeK's flat parcel fields (the
+        // sentinels when null — metadata semantics).
+        rawLevelsWhite = develop.rawLevels?.white ?: -1f,
+        rawLevelsBlackR = develop.rawLevels?.blackR ?: -1f,
+        rawLevelsBlackGr = develop.rawLevels?.blackGr ?: -1f,
+        rawLevelsBlackGb = develop.rawLevels?.blackGb ?: -1f,
+        rawLevelsBlackB = develop.rawLevels?.blackB ?: -1f,
+        rawLevelsClipR = develop.rawLevels?.clipR ?: -1f,
+        rawLevelsClipG = develop.rawLevels?.clipG ?: -1f,
+        rawLevelsClipB = develop.rawLevels?.clipB ?: -1f,
     )
 }
 
@@ -701,6 +771,16 @@ fun GradeK.toClipGradeV2(): ClipGradeV2 = ClipGradeV2(
         temporalStrength = temporalStrength,
         sharpness = sharpness,
         detail = detail,
+        // D1: the flat parcel fields fold back into the value type (null
+        // when every slot is the sentinel — the omit-when-default write).
+        rawLevels = if (rawLevelsWhite < 0f && rawLevelsBlackR < 0f &&
+            rawLevelsBlackGr < 0f && rawLevelsBlackGb < 0f && rawLevelsBlackB < 0f &&
+            rawLevelsClipR < 0f && rawLevelsClipG < 0f && rawLevelsClipB < 0f
+        ) null else RawLevels(
+            white = rawLevelsWhite, blackR = rawLevelsBlackR, blackGr = rawLevelsBlackGr,
+            blackGb = rawLevelsBlackGb, blackB = rawLevelsBlackB,
+            clipR = rawLevelsClipR, clipG = rawLevelsClipG, clipB = rawLevelsClipB,
+        ),
     ),
     legacy = LegacyControlsV2(
         highlights = highlights,

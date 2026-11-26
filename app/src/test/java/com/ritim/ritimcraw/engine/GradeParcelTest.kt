@@ -176,6 +176,69 @@ class GradeParcelTest {
         assertEquals(0, decoded.tonemap)
     }
 
+    // ---- the D1 rawLevels octet (night C4, appended slots 30..37) ----------
+
+    @Test
+    fun raw_levels_octet_round_trips_and_sentinels_ride_verbatim() {
+        // The appended octet: a default grade crosses with every slot at
+        // the -1 sentinel (metadata semantics — the pre-D1 pipeline's
+        // resolution, bit-identical), and a set override round trips
+        // exactly, negatives verbatim.
+        val neutral = GradeParcel.encode(GradeK())
+        assertEquals(GradeParcel.SLOT_COUNT, neutral.size)
+        for (slot in listOf(
+            GradeParcel.SLOT_RAW_LEVELS_WHITE,
+            GradeParcel.SLOT_RAW_LEVELS_BLACK_R,
+            GradeParcel.SLOT_RAW_LEVELS_BLACK_GR,
+            GradeParcel.SLOT_RAW_LEVELS_BLACK_GB,
+            GradeParcel.SLOT_RAW_LEVELS_BLACK_B,
+            GradeParcel.SLOT_RAW_LEVELS_CLIP_R,
+            GradeParcel.SLOT_RAW_LEVELS_CLIP_G,
+            GradeParcel.SLOT_RAW_LEVELS_CLIP_B,
+        )) {
+            assertEquals(-1.0f, neutral[slot])
+        }
+        // The DCG-style override (black pedestal 1023, white 16383,
+        // measured clip thresholds) round trips every slot exactly.
+        val set = GradeK(
+            rawLevelsWhite = 16383f,
+            rawLevelsBlackR = 1023f, rawLevelsBlackGr = 1023f,
+            rawLevelsBlackGb = 1023f, rawLevelsBlackB = 1023f,
+            rawLevelsClipR = 0.46048f, rawLevelsClipG = 0.99798f,
+            rawLevelsClipB = 0.72090f,
+        )
+        val parcel = GradeParcel.encode(set)
+        assertEquals(16383f, parcel[GradeParcel.SLOT_RAW_LEVELS_WHITE])
+        assertEquals(0.46048f, parcel[GradeParcel.SLOT_RAW_LEVELS_CLIP_R])
+        val decoded = GradeParcel.decode(parcel)
+        assertEquals(16383f, decoded.rawLevelsWhite, 0f)
+        assertEquals(1023f, decoded.rawLevelsBlackGb, 0f)
+        assertEquals(0.99798f, decoded.rawLevelsClipG, 0f)
+        // The octet's slots are floats with NO strict binary check (only
+        // the finiteness guard applies): a 0.5 white is a refusal of the
+        // GRADE's own validation, not the parcel's — the parcel carries it.
+        val partial = parcel.clone()
+        partial[GradeParcel.SLOT_RAW_LEVELS_WHITE] = 0.5f
+        assertEquals(0.5f, GradeParcel.decode(partial).rawLevelsWhite, 0f)
+    }
+
+    @Test
+    fun raw_levels_octet_refuses_non_finite_values() {
+        // NaN in an octet slot is the parcel's own finiteness refusal (the
+        // decode names the slot).
+        val parcel = GradeParcel.encode(GradeK())
+        parcel[GradeParcel.SLOT_RAW_LEVELS_BLACK_GB] = Float.NaN
+        try {
+            GradeParcel.decode(parcel)
+            throw AssertionError("expected IllegalStateException for NaN in the octet")
+        } catch (expected: IllegalStateException) {
+            assertTrue(
+                "the refusal must name the slot: " + expected.message,
+                expected.message!!.contains("rawLevelsBlackGb"),
+            )
+        }
+    }
+
     // ---- the guards (honest refusals, never a silent misread) -----------
 
     @Test

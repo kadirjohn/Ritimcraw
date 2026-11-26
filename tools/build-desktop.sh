@@ -108,6 +108,12 @@ echo "== building tests =="
 # frames. Pure logic, no cwd needs.
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_recovery_clip_levels.cpp" \
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_recovery_clip_levels"
+# test_raw_levels: the D1 per-clip RAW Levels override (night C4, report P1)
+# — resolver equivalence with the pre-D1 stage-1 expression, bit-identity of
+# the empty override, the SET override's stage-1 arithmetic, and the
+# "Measure" candidate generator's gates. Pure logic, no cwd needs.
+"$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_raw_levels.cpp" \
+  "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_raw_levels"
 # test_gyro runs from the repo root so it finds the STEPS/media/test fixture.
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_gyro.cpp" \
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_gyro"
@@ -337,6 +343,8 @@ echo "== running test_highlight_recovery =="
 "$BUILD/test_highlight_recovery"
 echo "== running test_recovery_clip_levels =="
 "$BUILD/test_recovery_clip_levels"
+echo "== running test_raw_levels =="
+"$BUILD/test_raw_levels"
 echo "== running test_gyro =="
 (cd "$ROOT" && "$BUILD/test_gyro")
 echo "== running test_orientation =="

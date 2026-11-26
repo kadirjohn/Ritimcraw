@@ -1683,6 +1683,48 @@ rawedit::Grade gradeFromKotlin(float exposureEv, float highlights, float tempK, 
     return g;
 }
 
+// D1 (docs/DCG_PLAN.md, report P1): the RAW Levels override from the
+// decoded grade parcel's eight appended slots. The -1 sentinel crosses
+// verbatim (the parcel's negatives-preserved rule), and an all-sentinel
+// result is the EMPTY override — resolveRawLevels then resolves exactly
+// the way the pre-D1 pipeline did, so the develop output is bit-identical.
+// The fold is hand-written here (not generated) for the same reason
+// lutStrength is: the override is a rawedit::RawLevelsOverride, a value
+// type SEPARATE from rawedit::Grade, carried by developCpu's own appended
+// parameter rather than a Grade member.
+rawedit::RawLevelsOverride rawLevelsFromParcel(const gles::DevelopGrade& g) {
+    rawedit::RawLevelsOverride lv;
+    lv.white = g.rawLevelsWhite;
+    lv.black[0] = g.rawLevelsBlackR;
+    lv.black[1] = g.rawLevelsBlackGr;
+    lv.black[2] = g.rawLevelsBlackGb;
+    lv.black[3] = g.rawLevelsBlackB;
+    lv.threshold[0] = g.rawLevelsClipR;
+    lv.threshold[1] = g.rawLevelsClipG;
+    lv.threshold[2] = g.rawLevelsClipB;
+    return lv;
+}
+
+// The same fold from the flat preview doors' eight trailing jfloat
+// arguments (the "JNI flat argument AT THE END" rule; the parcel doors
+// come through rawLevelsFromParcel above — one construction, two arrival
+// shapes, the lutStrength precedent).
+rawedit::RawLevelsOverride rawLevelsFromArgs(float white, float blackR,
+                                              float blackGr, float blackGb,
+                                              float blackB, float clipR,
+                                              float clipG, float clipB) {
+    rawedit::RawLevelsOverride lv;
+    lv.white = white;
+    lv.black[0] = blackR;
+    lv.black[1] = blackGr;
+    lv.black[2] = blackGb;
+    lv.black[3] = blackB;
+    lv.threshold[0] = clipR;
+    lv.threshold[1] = clipG;
+    lv.threshold[2] = clipB;
+    return lv;
+}
+
 // linearToRec709 output is unclamped; clamp then quantize to 0..255.
 inline uint8_t toByte(float rec709) {
     float v = rec709;
@@ -1803,18 +1845,19 @@ static bool v2ChainFor(JNIEnv* env, jfloatArray wire,
 // tail quantizes the display code values (the bridge OETF SKIPPED,
 // plan §3.4).
 jintArray developToArgb(JNIEnv* env,
-                         const std::vector<uint16_t>& cfa,
-                         const rawedit::FrameInfo& info,
-                         const rawedit::RawMeta& meta,
-                         const rawedit::Grade& grade,
-                         const gles::NodeChainDecoded* chain,
-                         const rawedit::Lut* lut,
-                         const rawedit::CompiledLutBinding* binding,
-                         const StabInput& stab,
-                         int maxDim) {
+                        const std::vector<uint16_t>& cfa,
+                        const rawedit::FrameInfo& info,
+                        const rawedit::RawMeta& meta,
+                        const rawedit::Grade& grade,
+                        const gles::NodeChainDecoded* chain,
+                        const rawedit::Lut* lut,
+                        const rawedit::CompiledLutBinding* binding,
+                        const StabInput& stab,
+                        int maxDim,
+                        const rawedit::RawLevelsOverride& rawLevels) {
     const int strideEvery = strideFor(info, maxDim);
     rawedit::ImageF img = rawedit::developThumbnail(
-        cfa.data(), info, meta, grade, strideEvery, lut, binding);
+        cfa.data(), info, meta, grade, strideEvery, lut, binding, rawLevels);
     if (img.w == 0 || img.h == 0 || img.rgb.empty()) {
         setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageDevelop,
                  "develop: unsupported — the frame is too small to develop "
@@ -2529,7 +2572,10 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewRender(
         jint maxDim,
         jint lutRole, jint lutInGamut, jint lutInTransfer,
         jint lutOutGamut, jint lutOutTransfer,
-        jfloatArray chainWire) {
+        jfloatArray chainWire,
+        jfloat rawLevelsWhite, jfloat rawLevelsBlackR, jfloat rawLevelsBlackGr,
+        jfloat rawLevelsBlackGb, jfloat rawLevelsBlackB,
+        jfloat rawLevelsClipR, jfloat rawLevelsClipG, jfloat rawLevelsClipB) {
     gLastErrorCode = 0;
     gLastErrorStage = kStageFrameRead;
     // 0. Resolve the stage-24 LUT first (COL-07): a parse failure fails the
@@ -2596,7 +2642,12 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewRender(
                                              wheelHighX, wheelHighY,
                                              splitShadowHue, splitHighlightHue,
                                              splitBalance),
-                             chain.get(), lut, binding, stab.input, maxDim);
+                             chain.get(), lut, binding, stab.input, maxDim,
+                             rawLevelsFromArgs(rawLevelsWhite, rawLevelsBlackR,
+                                               rawLevelsBlackGr, rawLevelsBlackGb,
+                                               rawLevelsBlackB,
+                                               rawLevelsClipR, rawLevelsClipG,
+                                               rawLevelsClipB));
     } catch (const std::bad_alloc&) {
         setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageDevelop,
                  "develop: out of memory decoding the frame "
@@ -2639,7 +2690,10 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderCached(
         jint maxDim,
         jint lutRole, jint lutInGamut, jint lutInTransfer,
         jint lutOutGamut, jint lutOutTransfer,
-        jfloatArray chainWire) {
+        jfloatArray chainWire,
+        jfloat rawLevelsWhite, jfloat rawLevelsBlackR, jfloat rawLevelsBlackGr,
+        jfloat rawLevelsBlackGb, jfloat rawLevelsBlackB,
+        jfloat rawLevelsClipR, jfloat rawLevelsClipG, jfloat rawLevelsClipB) {
     gLastErrorCode = 0;
     gLastErrorStage = kStageFrameRead;
     // 0. Resolve the stage-24 LUT first (COL-07): a parse failure fails the
@@ -2717,7 +2771,12 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderCached(
                                              wheelHighX, wheelHighY,
                                              splitShadowHue, splitHighlightHue,
                                              splitBalance),
-                             chain.get(), lut, binding, stab.input, maxDim);
+                             chain.get(), lut, binding, stab.input, maxDim,
+                             rawLevelsFromArgs(rawLevelsWhite, rawLevelsBlackR,
+                                               rawLevelsBlackGr, rawLevelsBlackGb,
+                                               rawLevelsBlackB,
+                                               rawLevelsClipR, rawLevelsClipG,
+                                               rawLevelsClipB));
     } catch (const std::bad_alloc&) {
         setError(static_cast<int>(rawedit::ErrorCode::IoError), kStageDevelop,
                  "develop: out of memory decoding the frame "
@@ -3451,7 +3510,8 @@ jbyteArray exportFrameBody(JNIEnv* env, jlong handle, jint frameIndex,
                            jstring gyroPath, jint stabMode, jfloat stabStrength,
                            jfloat stabZoomLimit, jfloat stabFocalMm, jfloat stabTrimMs,
                            jint lutRole, jint lutInGamut, jint lutInTransfer,
-                           jint lutOutGamut, jint lutOutTransfer) {
+                           jint lutOutGamut, jint lutOutTransfer,
+                           const rawedit::RawLevelsOverride& rawLevels) {
     gLastErrorCode = 0;
     gLastErrorStage = kStageFrameRead;
     // 0. Resolve the stage-24 LUT first (COL-07): a parse failure fails the
@@ -3521,9 +3581,12 @@ jbyteArray exportFrameBody(JNIEnv* env, jlong handle, jint frameIndex,
         }
 
         // 3. Full-res develop with the job's grade snapshot (core/Develop.h).
+        //    D1: the RAW Levels override rides developCpu's appended last
+        //    parameter — an empty override keeps the stage-1 resolution
+        //    bit-identical to the pre-D1 export.
         gLastErrorStage = kStageDevelop;
         rawedit::ImageF img = rawedit::developCpu(cfa->data(), info, meta, grade,
-                                                  lut, binding);
+                                                  lut, binding, rawLevels);
         if (img.w == 0 || img.h == 0 || img.rgb.empty()) {
             setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageDevelop,
                      "develop: unsupported — the frame is too small to develop "
@@ -3657,7 +3720,8 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeExportFrameParcel(
                            lutPath, gyroPath, stabMode, stabStrength,
                            stabZoomLimit, stabFocalMm, stabTrimMs,
                            lutRole, lutInGamut, lutInTransfer,
-                           lutOutGamut, lutOutTransfer);
+                           lutOutGamut, lutOutTransfer,
+                           rawLevelsFromParcel(decoded));
 }
 
 JNIEXPORT jlong JNICALL

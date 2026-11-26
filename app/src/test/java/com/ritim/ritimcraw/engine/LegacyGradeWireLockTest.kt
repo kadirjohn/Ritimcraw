@@ -103,14 +103,18 @@ class LegacyGradeWireLockTest {
     )
 
     /**
-     * The parcel: today's 29 slots (0..28) + the appended recovery slot [29], byte for byte. The expected array is
+     * The parcel: today's 38 slots (0..29 unchanged since the recovery
+     * append, the D1 rawLevels octet at [30..37]), byte for byte. The expected array is
      * hand-written FIRST (the values ARE the fixture's fields in the
      * SLOT_* order GradeParcel documents: chromaDenoise, noiseReduction,
      * temporalNr, temporalStrength, sharpness, detail, exposureEv,
      * highlights, blackPoint, whitePoint, shadows, midtones, contrast,
      * tempK, tint, saturation, asShot, wheel..., split..., the two RAW
-     * toggles, tonemap) — a drifted mapping, a reordered slot or an
-     * accidentally renumbered constant fails here and nowhere else.
+     * toggles, tonemap, highlightRecovery, then the rawLevels octet) — a
+     * drifted mapping, a reordered slot or an accidentally renumbered
+     * constant fails here and nowhere else. The D1 octet's every slot is
+     * the -1 sentinel (this fixture carries no override): the appended
+     * slots must NOT change what a legacy grade renders.
      */
     @Test
     fun the_full_grade_fixture_encodes_to_todays_exact_parcel() {
@@ -140,8 +144,11 @@ class LegacyGradeWireLockTest {
                 210.0f, 45.0f, -25.0f,
                 // [26] highlightReconstruction  [27] keepVignetting
                 0.0f, 0.0f,
-                // [28] tonemap  [29] highlightRecovery (appended, off)
+                // [28] tonemap  [29] highlightRecovery
                 3.0f, 0.0f,
+                // [30..37] the D1 rawLevels octet (appended, all sentinels —
+                // this legacy fixture sets no override)
+                -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f,
             ),
             parcel,
         )
@@ -153,10 +160,10 @@ class LegacyGradeWireLockTest {
 
     /**
      * The neutral default's parcel: all zeros/off except tempK 5600 (the
-     * asShot-neutral default) — the never-graded clip rides today's exact
-     * shape; K2's hidden trap was "a neutral record silently changing
-     * pixels", so the NEUTRAL bytes are at least as load-bearing as the
-     * full ones.
+     * asShot-neutral default) and the D1 octet's sentinels — the
+     * never-graded clip rides today's exact shape; K2's hidden trap was
+     * "a neutral record silently changing pixels", so the NEUTRAL bytes
+     * are at least as load-bearing as the full ones.
      */
     @Test
     fun the_neutral_grade_encodes_to_todays_exact_parcel() {
@@ -168,7 +175,11 @@ class LegacyGradeWireLockTest {
                 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
                 -1.0f, -1.0f, 0.0f,
                 1.0f, 1.0f, 0.0f,
-                0.0f, // [29] highlightRecovery: appended, off by default
+                0.0f, // [29] highlightRecovery
+                // [30..37] the D1 rawLevels octet: appended, all sentinels
+                // (metadata semantics — the default grade is bit-identical
+                // to the pre-D1 pipeline)
+                -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f,
             ),
             GradeParcel.encode(GradeK()),
         )

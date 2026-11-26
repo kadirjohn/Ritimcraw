@@ -207,9 +207,53 @@ data class GradeK(
     // stays the blob/binding reference (legacy selections keep it alone).
     /** The managed interpretation of the selected LUT, or null = the legacy COL-07 stage-24 path. */
     val lutInterp: LutInterpK? = null,
+    // D1 (docs/DCG_PLAN.md, report P1) — appended LAST, rendered
+    // omit-when-default: the per-clip RAW Levels override. The eight
+    // fields are the schema's own flat names (the parcel's encode source,
+    // GradeParcel SLOT_RAW_LEVELS_*): -1 = not set (metadata semantics,
+    // the same slot-independent sentinel RawLevels uses), so a default
+    // GradeK crosses the parcel with every slot at the sentinel and the
+    // develop output is bit-identical. The wire record keeps the nested
+    // shape (ClipGradeV2's develop.rawLevels); toClipGradeV2 and the v2
+    // parse fold between the two so they never drift.
+    val rawLevelsWhite: Float = -1f,
+    val rawLevelsBlackR: Float = -1f,
+    val rawLevelsBlackGr: Float = -1f,
+    val rawLevelsBlackGb: Float = -1f,
+    val rawLevelsBlackB: Float = -1f,
+    val rawLevelsClipR: Float = -1f,
+    val rawLevelsClipG: Float = -1f,
+    val rawLevelsClipB: Float = -1f,
 ) {
     companion object {
         const val SCHEMA_VERSION = 1
+
+        /** The D1 override as its value type, or null when every slot is the sentinel. */
+        fun rawLevelsOf(grade: GradeK): RawLevels? {
+            val lv = RawLevels(
+                white = grade.rawLevelsWhite,
+                blackR = grade.rawLevelsBlackR,
+                blackGr = grade.rawLevelsBlackGr,
+                blackGb = grade.rawLevelsBlackGb,
+                blackB = grade.rawLevelsBlackB,
+                clipR = grade.rawLevelsClipR,
+                clipG = grade.rawLevelsClipG,
+                clipB = grade.rawLevelsClipB,
+            )
+            return if (lv.isDefault()) null else lv
+        }
+
+        /** The D1 value type folded back onto the flat fields. */
+        fun withRawLevels(grade: GradeK, lv: RawLevels?): GradeK = grade.copy(
+            rawLevelsWhite = lv?.white ?: -1f,
+            rawLevelsBlackR = lv?.blackR ?: -1f,
+            rawLevelsBlackGr = lv?.blackGr ?: -1f,
+            rawLevelsBlackGb = lv?.blackGb ?: -1f,
+            rawLevelsBlackB = lv?.blackB ?: -1f,
+            rawLevelsClipR = lv?.clipR ?: -1f,
+            rawLevelsClipG = lv?.clipG ?: -1f,
+            rawLevelsClipB = lv?.clipB ?: -1f,
+        )
     }
 }
 
@@ -284,8 +328,27 @@ class GradeStore(private val file: File) {
                 nodes = old.nodes,
                 output = fresh.output.copy(mode = old.output.mode, opendrt = old.output.opendrt),
                 transform = old.transform,
+                // D1: a GradeK cannot express the RAW Levels override (it
+                // is not a slider), so a slider move must not erase it —
+                // the same preservation the node chain gets.
+                develop = fresh.develop.copy(rawLevels = old.develop.rawLevels),
             )
             put(sourceId, merged)
+        }
+    }
+
+    /**
+     * The D1 RAW Levels write (owner request: the per-clip reversible
+     * override, docs/DCG_PLAN.md D1). [rawLevels] null IS the revert
+     * ("metadata'ya dön"): the stored record's develop group drops the
+     * override and the clip resolves from metadata again. Everything
+     * else of the clip's record (nodes, output, transform, sliders) is
+     * kept — the putNodes discipline, not a wipe.
+     */
+    fun putRawLevels(sourceId: String, rawLevels: RawLevels?) {
+        synchronized(lock) {
+            val base = getV2(sourceId) ?: get(sourceId).toClipGradeV2()
+            put(sourceId, base.copy(develop = base.develop.copy(rawLevels = rawLevels)))
         }
     }
 
@@ -661,6 +724,24 @@ class GradeStore(private val file: File) {
                 sb.append(',')
                     .append("\"lutInterp\":").append(g.lutInterp.render())
             }
+            // D1 rawLevels (omit-when-default): a grade whose eight slots
+            // are all sentinels writes NONE of the keys, so files this
+            // build writes for an untouched clip stay byte-identical to
+            // the pre-D1 format; old files parse them as the sentinels —
+            // metadata semantics, never an override behind the user's back.
+            val rl = GradeK.rawLevelsOf(g)
+            if (rl != null) {
+                sb.append(',')
+                    .append("\"rawLevels\":{\"white\":").append(num(rl.white))
+                    .append(",\"blackR\":").append(num(rl.blackR))
+                    .append(",\"blackGr\":").append(num(rl.blackGr))
+                    .append(",\"blackGb\":").append(num(rl.blackGb))
+                    .append(",\"blackB\":").append(num(rl.blackB))
+                    .append(",\"clipR\":").append(num(rl.clipR))
+                    .append(",\"clipG\":").append(num(rl.clipG))
+                    .append(",\"clipB\":").append(num(rl.clipB))
+                    .append('}')
+            }
             sb.append('}')
             return sb.toString()
         }
@@ -782,6 +863,13 @@ class GradeStore(private val file: File) {
             // old grade keeps its exact old look.
             val parsedTempK = (m["tempK"] as? Double)?.toFloat() ?: 5600f
             val parsedTint = (m["tint"] as? Double)?.toFloat() ?: 0f
+            // D1 rawLevels postdates older files: absent parses as the
+            // all-sentinel default (metadata semantics) — the override
+            // never turns itself on behind the user's back. A malformed
+            // nested record parses as null too (DevelopV2.parseRawLevels's
+            // row-tolerant rule).
+            val parsedRawLevels = com.ritim.ritimcraw.data.grade2.DevelopV2
+                .parseRawLevels(m["rawLevels"]) ?: RawLevels.DEFAULT
             return GradeK(
                     version = (m["version"] as? Double)?.toInt() ?: GradeK.SCHEMA_VERSION,
                     exposureEv = (m["exposureEv"] as? Double)?.toFloat() ?: 0f,
@@ -864,6 +952,16 @@ class GradeStore(private val file: File) {
                     // stage-24 path keyed on lutId alone) — the old look
                     // is preserved exactly.
                     lutInterp = LutInterpK.parse(m["lutInterp"]),
+                    // The D1 override, folded from the value type parsed
+                    // above (the sentinels when absent/malformed).
+                    rawLevelsWhite = parsedRawLevels.white,
+                    rawLevelsBlackR = parsedRawLevels.blackR,
+                    rawLevelsBlackGr = parsedRawLevels.blackGr,
+                    rawLevelsBlackGb = parsedRawLevels.blackGb,
+                    rawLevelsBlackB = parsedRawLevels.blackB,
+                    rawLevelsClipR = parsedRawLevels.clipR,
+                    rawLevelsClipG = parsedRawLevels.clipG,
+                    rawLevelsClipB = parsedRawLevels.clipB,
                 )
         }
     }
