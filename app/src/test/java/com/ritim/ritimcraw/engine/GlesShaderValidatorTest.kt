@@ -1607,6 +1607,136 @@ class GlesShaderValidatorTest {
         )
     }
 
+    // ---- glitter suppression (stage 8b) pins: POST block + encode pass, the CPU twin ----
+
+    private fun glitterProblems(src: String) =
+        GlesShaderValidator.problems(src, GlesShaderValidator.Kind.DEVELOP_FRAGMENT_POST)
+
+    private fun encodeProblems(src: String) =
+        GlesShaderValidator.problems(src, GlesShaderValidator.Kind.GLITTER_ENCODE)
+
+    @Test
+    fun the_shipped_glitter_encode_pass_passes_every_check() {
+        assertEquals(emptyList<String>(), encodeProblems(GlesShaderSources.GLITTER_ENCODE))
+        assertEquals(emptyList<String>(), glitterProblems(GlesShaderSources.DEVELOP_FRAGMENT_POST))
+    }
+
+    @Test
+    fun the_post_pass_carries_the_glitter_block_and_no_other_pass_does() {
+        val post = GlesShaderSources.DEVELOP_FRAGMENT_POST
+        assertTrue(post.contains("uniform int uGlitter;"))
+        assertTrue(post.contains("if (uGlitter == 1) {"))
+        for (other in listOf(
+            GlesShaderSources.DEVELOP_FRAGMENT,
+            GlesShaderSources.DEVELOP_FRAGMENT_PRE,
+            GlesShaderSources.DEVELOP_FRAGMENT_TAIL,
+        )) {
+            assertFalse(other.contains("uGlitter"))
+            assertFalse(other.contains("kGlitterThreshold"))
+        }
+    }
+
+    @Test
+    fun the_glsl_threshold_equals_the_cpu_header_constant() {
+        // core/include/rawedit/Develop.h: #define RAWEDIT_GLITTER_THRESHOLD 0.09f
+        val header = listOf("../core/include/rawedit/Develop.h", "core/include/rawedit/Develop.h")
+            .map { java.io.File(it) }.first { it.exists() }.readText()
+        val cpu = Regex("""#define RAWEDIT_GLITTER_THRESHOLD ([0-9.]+)f""").find(header)!!.groupValues[1]
+        assertEquals(cpu.toFloat(), GlesShaderSources.GLITTER_THRESHOLD, 0.0f)
+        assertTrue(
+            GlesShaderSources.DEVELOP_FRAGMENT_POST.contains("const float kGlitterThreshold = $cpu;"),
+        )
+    }
+
+    @Test
+    fun a_changed_glitter_threshold_is_reported() {
+        val mutated = GlesShaderSources.DEVELOP_FRAGMENT_POST
+            .replace("const float kGlitterThreshold = 0.09;", "const float kGlitterThreshold = 0.05;")
+        assertTrue("mutation must apply", mutated != GlesShaderSources.DEVELOP_FRAGMENT_POST)
+        assertTrue(glitterProblems(mutated).any { it.contains("missing the glitter-suppression pin") })
+    }
+
+    @Test
+    fun a_changed_glitter_pretest_count_is_reported() {
+        val mutated = GlesShaderSources.DEVELOP_FRAGMENT_POST
+            .replace("if (nearCount >= 5) return false;", "if (near >= 4) return false;")
+        assertTrue("mutation must apply", mutated != GlesShaderSources.DEVELOP_FRAGMENT_POST)
+        assertTrue(glitterProblems(mutated).any { it.contains("missing the glitter-suppression pin") })
+    }
+
+    @Test
+    fun a_changed_glitter_outlier_rule_is_reported() {
+        val mutated = GlesShaderSources.DEVELOP_FRAGMENT_POST
+            .replace("return abs(own - m) > kGlitterThreshold;", "return own != m;")
+        assertTrue("mutation must apply", mutated != GlesShaderSources.DEVELOP_FRAGMENT_POST)
+        assertTrue(glitterProblems(mutated).any { it.contains("missing the glitter-suppression pin") })
+    }
+
+    @Test
+    fun a_changed_glitter_median_network_is_reported() {
+        val mutated = GlesShaderSources.DEVELOP_FRAGMENT_POST
+            .replace("glitterSort(v[6], v[4]);", "")
+        assertTrue("mutation must apply", mutated != GlesShaderSources.DEVELOP_FRAGMENT_POST)
+        assertTrue(glitterProblems(mutated).any { it.contains("missing the glitter-suppression pin") })
+    }
+
+    @Test
+    fun a_wrong_glitter_decode_is_reported() {
+        val mutated = GlesShaderSources.DEVELOP_FRAGMENT_POST
+            .replace("if (v < 0.081) return v / 4.5;", "if (v < 0.08) return v / 4.5;")
+        assertTrue("mutation must apply", mutated != GlesShaderSources.DEVELOP_FRAGMENT_POST)
+        assertTrue(glitterProblems(mutated).any { it.contains("missing the glitter-suppression pin") })
+    }
+
+    @Test
+    fun a_glitter_block_that_encodes_per_tap_is_reported() {
+        val mutated = GlesShaderSources.DEVELOP_FRAGMENT_POST
+            .replace("vec2 ch = texelFetch(uGlitterChroma, q, 0).rg;", "vec2 ch = vec2(glitterOetf(1.0));")
+        assertTrue("mutation must apply", mutated != GlesShaderSources.DEVELOP_FRAGMENT_POST)
+        assertTrue(glitterProblems(mutated).any { it.contains("per-tap pow cost") || it.contains("pin") })
+    }
+
+    @Test
+    fun the_glitter_block_moved_after_stage_9_is_reported() {
+        val src = GlesShaderSources.DEVELOP_FRAGMENT_POST
+        val start = src.indexOf("    // Stage 8b: glitter suppression")
+        val end = src.indexOf("    // Stage 9: black point")
+        assertTrue(start in 0 until end)
+        val block = src.substring(start, end)
+        val mutated = src.removeRange(start, end).replace("    oCol = vec4(c, 1.0);", block + "    oCol = vec4(c, 1.0);")
+        assertTrue("mutation must apply", mutated != src)
+        assertTrue(glitterProblems(mutated).any { it.contains("the glitter block is mispositioned") })
+    }
+
+    @Test
+    fun glitter_leaking_into_the_tail_pass_is_reported() {
+        val mutated = GlesShaderSources.DEVELOP_FRAGMENT_TAIL.replace(
+            "uniform ivec2 uSize;",
+            "uniform ivec2 uSize;\nuniform int uGlitter;",
+        )
+        assertTrue("mutation must apply", mutated != GlesShaderSources.DEVELOP_FRAGMENT_TAIL)
+        assertTrue(
+            GlesShaderValidator.problems(mutated, GlesShaderValidator.Kind.DEVELOP_FRAGMENT_TAIL)
+                .any { it.contains("glitter suppression leaked into the TAIL pass") },
+        )
+    }
+
+    @Test
+    fun a_changed_glitter_encode_oetf_is_reported() {
+        val mutated = GlesShaderSources.GLITTER_ENCODE
+            .replace("if (lin < 0.018) return 4.5 * lin;", "if (lin < 0.02) return 4.5 * lin;")
+        assertTrue("mutation must apply", mutated != GlesShaderSources.GLITTER_ENCODE)
+        assertTrue(encodeProblems(mutated).any { it.contains("missing the glitter-encode pin") })
+    }
+
+    @Test
+    fun a_changed_glitter_encode_output_layout_is_reported() {
+        val mutated = GlesShaderSources.GLITTER_ENCODE
+            .replace("oCol = vec4(eR - eG, eB - eG, eG, 1.0);", "oCol = vec4(eR, eG, eB, 1.0);")
+        assertTrue("mutation must apply", mutated != GlesShaderSources.GLITTER_ENCODE)
+        assertTrue(encodeProblems(mutated).any { it.contains("missing the glitter-encode pin") })
+    }
+
     // ---- NR pass mutations: the CPU's every constant, tap order, weight
     // wiring, gate and pass-through are load-bearing — a rewrite that
     // changes any of them changes the owner's routine NR look ----

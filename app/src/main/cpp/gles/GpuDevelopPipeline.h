@@ -87,6 +87,10 @@ struct DevelopFrameRequest;
 void setRecoveryShaderSources(const std::string& pre, const std::string& block0, const std::string& blockUp,
                               const std::string& composite);
 
+// Glitter suppression's encode pass text (GlesShaderSources.GLITTER_ENCODE), set once per process by the Kotlin
+// side; pipelines compile it lazily on the first glitter frame (no session open signature changes).
+void setGlitterShaderSource(const std::string& encode);
+
 // DEBUG probe helpers (2026-11-23, owner report: the GPU preview shows no
 // change when a develop slider moves). gradeProbeSummary renders the develop
 // controls of a request as one compact "ev=.. hi=.. ..." string for the
@@ -111,6 +115,7 @@ struct DevelopFrameRequest {
     const rawedit::RawMeta* meta = nullptr;
     float exposureEv = 0.0f;
     bool highlightRecovery = false;  // replaces stage 3 with the pyramid re-estimate (CPU oracle: recoverClippedHighlights)
+    bool glitterSuppress = false;    // stage 8b: 3x3 chroma median, folded into the POST pass (uGlitter); CPU oracle: rawedit::suppressGlitter
     float highlights = 0.0f;  // raw grade.highlights; the shader computes s
     float blackPoint = 0.0f;  // raw grade.blackPoint; the shader computes the lift
     float whitePoint = 0.0f;  // raw grade.whitePoint; the shader computes the gain

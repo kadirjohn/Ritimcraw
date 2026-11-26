@@ -170,6 +170,9 @@ object GradeParitySweep {
         add("recovery", "on", GradeK(highlightRecovery = true))
         add("recovery", "-2EV", GradeK(highlightRecovery = true, exposureEv = -2f))
         add("neutral-stage3", "hr-off", GradeK(highlightReconstruction = false))
+        // Glitter suppression (stage 8b, POST-pass median block): the device parity gate covers it with the same bounds.
+        add("glitter", "on", GradeK(glitterSuppress = true))
+        add("glitter", "on+nr", GradeK(glitterSuppress = true, chromaDenoise = 40f, noiseReduction = 30f))
         return out
     }
 
@@ -741,7 +744,7 @@ object GradeParitySweep {
                 args.exposureEv, args.highlights, args.tempK, args.tint,
                 args.saturation, args.blackPoint, args.whitePoint,
                 args.shadows, args.midtones, args.contrast,
-                args.asShot, args.highlightReconstruction, args.keepVignetting, args.highlightRecovery,
+                args.asShot, args.highlightReconstruction, args.keepVignetting, args.highlightRecovery, args.glitterSuppress,
                 args.sharpness, args.detail, args.tonemap,
                 null, args.lutStrength,
                 args.noiseReduction, args.chromaDenoise,
@@ -980,7 +983,7 @@ object GradeParitySweep {
                 c.grade.exposureEv, c.grade.highlights, c.grade.tempK, c.grade.tint,
                 c.grade.saturation, c.grade.blackPoint, c.grade.whitePoint,
                 c.grade.shadows, c.grade.midtones, c.grade.contrast,
-                c.grade.asShot, c.grade.highlightReconstruction, c.grade.keepVignetting, c.grade.highlightRecovery,
+                c.grade.asShot, c.grade.highlightReconstruction, c.grade.keepVignetting, c.grade.highlightRecovery, c.grade.glitterSuppress,
                 c.grade.sharpness, c.grade.detail, c.grade.tonemap,
                 null, c.grade.lutStrength,
                 c.grade.noiseReduction, c.grade.chromaDenoise,

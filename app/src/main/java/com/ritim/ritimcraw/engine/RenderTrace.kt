@@ -230,6 +230,7 @@ object RenderTrace {
         if (g.noiseReduction > 0f || g.chromaDenoise > 0f) {
             parts += "nr=" + percent(g.noiseReduction) + "/" + percent(g.chromaDenoise)
         }
+        if (g.glitterSuppress) parts += "glitter"
         if (record.temporalNrApplied) parts += "tnr=" + percent(g.temporalStrength)
         if (record.stabilizationApplied) parts += "stab"
         if (parts.isEmpty()) return "neutral"

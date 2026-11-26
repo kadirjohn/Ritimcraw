@@ -140,8 +140,8 @@ class LegacyGradeWireLockTest {
                 210.0f, 45.0f, -25.0f,
                 // [26] highlightReconstruction  [27] keepVignetting
                 0.0f, 0.0f,
-                // [28] tonemap  [29] highlightRecovery (appended, off)
-                3.0f, 0.0f,
+                // [28] tonemap  [29] highlightRecovery (appended, off)  [30] glitterSuppress (appended, off)
+                3.0f, 0.0f, 0.0f,
             ),
             parcel,
         )
@@ -169,6 +169,7 @@ class LegacyGradeWireLockTest {
                 -1.0f, -1.0f, 0.0f,
                 1.0f, 1.0f, 0.0f,
                 0.0f, // [29] highlightRecovery: appended, off by default
+                0.0f, // [30] glitterSuppress: appended, off by default
             ),
             GradeParcel.encode(GradeK()),
         )

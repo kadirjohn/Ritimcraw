@@ -58,9 +58,10 @@ struct DevelopGrade {
     bool keepVignetting = true;
     int tonemap = 0;
     bool highlightRecovery = false;  // highlight recovery (replaces stage 3 with a real re-estimate)
+    bool glitterSuppress = false;  // glitter suppression (opt-in 3x3 chroma median, stage 8b)
 };
 
-constexpr int kGradeParcelSlotCount = 30;
+constexpr int kGradeParcelSlotCount = 31;
 
 constexpr int kGradeParcelChromaDenoise = 0;
 constexpr int kGradeParcelNoiseReduction = 1;
@@ -92,6 +93,7 @@ constexpr int kGradeParcelHighlightReconstruction = 26;
 constexpr int kGradeParcelKeepVignetting = 27;
 constexpr int kGradeParcelTonemap = 28;
 constexpr int kGradeParcelHighlightRecovery = 29;
+constexpr int kGradeParcelGlitterSuppress = 30;
 
 // Slot names, index-aligned, for honest refusal messages.
 inline constexpr const char* kGradeParcelSlotNames[] = {
@@ -125,6 +127,7 @@ inline constexpr const char* kGradeParcelSlotNames[] = {
 "keepVignetting",
 "tonemap",
 "highlightRecovery",
+"glitterSuppress",
 };
 
 // Decodes the flat parcel into [out] by NAME. Returns false with the full
@@ -176,6 +179,12 @@ inline bool decodeGradeParcel(const float* parcel, int length, DevelopGrade* out
                      ") (recovery: booleans cross the parcel as 0.0f/1.0f)";
         return false;
     }
+    if (parcel[kGradeParcelGlitterSuppress] != 0.0f && parcel[kGradeParcelGlitterSuppress] != 1.0f) {
+        *error = std::string("grade parcel: glitterSuppress must be 0.0 or 1.0 (got ") +
+                     std::to_string(parcel[kGradeParcelGlitterSuppress]) +
+                     ") (recovery: booleans cross the parcel as 0.0f/1.0f)";
+        return false;
+    }
     out->chromaDenoise = parcel[kGradeParcelChromaDenoise];
     out->noiseReduction = parcel[kGradeParcelNoiseReduction];
     out->temporalNr = parcel[kGradeParcelTemporalNr] != 0.0f;
@@ -206,6 +215,7 @@ inline bool decodeGradeParcel(const float* parcel, int length, DevelopGrade* out
     out->keepVignetting = parcel[kGradeParcelKeepVignetting] != 0.0f;
     out->tonemap = static_cast<int>(parcel[kGradeParcelTonemap]);
     out->highlightRecovery = parcel[kGradeParcelHighlightRecovery] != 0.0f;
+    out->glitterSuppress = parcel[kGradeParcelGlitterSuppress] != 0.0f;
     return true;
 }
 
@@ -247,10 +257,11 @@ inline void applyGradeToRequest(const DevelopGrade& grade, RequestT* req) {
     req->keepVignetting = grade.keepVignetting;
     req->tonemap = grade.tonemap;
     req->highlightRecovery = grade.highlightRecovery;
+    req->glitterSuppress = grade.glitterSuppress;
 }
 
 // Folds the decoded grade onto a rawedit::Grade (the CPU export path's
-// developCpu input). ALL 30 schema fields copy by name - the temporal pair
+// developCpu input). ALL 31 schema fields copy by name - the temporal pair
 // included (rawedit::Grade carries them so the whole grade pipeline
 // transports the controls; the bridge consumes the temporal stage on the
 // CFA before developCpu, exactly as the flat path's gradeFromKotlin always
@@ -290,6 +301,7 @@ inline void applyGradeToRawedit(const DevelopGrade& grade, GradeT* out) {
     out->keepVignetting = grade.keepVignetting;
     out->tonemap = grade.tonemap;
     out->highlightRecovery = grade.highlightRecovery;
+    out->glitterSuppress = grade.glitterSuppress;
 }
 
 }  // namespace gles

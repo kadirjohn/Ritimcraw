@@ -133,6 +133,8 @@ class NativeSource private constructor(
                     GlesShaderSources.RECOVERY_PRE, GlesShaderSources.RECOVERY_BLOCK0,
                     GlesShaderSources.RECOVERY_BLOCK_UP, GlesShaderSources.RECOVERY_COMPOSITE,
                 )
+                // Glitter suppression's encode pass (compiled lazily on the first glitter frame).
+                nativeRegisterGlitterShader(GlesShaderSources.GLITTER_ENCODE)
                 // Export sub-stage timing (commit (d)): same gate — debug
                 // builds collect the six nativeExportFrameParcel sub-stage slots
                 // (decode/temporal/develop/warp/oetf/copy) so the export
@@ -222,6 +224,7 @@ class NativeSource private constructor(
         @JvmStatic private external fun nativeRegisterRecoveryShaders(
             pre: String, block0: String, blockUp: String, composite: String,
         )
+        @JvmStatic private external fun nativeRegisterGlitterShader(encode: String)
 
         /**
          * Toggles the export sub-stage timing collection (commit (d)):
@@ -357,6 +360,7 @@ class NativeSource private constructor(
             highlightReconstruction: Boolean,
             keepVignetting: Boolean,
             highlightRecovery: Boolean,
+            glitterSuppress: Boolean,
             sharpness: Float,
             detail: Float,
             tonemap: Int,
@@ -420,6 +424,7 @@ class NativeSource private constructor(
             highlightReconstruction: Boolean,
             keepVignetting: Boolean,
             highlightRecovery: Boolean,
+            glitterSuppress: Boolean,
             sharpness: Float,
             detail: Float,
             tonemap: Int,
@@ -781,6 +786,7 @@ class NativeSource private constructor(
             highlightReconstruction: Boolean,
             keepVignetting: Boolean,
             highlightRecovery: Boolean,
+            glitterSuppress: Boolean,
             sharpness: Float,
             detail: Float,
             tonemap: Int,
@@ -856,6 +862,7 @@ class NativeSource private constructor(
             highlightReconstruction: Boolean,
             keepVignetting: Boolean,
             highlightRecovery: Boolean,
+            glitterSuppress: Boolean,
             sharpness: Float,
             detail: Float,
             tonemap: Int,
@@ -1517,6 +1524,7 @@ class NativeSource private constructor(
             highlightReconstruction: Boolean,
             keepVignetting: Boolean,
             highlightRecovery: Boolean,
+            glitterSuppress: Boolean,
             sharpness: Float,
             detail: Float,
             tonemap: Int,
@@ -1553,7 +1561,7 @@ class NativeSource private constructor(
             handle, frameIndex,
             exposureEv, highlights, tempK, tint,
             saturation, blackPoint, whitePoint, shadows, midtones, contrast,
-            asShot, highlightReconstruction, keepVignetting, highlightRecovery,
+            asShot, highlightReconstruction, keepVignetting, highlightRecovery, glitterSuppress,
             sharpness, detail, tonemap,
             lutPath, lutStrength,
             noiseReduction, chromaDenoise,
@@ -1584,6 +1592,7 @@ class NativeSource private constructor(
             highlightReconstruction: Boolean,
             keepVignetting: Boolean,
             highlightRecovery: Boolean,
+            glitterSuppress: Boolean,
             sharpness: Float,
             detail: Float,
             tonemap: Int,
@@ -1620,7 +1629,7 @@ class NativeSource private constructor(
             handle, frameIndex,
             exposureEv, highlights, tempK, tint,
             saturation, blackPoint, whitePoint, shadows, midtones, contrast,
-            asShot, highlightReconstruction, keepVignetting, highlightRecovery,
+            asShot, highlightReconstruction, keepVignetting, highlightRecovery, glitterSuppress,
             sharpness, detail, tonemap,
             lutPath, lutStrength,
             noiseReduction, chromaDenoise,
@@ -1796,6 +1805,7 @@ class NativeSource private constructor(
             highlightReconstruction: Boolean,
             keepVignetting: Boolean,
             highlightRecovery: Boolean,
+            glitterSuppress: Boolean,
             sharpness: Float,
             detail: Float,
             tonemap: Int,
@@ -1828,7 +1838,7 @@ class NativeSource private constructor(
             bitDepth, fullRange, matrix, transfer, primaries,
             exposureEv, highlights, tempK, tint,
             saturation, blackPoint, whitePoint, shadows, midtones, contrast,
-            asShot, highlightReconstruction, keepVignetting, highlightRecovery,
+            asShot, highlightReconstruction, keepVignetting, highlightRecovery, glitterSuppress,
             sharpness, detail, tonemap,
             lutPath, lutStrength,
             noiseReduction, chromaDenoise,
@@ -1872,6 +1882,7 @@ class NativeSource private constructor(
             highlightReconstruction: Boolean,
             keepVignetting: Boolean,
             highlightRecovery: Boolean,
+            glitterSuppress: Boolean,
             sharpness: Float,
             detail: Float,
             tonemap: Int,
@@ -1904,7 +1915,7 @@ class NativeSource private constructor(
             bitDepth, fullRange, matrix, transfer, primaries,
             exposureEv, highlights, tempK, tint,
             saturation, blackPoint, whitePoint, shadows, midtones, contrast,
-            asShot, highlightReconstruction, keepVignetting, highlightRecovery,
+            asShot, highlightReconstruction, keepVignetting, highlightRecovery, glitterSuppress,
             sharpness, detail, tonemap,
             lutPath, lutStrength,
             noiseReduction, chromaDenoise,

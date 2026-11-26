@@ -191,3 +191,18 @@ TEST_CASE("F1-5 regression: runNodes=false equals the pre-F1-5 planner everywher
             CHECK(p.passes[i].kind != kPassNodes);
     }
 }
+
+// Glitter suppression parks its encoded chroma in the slot POST neither reads
+// nor writes (the encode pass runs right before POST, so nothing else is live).
+TEST_CASE("the glitter encode slot is the third slot, never POST's input or output") {
+    for (int nr = 0; nr < 4; ++nr) {
+        CAPTURE(nr);
+        const ChainPlan p = planChain(kNrLive[nr], false, false, false);
+        const int in = p.passes[0].in, out = p.passes[0].out;
+        const int freeSlot = chainFreeSlot(in, out);
+        CHECK(freeSlot >= 0);
+        CHECK(freeSlot <= 2);
+        CHECK(freeSlot != in);
+        CHECK(freeSlot != out);
+    }
+}
