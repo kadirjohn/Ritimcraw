@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <array>
+#include <map>
+#include <mutex>
 #include <cmath>
 #include <rawedit/Lut.h>
 #include <rawedit/Parallel.h>
@@ -921,72 +923,137 @@ void recoverClippedHighlights(ImageF& img, const ImageF& clipMask, const Recover
     if (w == 0 || h == 0 || clipMask.w != w || clipMask.h != h) return;
     const size_t n = static_cast<size_t>(w) * h;
 
-    std::vector<uint8_t> clipped(n * 3, 0);
-    for (size_t i = 0; i < n; ++i)
-        for (int c = 0; c < 3; ++c) clipped[i * 3 + c] = clipMask.rgb[i * 3 + c] >= 0.5f ? 1 : 0;
-
     // Consumers of pair (c, r): pixels whose clip pattern READS ratio[c][r] in the apply pass
-    // (1-2 clipped channels, the pattern's deterministic reference choice r). The old code
-    // computed the pair's ratio at every pixel; only these were ever read.
+    // (1-2 clipped channels, the pattern's deterministic reference choice r). The pre-rework
+    // code computed the pair's ratio at every pixel; only these were ever read.
+    // Pass 0 (row-parallel, pure per-row writes): the clipped bytes and the six consumer
+    // lists. Chunks collect into rowBegin-keyed buffers; merged in ascending chunk order the
+    // lists come out in the same ascending-pixel order the serial scan produced.
     PairRatios pair[3][3];
-    for (size_t i = 0; i < n; ++i) {
-        const uint8_t* cf = &clipped[i * 3];
-        const int nc = cf[0] + cf[1] + cf[2];
-        if (nc == 0 || nc == 3) continue;
-        int r;
-        if (!cf[1]) r = 1;
-        else r = (img.rgb[i * 3 + 0] >= img.rgb[i * 3 + 2]) ? (cf[0] ? 2 : 0) : (cf[2] ? 0 : 2);
-        for (int c = 0; c < 3; ++c)
-            if (cf[c]) pair[c][r].idx.push_back(static_cast<uint32_t>(i));
+    std::vector<uint8_t> clipped(n * 3, 0);
+    {
+        std::mutex mergeMu;
+        std::map<size_t, std::array<std::vector<uint32_t>, 9>> chunks;  // rowBegin -> 6 packable lists
+        parallelForRows(h, [&](size_t y0, size_t y1) {
+            std::array<std::vector<uint32_t>, 9> mine;
+            for (size_t y = y0; y < y1; ++y)
+                for (uint32_t x = 0; x < w; ++x) {
+                    const size_t i = y * w + x;
+                    uint8_t* cf = &clipped[i * 3];
+                    const int nc = (cf[0] = clipMask.rgb[i * 3] >= 0.5f ? 1 : 0)
+                                 + (cf[1] = clipMask.rgb[i * 3 + 1] >= 0.5f ? 1 : 0)
+                                 + (cf[2] = clipMask.rgb[i * 3 + 2] >= 0.5f ? 1 : 0);
+                    if (nc == 0 || nc == 3) continue;
+                    int r;
+                    if (!cf[1]) r = 1;
+                    else r = (img.rgb[i * 3 + 0] >= img.rgb[i * 3 + 2]) ? (cf[0] ? 2 : 0) : (cf[2] ? 0 : 2);
+                    for (int c = 0; c < 3; ++c)
+                        if (cf[c]) mine[c * 3 + r].push_back(static_cast<uint32_t>(i));
+                }
+            std::lock_guard<std::mutex> lk(mergeMu);
+            chunks.emplace(y0, std::move(mine));
+        });
+        for (auto& kv : chunks)  // std::map iterates in ascending rowBegin = ascending pixels
+            for (int p = 0; p < 9; ++p) {
+                auto& dst = pair[p / 3][p % 3].idx;
+                const auto& src = kv.second[p];
+                dst.insert(dst.end(), src.begin(), src.end());
+            }
     }
 
-    for (int c = 0; c < 3; ++c)
-        for (int r = 0; r < 3; ++r) {
-            if (pair[c][r].idx.empty()) continue;
-            std::vector<uint32_t> pending;
+    // Pass 1: the six pair jobs are independent (each walks img/clipped read-only and owns
+    // its ring buffers); chunked over the fixed pool. A nested pool call (or the serial
+    // fallback) runs the remaining pairs on the caller — same bytes.
+    {
+        std::vector<std::pair<int, int>> jobs;
+        for (int c = 0; c < 3; ++c)
+            for (int r = 0; r < 3; ++r)
+                if (!pair[c][r].idx.empty()) jobs.push_back({c, r});
+        parallelForRows(jobs.size(), [&](size_t b, size_t e) {
             const uint8_t* cl = clipped.data();
-            pairRatiosWalk(img, cl, w, h, c, r, pair[c][r].idx, pair[c][r].rho, pending);
-            if (!pending.empty())
-                pairRatiosBlocks(img, cl, w, h, c, r, pair[c][r].idx, pair[c][r].rho, pending);
-        }
-
-    for (size_t i = 0; i < n; ++i) {
-        const uint8_t* cf = &clipped[i * 3];
-        const int nc = cf[0] + cf[1] + cf[2];
-        float* px = &img.rgb[i * 3];
-        if (nc == 0) continue;
-        if (nc == 3) {
-            const float m = std::min(px[0], std::min(px[1], px[2]));
-            px[0] = px[1] = px[2] = m;  // no information: neutral at the lowest level, nothing invented
-            continue;
-        }
-        int r;
-        if (!cf[1]) r = 1;
-        else r = (px[0] >= px[2]) ? (cf[0] ? 2 : 0) : (cf[2] ? 0 : 2);
-        const float vr = px[r];
-        float out[3] = {px[0], px[1], px[2]};
-        for (int c = 0; c < 3; ++c) {
-            if (!cf[c]) continue;
-            const PairRatios& pr = pair[c][r];
-            // pr.idx is sorted; the consumer cursor below is exact because the apply pass
-            // visits pixels in ascending order and every (c, r) consumer is in pr.idx.
-            const float rho = pr.idx.empty() ? -1.0f : pr.rho[static_cast<size_t>(
-                std::lower_bound(pr.idx.begin(), pr.idx.end(), static_cast<uint32_t>(i)) - pr.idx.begin())];
-            if (rho <= 0.0f) continue;
-            const float est = vr * rho;
-            if (stats != nullptr && px[c] > 0.0f && est > px[c]) {
-                stats->ratio.push_back(est / px[c]);
-                stats->refFrac.push_back(vr / params.refLevel[r]);
-                stats->chan.push_back(static_cast<uint8_t>(c));
-                stats->pix.push_back(static_cast<uint32_t>(i));
+            for (size_t j = b; j < e; ++j) {
+                const int c = jobs[j].first, r = jobs[j].second;
+                std::vector<uint32_t> pending;
+                pairRatiosWalk(img, cl, w, h, c, r, pair[c][r].idx, pair[c][r].rho, pending);
+                if (!pending.empty())
+                    pairRatiosBlocks(img, cl, w, h, c, r, pair[c][r].idx, pair[c][r].rho, pending);
             }
-            // A tiny reference cannot be amplified into a bright estimate: leave the channel as clipped.
-            if (params.minRefFrac > 0.0f && vr < params.minRefFrac * params.refLevel[r]) continue;
-            float e = std::max(px[c], est);  // the clipped value is a lower bound
-            if (params.headroom > 0.0f && px[c] > 0.0f) e = std::min(e, params.headroom * px[c]);
-            out[c] = e;
-        }
-        px[0] = out[0]; px[1] = out[1]; px[2] = out[2];
+        });
+    }
+
+    // Pass 2 (row-parallel): per-pixel math unchanged; rho looked up through a per-chunk
+    // cursor into the ascending consumer list (exactly the pixels this pattern reads). Stats
+    // order: chunks push into local buffers, merged in ascending rowBegin afterwards — the
+    // identical element sequence the serial pass produced.
+    {
+        std::mutex mergeMu;
+        std::map<size_t, RecoveryStats> statsChunks;
+        parallelForRows(h, [&](size_t y0, size_t y1) {
+            RecoveryStats local;
+            RecoveryStats* sink = stats != nullptr ? &local : nullptr;
+            size_t cursor[3][3] = {};
+            for (int c = 0; c < 3; ++c)
+                for (int r = 0; r < 3; ++r) {
+                    const std::vector<uint32_t>& idxv = pair[c][r].idx;
+                    cursor[c][r] = idxv.empty() ? 0
+                        : static_cast<size_t>(std::lower_bound(idxv.begin(), idxv.end(),
+                                             static_cast<uint32_t>(y0 * w)) - idxv.begin());
+                }
+            for (size_t y = y0; y < y1; ++y) {
+                for (size_t x = 0; x < w; ++x) {
+                    const size_t i = y * w + x;
+                    const uint8_t* cf = &clipped[i * 3];
+                    const int nc = cf[0] + cf[1] + cf[2];
+                    float* px = &img.rgb[i * 3];
+                    if (nc == 0) continue;
+                    if (nc == 3) {
+                        const float m = std::min(px[0], std::min(px[1], px[2]));
+                        px[0] = px[1] = px[2] = m;  // no information: neutral at the lowest level
+                        continue;
+                    }
+                    int r;
+                    if (!cf[1]) r = 1;
+                    else r = (px[0] >= px[2]) ? (cf[0] ? 2 : 0) : (cf[2] ? 0 : 2);
+                    const float vr = px[r];
+                    float out[3] = {px[0], px[1], px[2]};
+                    for (int c = 0; c < 3; ++c) {
+                        if (!cf[c]) continue;
+                        const PairRatios& pr = pair[c][r];
+                        float rho = -1.0f;
+                        if (!pr.idx.empty()) {
+                            size_t& cur = cursor[c][r];
+                            while (cur < pr.idx.size() && pr.idx[cur] < i) ++cur;
+                            if (cur < pr.idx.size() && pr.idx[cur] == i) rho = pr.rho[cur];
+                        }
+                        if (rho <= 0.0f) continue;
+                        const float est = vr * rho;
+                        if (sink != nullptr && px[c] > 0.0f && est > px[c]) {
+                            sink->ratio.push_back(est / px[c]);
+                            sink->refFrac.push_back(vr / params.refLevel[r]);
+                            sink->chan.push_back(static_cast<uint8_t>(c));
+                            sink->pix.push_back(static_cast<uint32_t>(i));
+                        }
+                        // A tiny reference cannot be amplified into a bright estimate.
+                        if (params.minRefFrac > 0.0f && vr < params.minRefFrac * params.refLevel[r]) continue;
+                        float e = std::max(px[c], est);  // the clipped value is a lower bound
+                        if (params.headroom > 0.0f && px[c] > 0.0f) e = std::min(e, params.headroom * px[c]);
+                        out[c] = e;
+                    }
+                    px[0] = out[0]; px[1] = out[1]; px[2] = out[2];
+                }
+            }
+            if (stats != nullptr) {
+                std::lock_guard<std::mutex> lk(mergeMu);
+                statsChunks.emplace(y0, std::move(local));
+            }
+        });
+        if (stats != nullptr)
+            for (auto& kv : statsChunks) {
+                stats->ratio.insert(stats->ratio.end(), kv.second.ratio.begin(), kv.second.ratio.end());
+                stats->refFrac.insert(stats->refFrac.end(), kv.second.refFrac.begin(), kv.second.refFrac.end());
+                stats->chan.insert(stats->chan.end(), kv.second.chan.begin(), kv.second.chan.end());
+                stats->pix.insert(stats->pix.end(), kv.second.pix.begin(), kv.second.pix.end());
+            }
     }
 }
 
