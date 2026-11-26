@@ -1695,11 +1695,17 @@ ImageF developCpu(const uint16_t* cfa, const FrameInfo& info, const RawMeta& met
     if (grade.highlights != 0.0f) {
         // D3 (2026-11-26): the knee follows the clip (P85 of its own post-Gain luma, bounded);
         // an unmeasured grade (highlightKneeRef == 0) keeps the legacy 0.18 exactly.
-        const float knee = highlightKnee(grade.highlightKneeRef, std::pow(2.0f, grade.exposureEv));
+        const float clipKnee = highlightKnee(grade.highlightKneeRef, std::pow(2.0f, grade.exposureEv));
+        // The shoulder keeps the legacy shape (knee 0.18, span 0.82) but runs on the clip-normalised
+        // max channel mx * k, k = 0.18 / clipKnee >= 1: a dark clip is treated as if its own P85 sat
+        // at 0.18, so the slider acts on it like on a normal clip. k == 1.0f exactly when the clip
+        // knee is the legacy 0.18 (0.18f / 0.18f), so those clips are bit-identical to before.
+        const float kScale = kHighlightKneeMax / clipKnee;
+        const float knee = kHighlightKneeMax;
         const float span = 1.0f - knee;
         const float s = -grade.highlights / 100.0f; // recovery -> +1, lift -> -1
         for (size_t i = 0; i < img.rgb.size(); i += 3) {
-            const float mx = std::max(img.rgb[i], std::max(img.rgb[i + 1], img.rgb[i + 2]));
+            const float mx = kScale * std::max(img.rgb[i], std::max(img.rgb[i + 1], img.rgb[i + 2]));
             if (mx <= knee)
                 continue;
             const float over = mx - knee;

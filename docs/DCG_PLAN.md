@@ -74,3 +74,17 @@ Measured (`hk_measure`, CPU, tonemap off, /255 Rec.709, brightest 5% / 0.5% sele
 | 24 mm 261110_004150 (0) | 0.3051 | 0.18 | -10.36 (unchanged) | -12.70 (unchanged) | +9.62 (unchanged) |
 
 DCG moves ~12x (top 5%) and ~3.7x (top 0.5%) more than before but is still below the bright normal clips (-10 .. -15 for the top 5%): the threshold now fits the clip, but the shoulder's span above it (1 - knee) is unchanged, so a dark clip's compression stays small in absolute terms. Scaling the span to the clip is the next lever if that is not enough.
+
+### 7a. Follow-up the same day: the shoulder runs on the clip-normalised scale
+
+Owner test on the device: with only the threshold lowered the DCG clip's Highlights -100 still barely moved (measured -3.3/255 in the brightest 5%, the bright normal clips -10 .. -15). The cause is the shoulder's span (1 - knee), unchanged in absolute terms. Fix: the stage keeps the legacy shape (knee 0.18, span 0.82) but runs on `mx * k`, `k = 0.18 / clipKnee >= 1`, and the gain is `newMx / mx` on that scale; i.e. a dark clip is treated as if its own P85 sat at 0.18. `k` is exactly 1 (a literal 1.0 in GLSL, `0.18f/0.18f` in C++) for an unmeasured ref or a clip at the legacy knee, so those clips stay bit-identical. Exponent variants measured: k^1 (chosen), k^0.75 (DCG -9.1, clip24b -34.9, an arbitrary exponent, rejected).
+
+Measured (`hk_measure`, /255, brightest 5% / 0.5%, mean of 3 frames), k^1:
+
+| Clip (Gain) | knee | H-100 top5% | H-100 top0.5% | H+100 top5% |
+|---|---|---|---|---|
+| DCG 57 s (+1.7 EV) | 0.0266 | -0.27 -> -16.32 | -2.63 -> -37.79 | +0.15 -> +12.82 |
+| 24 mm clip24b (0) | 0.0607 | -11.84 -> -44.38 | -39.77 -> -94.43 | +9.75 -> +29.80 |
+| yavas_pan (0) | 0.18 | -14.96 unchanged | -19.89 unchanged | +13.20 unchanged |
+
+clip24b has genuinely bright content (P99 0.50), so normalising by its P85 makes -100 the strongest of all clips. If that is too strong the lever is one line (an exponent on `k`).

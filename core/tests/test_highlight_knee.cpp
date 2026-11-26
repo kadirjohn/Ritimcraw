@@ -137,3 +137,31 @@ TEST_CASE("dark_clip_ref_lowers_the_knee_and_recovery_stays_monotone") {
     const ImageF n2 = dev(cfa, g2), o2 = dev(cfa, g2old);
     CHECK_FALSE(bitEqual(n2, o2));
 }
+
+TEST_CASE("clip_normalised_shoulder_equals_the_legacy_shoulder_on_a_rescaled_clip") {
+    // The shoulder runs on mx * k, k = 0.18 / clipKnee, and the gain is newMx / mx on that scale.
+    // So a clip whose pixels are all c times a reference clip, with the knee ref scaled by the same c,
+    // develops to exactly c times the reference's Highlights output (up to float rounding): the slider
+    // acts on a dark clip like on the bright one it is normalised to.
+    const auto bright = ramp(0.90f);
+    Grade ref; ref.highlights = -100.0f; ref.highlightKneeRef = 0.18f;   // knee 0.18: legacy scale 1
+    const ImageF r = dev(bright, ref);
+    const float c = 0.25f;                                               // a dark twin: 4x dimmer
+    std::vector<uint16_t> dark(bright.size());
+    for (size_t i = 0; i < bright.size(); ++i) dark[i] = uint16_t(std::lround(float(bright[i]) * c));
+    Grade g; g.highlights = -100.0f; g.highlightKneeRef = 0.18f * c;     // knee 0.045
+    const ImageF d = dev(dark, g);
+    size_t checked = 0;
+    for (size_t i = 0; i < r.rgb.size(); ++i) {
+        if (r.rgb[i] < 0.02f) continue;                                  // skip sub-LSB noise of the 14-bit rounding
+        CHECK(d.rgb[i] == doctest::Approx(c * r.rgb[i]).epsilon(5e-3));
+        ++checked;
+    }
+    CHECK(checked > 100);
+}
+
+TEST_CASE("legacy_scale_is_exactly_one") {
+    // 0.18f / 0.18f == 1.0f exactly (IEEE division): clips at the legacy knee multiply mx by 1.0f.
+    CHECK(kHighlightKneeMax / highlightKnee(0.0f, 1.0f) == 1.0f);
+    CHECK(kHighlightKneeMax / highlightKnee(0.5f, 1.0f) == 1.0f);
+}

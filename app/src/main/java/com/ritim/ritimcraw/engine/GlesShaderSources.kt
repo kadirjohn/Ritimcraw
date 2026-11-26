@@ -1097,12 +1097,17 @@ vec3 lutManagedPixel(vec3 px) {
     // != 0.0f)`. knee/span are literal-only so they keep const; s/mx/over/
     // t/shoulder/newMx/gain are uniform-derived and must NOT (GLSL ES 3.00).
     if (uHighlights != 0.0) {
-        // D3 adaptive knee (core highlightKnee): unmeasured -> the legacy 0.18; measured ->
-        // clamp(P85 * gainScale, 0.02, 0.18). uExposure IS the gain scale (2^ev) stage 14 multiplied by.
-        float knee = uHighlightKneeRef > 0.0 ? clamp(uHighlightKneeRef * uExposure, 0.02, 0.18) : 0.18;
-        float span = 1.0 - knee;
+        // D3 adaptive knee (core highlightKnee): the clip knee is clamp(P85 * gainScale, 0.02, 0.18)
+        // (uExposure IS the gain scale 2^ev stage 14 multiplied by). The shoulder keeps the legacy
+        // shape (knee 0.18) but runs on the clip-normalised max channel mx * kScale, kScale = 0.18 /
+        // clip knee >= 1, so a dark clip is treated as if its own P85 sat at 0.18. Unmeasured ->
+        // kScale = 1.0 literally (no 0.18/0.18 division), the legacy stage bit for bit.
+        const float knee = 0.18;
+        const float span = 1.0 - knee;
+        float kScale = uHighlightKneeRef > 0.0
+            ? 0.18 / clamp(uHighlightKneeRef * uExposure, 0.02, 0.18) : 1.0;
         float s = -uHighlights / 100.0;  // recovery -> +1, lift -> -1
-        float mx = max(c.r, max(c.g, c.b));
+        float mx = kScale * max(c.r, max(c.g, c.b));
         if (mx > knee) {
             float over = mx - knee;
             float t = over / span;               // 0..1+ above the knee

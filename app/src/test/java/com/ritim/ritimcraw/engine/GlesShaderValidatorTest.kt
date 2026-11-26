@@ -1161,15 +1161,19 @@ class GlesShaderValidatorTest {
             src.contains("if (uHighlights != 0.0) {"),
         )
         assertTrue(
-            "adaptive knee missing (D3: unmeasured -> 0.18, measured -> clamp(P85 * gainScale, 0.02, 0.18))",
-            src.contains(
-                "float knee = uHighlightKneeRef > 0.0 ? " +
-                    "clamp(uHighlightKneeRef * uExposure, 0.02, 0.18) : 0.18;",
-            ),
+            "knee missing",
+            src.contains("const float knee = 0.18;"),
         )
         assertTrue(
             "span missing",
-            src.contains("float span = 1.0 - knee;"),
+            src.contains("const float span = 1.0 - knee;"),
+        )
+        assertTrue(
+            "clip scale missing (D3: unmeasured -> 1.0, measured -> 0.18 / clamp(P85 * gainScale, 0.02, 0.18))",
+            src.contains(
+                "float kScale = uHighlightKneeRef > 0.0\n" +
+                    "            ? 0.18 / clamp(uHighlightKneeRef * uExposure, 0.02, 0.18) : 1.0;",
+            ),
         )
         assertTrue(
             "strength sign missing (recovery -> +, lift -> -)",
@@ -1177,7 +1181,7 @@ class GlesShaderValidatorTest {
         )
         assertTrue(
             "max channel missing",
-            src.contains("float mx = max(c.r, max(c.g, c.b));"),
+            src.contains("float mx = kScale * max(c.r, max(c.g, c.b));"),
         )
         assertTrue(
             "knee test missing",
