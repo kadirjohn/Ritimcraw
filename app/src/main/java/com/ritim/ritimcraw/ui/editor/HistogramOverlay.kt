@@ -2,6 +2,7 @@ package com.ritim.ritimcraw.ui.editor
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
@@ -30,6 +31,9 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.ritim.ritimcraw.R
+import com.ritim.ritimcraw.engine.RawDiagnostics
+import com.ritim.ritimcraw.engine.RawDiagnosticsLabels
+import com.ritim.ritimcraw.engine.RawDiagnosticsText
 import com.ritim.ritimcraw.engine.RawHistogram
 import com.ritim.ritimcraw.ui.components.CompactSegmented
 import kotlin.math.exp
@@ -325,6 +329,9 @@ internal fun HistogramGraph(
                 Modifier.align(Alignment.Center),
             )
         }
+        if (mode == HistogramMode.RAW && !mini) {
+            raw?.diagnostics?.let { RawDiagnosticsBlock(it, colors, Modifier.align(Alignment.TopStart)) }
+        }
         if (!mini) {
             ClipPills(
                 readout = readout,
@@ -335,6 +342,30 @@ internal fun HistogramGraph(
                 ),
                 tint = clipTint,
             )
+        }
+    }
+}
+
+/**
+ * D0: the RAW scope's diagnostics block, a thin caption stack in the
+ * panel's top-start corner (inside the panel, so the strip's height never
+ * changes). Line count follows the panel height; the develop path's own
+ * plateau verdict is shown honestly, including "no reliable plateau".
+ */
+@Composable
+private fun RawDiagnosticsBlock(d: RawDiagnostics, colors: ScopeColors, modifier: Modifier) {
+    val labels = RawDiagnosticsLabels(
+        levels = stringResource(R.string.editor_raw_diag_levels),
+        blackSplit = stringResource(R.string.editor_raw_diag_black_split),
+        channel = stringResource(R.string.editor_raw_diag_channel),
+        greens = stringResource(R.string.editor_raw_diag_greens),
+        plateauYes = stringResource(R.string.editor_raw_diag_plateau_yes),
+        plateauNo = stringResource(R.string.editor_raw_diag_plateau_no),
+    )
+    BoxWithConstraints(modifier.fillMaxWidth()) {
+        val n = ((maxHeight - 6.dp) / 13.dp).toInt().coerceIn(1, 4)
+        Column {
+            RawDiagnosticsText.linesFor(d, labels, n).forEach { ScopeCaption(it, colors) }
         }
     }
 }

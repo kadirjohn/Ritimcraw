@@ -245,6 +245,10 @@ echo "== building tests =="
 # fixtures — no cwd needs.
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_rawstats.cpp" \
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_rawstats"
+# test_raw_diagnostics: D0 RAW diagnostics (levels, peaks, plateau verdict) on
+# synthetic frames reproducing the hr_levels numbers. No cwd needs.
+"$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_raw_diagnostics.cpp" \
+  "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_raw_diagnostics"
 # test_yuv: byte-exact RGB888->I420 contract with export/YuvConverter.kt
 # (NEON path runs on arm64 hosts, so NEON-vs-scalar is proven here too).
 # -ffp-contract=off matches the Yuv.cpp build: the reference formulas in
@@ -369,6 +373,8 @@ echo "== running test_residual_analysis =="
 "$BUILD/test_residual_analysis"
 echo "== running test_rawstats =="
 "$BUILD/test_rawstats"
+echo "== running test_raw_diagnostics =="
+"$BUILD/test_raw_diagnostics"
 echo "== running test_yuv =="
 "$BUILD/test_yuv"
 echo "== running test_color =="

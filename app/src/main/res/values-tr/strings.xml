@@ -308,6 +308,12 @@
     <string name="editor_histogram">Histogram</string>
     <string name="editor_histogram_clipped">Kırpıldı</string>
     <string name="editor_histogram_raw_clip">RAW kırpma</string>
+    <string name="editor_raw_diag_levels">Siyah %1$s | Beyaz %2$d | Beyaz üstü %3$d</string>
+    <string name="editor_raw_diag_black_split">R%1$d Gr%2$d Gb%3$d B%4$d</string>
+    <string name="editor_raw_diag_channel">%1$s tepe %2$d (x%3$d, yakın %4$d)%5$s | %6$s</string>
+    <string name="editor_raw_diag_greens">Gr %1$d Gb %2$d</string>
+    <string name="editor_raw_diag_plateau_yes">plato var @%1$s</string>
+    <string name="editor_raw_diag_plateau_no">güvenilir plato yok</string>
     <string name="editor_histogram_raw_unavailable">RAW: sensör verisi yok</string>
     <string name="editor_histogram_raw_parade">RAW Geçit</string>
     <string name="editor_histogram_raw_parade_show">RAW geçidi göster</string>
