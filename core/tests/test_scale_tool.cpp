@@ -68,16 +68,42 @@ std::vector<PairRecord> biasedRecords(size_t n, double bias) {
     return recs;
 }
 
+// Field-by-field, BIT-exact comparisons. memcmp over the whole struct also compares the compiler's padding
+// bytes (PairRecord ends with a uint8_t before 3 pad bytes; the padding of a copied/returned struct is
+// indeterminate), which made these tests flake on one run in a while. Floats and doubles are compared by
+// their bit pattern (so -0.0 vs 0.0 and NaN payloads still count), padding is never read.
+template <class T>
+bool bitEq(const T& x, const T& y) {
+    return std::memcmp(&x, &y, sizeof(T)) == 0;
+}
+bool sameRecord(const PairRecord& x, const PairRecord& y) {
+    return x.ptsUs == y.ptsUs && bitEq(x.tx, y.tx) && bitEq(x.ty, y.ty) && bitEq(x.logS, y.logS) &&
+           bitEq(x.theta, y.theta) && x.inlierRatio8 == y.inlierRatio8 && x.coverage8 == y.coverage8 &&
+           x.nInliers == y.nInliers && x.residualMilliPx == y.residualMilliPx && x.status == y.status;
+}
+bool sameSim(const Sim2& x, const Sim2& y) {
+    return bitEq(x.s, y.s) && bitEq(x.theta, y.theta) && bitEq(x.tx, y.tx) && bitEq(x.ty, y.ty);
+}
+bool sameFrame(const ImageStabFrame& x, const ImageStabFrame& y) {
+    return sameSim(x.corr, y.corr) && bitEq(x.zoom, y.zoom) && bitEq(x.a, y.a);
+}
+bool sameStats(const ImageStabPlanStats& x, const ImageStabPlanStats& y) {
+    return bitEq(x.meanZoom, y.meanZoom) && bitEq(x.maxZoom, y.maxZoom) && bitEq(x.meanA, y.meanA) &&
+           bitEq(x.limitedFraction, y.limitedFraction) && bitEq(x.maxZoomRate, y.maxZoomRate) &&
+           x.budgetRounds == y.budgetRounds && x.hardFallbackFrames == y.hardFallbackFrames &&
+           x.invalidSampleFrames == y.invalidSampleFrames;
+}
+
 bool samePlan(const ImageStabPlan& a, const ImageStabPlan& b) {
     if (a.size() != b.size()) return false;
     for (size_t i = 0; i < a.size(); ++i) {
         const ImageStabFrame& x = a.frame(i);
         const ImageStabFrame& y = b.frame(i);
-        if (std::memcmp(&x, &y, sizeof(ImageStabFrame)) != 0) return false;
+        if (!sameFrame(x, y)) return false;
     }
     const ImageStabPlanStats& sa = a.stats();
     const ImageStabPlanStats& sb = b.stats();
-    return std::memcmp(&sa, &sb, sizeof(ImageStabPlanStats)) == 0;
+    return sameStats(sa, sb);
 }
 
 }  // namespace
@@ -104,7 +130,7 @@ TEST_CASE("scale tool: free policy is a bit-identical copy and a bit-identical p
     const auto freed = applyScalePolicy(recs, ScalePolicy::Free);
     REQUIRE(freed.size() == recs.size());
     for (size_t i = 0; i < recs.size(); ++i) {
-        CHECK(std::memcmp(&freed[i], &recs[i], sizeof(PairRecord)) == 0);
+        CHECK(sameRecord(freed[i], recs[i]));
     }
     for (int mode = 0; mode < 2; ++mode) {
         ImageStabParams p;
@@ -125,7 +151,7 @@ TEST_CASE("scale tool: lock rewrites only logS on measured pairs, never touches 
         const PairRecord& dst = locked[i];
         if (src.status == static_cast<uint8_t>(PairStatus::Lost)) {
             // Lost: every byte identical.
-            CHECK(std::memcmp(&src, &dst, sizeof(PairRecord)) == 0);
+            CHECK(sameRecord(src, dst));
         } else {
             CHECK(dst.logS == 0.0f);
             CHECK(dst.ptsUs == src.ptsUs);
