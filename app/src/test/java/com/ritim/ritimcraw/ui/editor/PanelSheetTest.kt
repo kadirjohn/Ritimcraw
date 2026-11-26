@@ -1,6 +1,7 @@
 package com.ritim.ritimcraw.ui.editor
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -104,6 +105,49 @@ class PanelSheetTest {
     fun category_tap_while_open_never_moves_the_panel() {
         assertEquals(PanelState.NORMAL, PanelSheet.panelAfterCategoryTap(PanelState.NORMAL))
         assertEquals(PanelState.EXPANDED, PanelSheet.panelAfterCategoryTap(PanelState.EXPANDED))
+    }
+
+    // ---- landscape rail tap decision (owner request 2026-11-27: tapping
+    // the SELECTED category while the landscape panel column is visible
+    // hides it; every other tap keeps the open/switch routing) ----
+
+    @Test
+    fun rail_tap_on_the_selected_category_hides_the_visible_panel() {
+        // The landscape's panel-dismiss gesture: Light open, Light tapped.
+        assertTrue(
+            PanelSheet.landscapeRailTapHidesPanel(
+                selected = EditorCategories.LIGHT,
+                tapped = EditorCategories.LIGHT,
+                panelVisible = true,
+            )
+        )
+    }
+
+    @Test
+    fun rail_tap_on_a_different_category_keeps_the_panel() {
+        // A switch never moves the panel — the portrait rule (a tap
+        // while open only switches the category) carried into landscape.
+        assertFalse(
+            PanelSheet.landscapeRailTapHidesPanel(
+                selected = EditorCategories.LIGHT,
+                tapped = EditorCategories.COLOR,
+                panelVisible = true,
+            )
+        )
+    }
+
+    @Test
+    fun rail_tap_while_hidden_never_hides() {
+        // While the column is hidden every tap reopens it (section
+        // 10.3's collapsed-tap rule, landscape analog) — the decision is
+        // never "hide" from a hidden state.
+        assertFalse(
+            PanelSheet.landscapeRailTapHidesPanel(
+                selected = EditorCategories.LIGHT,
+                tapped = EditorCategories.LIGHT,
+                panelVisible = false,
+            )
+        )
     }
 
     // ---- collapsed strip trim (owner add-on 2026-11-12) ----

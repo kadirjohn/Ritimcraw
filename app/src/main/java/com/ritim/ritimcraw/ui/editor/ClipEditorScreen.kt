@@ -12,6 +12,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.ui.semantics.onClick
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.core.MutableTransitionState
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.expandVertically
@@ -98,6 +99,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import kotlin.math.roundToInt
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.layout.layout
 import androidx.compose.foundation.background
 import androidx.compose.ui.graphics.Color
@@ -3920,6 +3922,54 @@ fun ClipEditorScreen(
             configuration.screenHeightDp,
         )
 
+        // ---- Landscape panel slide (owner request 2026-11-27) ----
+        // The landscape hide/show of the panel column becomes a SMOOTH
+        // slide, the same motion quality as the portrait sheet: the
+        // column's weighted share interpolates between the hidden (0)
+        // and visible (OrientationLayout.panelWidthFraction) endpoints
+        // with the portrait's own critically damped settle spring
+        // (PanelSheet.settleSpec — StiffnessLow, no overshoot), read in
+        // the LAYOUT phase via the Animatable value so the Row
+        // re-measures per frame instead of recomposing the screen.
+        // `panelVisible` stays the SAVEABLE intent (rotation keeps the
+        // user's choice, section 18); the slide is derived state that
+        // always ends on the intent's endpoint. The panel column stays
+        // composed until the slide REACHES zero, so the hide never
+        // hard-cuts mid-animation and the removal semantics (state
+        // preservation at screen level, section 11.6) are unchanged.
+        // A mid-flight direction reversal restarts from the live value
+        // — the same shape as the portrait drag's settle.
+        val panelSlide = remember { Animatable(if (panelVisible) 1f else 0f) }
+        val panelSlideSpec = remember { PanelSheet.settleSpec() }
+        LaunchedEffect(panelVisible) {
+            panelSlide.animateTo(
+                if (panelVisible) 1f else 0f,
+                animationSpec = panelSlideSpec,
+            )
+        }
+        // The composition gate: the panel column composes while the
+        // slide is ABOVE zero and is REMOVED at rest-hidden — the old
+        // `if (panelVisible)` removal semantics kept exactly (no
+        // invisible 48dp-touch-target header overhanging into the rail
+        // at zero width). snapshotFlow emits only when the PREDICATE
+        // flips (the zero crossing), not on every animation frame, so
+        // the slide itself never recomposes the screen: one boolean
+        // change per animation — at the show's first frame and after
+        // the hide reaches zero (the column is already zero-wide then;
+        // no visual pop).
+        var panelColumnComposed by remember { mutableStateOf(panelVisible) }
+        LaunchedEffect(panelSlide) {
+            snapshotFlow { panelSlide.value > 0f }.collect { composed ->
+                panelColumnComposed = composed
+            }
+        }
+        // True while the landscape panel column slides between its
+        // endpoints: the SurfaceView keeps its size until the slide
+        // settles (the portrait panel animation's freeze mechanism —
+        // one layout-sized surfaceChanged follows at rest instead of
+        // one per intermediate width).
+        val panelSlideAnimating = landscapeTwoColumn && panelSlide.isRunning
+
         // ---- Shared workspace regions ----
         // The preview, transport and panel content compose through these
         // shared lambdas so the portrait single column (section 11) and
@@ -4025,7 +4075,15 @@ fun ClipEditorScreen(
                     // video would fill. Measured here — not read from the
                     // surface — so the claim is available before the first
                     // frame and never races the surface's own sizing.
-                    .onSizeChanged { previewRegionWidth = it.width },
+                    // Gated on the slides: the claim wants the SETTLED
+                    // geometry, and writing the width mid-landscape-slide
+                    // would recompose the screen every frame (B13's own
+                    // rule — state writes belong to settled layouts, the
+                    // portrait sheet's layout-phase offset read is the
+                    // pattern this file already trusts).
+                    .onSizeChanged { size ->
+                        if (!panelSlideAnimating) previewRegionWidth = size.width
+                    },
                 contentAlignment = Alignment.Center,
             ) {
                 // PLAY-11 zebra: the display swaps to the striped copy
@@ -4112,7 +4170,7 @@ fun ClipEditorScreen(
                     // must never block on the engine.
                     gpuWindowActive = gpuActive,
                     gpuWindowServing = gpuWindowLive,
-                    freezeSurfaceSize = panelDrag.isAnimationRunning || barAnimating,
+                    freezeSurfaceSize = panelDrag.isAnimationRunning || barAnimating || panelSlideAnimating,
                     // B13 diagnosis: count every surfaceChanged into the open
                     // panel-animation window (see panelAnimTrace above). The
                     // window is the same isAnimationRunning signal the freeze
@@ -5317,26 +5375,41 @@ fun ClipEditorScreen(
             // bottom bar is portrait-only now, never a wide landscape
             // bottom row). Both navs read the same shared `tab`.
             if (landscapeTwoColumn) {
+                // The landscape slide (owner request 2026-11-27) mirrors
+                // the PORTRAIT SHEET's mechanism, not a recomposing
+                // weight animation: the panel column's WIDTH IS the
+                // slide, read in the LAYOUT phase inside the modifier's
+                // measure block (never in composition), so an animating
+                // panel re-measures its own width per frame without
+                // recomposing the screen — the same rule the portrait
+                // sheet's drag layout states. The preview column is the
+                // FLEXING weighted column that takes whatever the
+                // sliding panel leaves (the portrait "the preview Box
+                // takes the flex space" shape, section 11.7, carried to
+                // the horizontal axis); the rail is the fixed bracket on
+                // the end edge. The panel column composes in EVERY panel
+                // state — like the portrait sheet, which stays composed
+                // (clipped, not removed) while collapsed: the slide to
+                // zero width IS the hide, so there is no hard cut to
+                // animate around, and the per-category scroll/sub-tab
+                // states (screen-level, section 11.6) survive by the
+                // same construction they always did.
                 Row(
                     Modifier
                         .fillMaxWidth()
                         .weight(1f),
                 ) {
-                    // LEFT column: preview over transport. The width is
-                    // OrientationLayout's responsive preview share — the
-                    // complement of the panel band (60-70%), or the FULL
-                    // width while the panel is hidden (section 17.3: the
-                    // preview expands horizontally, never vertically, in
-                    // the landscape workspace).
+                    // LEFT column: preview over transport — the flexing
+                    // weighted column. Full share while the panel is
+                    // hidden, the panel's complement while it shows
+                    // (section 17.3: the preview expands horizontally,
+                    // never vertically, in the landscape workspace) —
+                    // CONTINUOUSLY while the panel slides, because the
+                    // weighted share is measured after the sliding panel
+                    // column's width is decided each frame.
                     Column(
                         Modifier
-                            .weight(
-                                OrientationLayout.previewWidthFraction(
-                                    panelVisible = panelVisible,
-                                    widthDp = configuration.screenWidthDp,
-                                    heightDp = configuration.screenHeightDp,
-                                ),
-                            )
+                            .weight(1f)
                             .fillMaxHeight(),
                     ) {
                         previewRegion()
@@ -5352,18 +5425,48 @@ fun ClipEditorScreen(
                     // (section 17.3 does not force the portrait's vertical
                     // panel dragging here), the same resolved scroll state,
                     // the same panel content. The header row
-                    // carries section 17.3's hide affordance.
-                    if (panelVisible) {
+                    // carries section 17.3's hide affordance. Composed
+                    // while the slide is above zero and removed at rest
+                    // (panelColumnComposed above) — the old removal
+                    // semantics; the hide animates the width to zero
+                    // FIRST, so the removal is never a visible cut. The
+                    // width modifier below measures the column at the
+                    // responsive band share of the MEASURED weighted base
+                    // (the Row's width minus the fixed rail column — the
+                    // same base the old weight(1f * fraction) divided)
+                    // scaled by the 0..1 slide, so the steady state at
+                    // slide = 1 is byte-identical to the old weighted
+                    // layout.
+                    if (panelColumnComposed) {
                         EditorPanelSheet(
                             dragState = panelDrag,
                             scrollState = activePanelScrollState,
                             modifier = Modifier
-                                .weight(
-                                    OrientationLayout.panelWidthFraction(
+                                .layout { measurable, constraints ->
+                                    // The slide is read HERE, in the measure
+                                    // block: a layout-phase state read
+                                    // re-measures without recomposing (the
+                                    // portrait sheet's offset-read rule).
+                                    val railPx = OrientationLayout.railWidthDp(
                                         configuration.screenWidthDp,
-                                    ),
-                                )
-                                .fillMaxHeight(),
+                                        configuration.screenHeightDp,
+                                    ).dp.roundToPx()
+                                    val base = (constraints.maxWidth - railPx).coerceAtLeast(0)
+                                    val fraction = OrientationLayout.panelWidthFractionSliding(
+                                        slide = panelSlide.value,
+                                        widthDp = configuration.screenWidthDp,
+                                        heightDp = configuration.screenHeightDp,
+                                    )
+                                    val w = (base * fraction).roundToInt()
+                                    val placeable = measurable.measure(
+                                        constraints.copy(minWidth = w, maxWidth = w)
+                                    )
+                                    layout(placeable.width, placeable.height) {
+                                        placeable.place(0, 0)
+                                    }
+                                }
+                                .fillMaxHeight()
+                                .clipToBounds(),
                             landscape = true,
                             header = {
                                 IconButton(
@@ -5399,16 +5502,41 @@ fun ClipEditorScreen(
                     // landscape). A tap while the panel is hidden
                     // reopens it: the landscape analog of section 10.3's
                     // collapsed-tap rule (selecting a category reveals
-                    // the controls). The width is OrientationLayout's
-                    // measured band value — NEVER a hardcoded dp — and
-                    // it is a FIXED column, so the weighted preview and
-                    // panel columns to its left keep sharing the
-                    // remaining space in the same 60-70/30-40 band.
+                    // the controls) — and a tap on the SELECTED category
+                    // while the panel is visible HIDES the column
+                    // (owner request 2026-11-27: the landscape's
+                    // panel-dismiss gesture, with the same smooth slide
+                    // as the hide header); the pure decision lives in
+                    // PanelSheet.landscapeRailTapHidesPanel, nothing
+                    // here re-derives. The tab stays selected in every
+                    // branch — both navs read the same shared Int
+                    // (section 6), and the portrait bar keeps the
+                    // category highlighted while collapsed. The width is
+                    // OrientationLayout's measured band value — NEVER a
+                    // hardcoded dp — and it is a FIXED column, so the
+                    // weighted preview and panel columns to its left
+                    // keep sharing the remaining space in the same
+                    // 60-70/30-40 band.
                     EditorCategoryRail(
                         selected = tab,
                         onCategoryTap = { category ->
-                            tab = category
-                            panelVisible = true
+                            if (PanelSheet.landscapeRailTapHidesPanel(
+                                    selected = tab,
+                                    tapped = category,
+                                    panelVisible = panelVisible,
+                                )
+                            ) {
+                                // The dismiss branch keeps the tab: the
+                                // rail's selected pill stays lit while
+                                // the column slides away, exactly like
+                                // the portrait bar keeps the category
+                                // highlighted while the sheet collapses
+                                // (section 10.3).
+                                panelVisible = false
+                            } else {
+                                tab = category
+                                panelVisible = true
+                            }
                         },
                         modifier = Modifier
                             .width(
