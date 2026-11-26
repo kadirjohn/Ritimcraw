@@ -49,12 +49,23 @@ internal class EncodedMp4Session(
     private class Open(val source: EncodedSource, val info: EncodedClipInfo, val sourceFd: Int) {
         /** The planner's verdict for this open clip (set by [encoderSurfaceCapable]); null until asked. */
         var plannedPath: EncodedExportPlanner.Path? = null
+
+        /**
+         * A7: the geometry verdict the planner was last asked with (null = never asked — a
+         * cropped/rotated/scaled job short-circuits before the question, and the exporter's
+         * allowSessionSurface gate can too). The striped CPU oracle is gated on it: only a 1:1
+         * job's downstream stays whole-frame-free, so non-1:1 frames keep the pre-A7 refusal.
+         */
+        var plannedOneToOne: Boolean? = null
     }
 
     private var nextHandle = 1L
     private val sessions = HashMap<Long, Open>()
     private var lastMessage: String? = null
     private var pathLogged = false
+
+    /** A7: one honest line the first time a frame takes the striped CPU oracle. */
+    private var stripedLogged = false
 
     /** The last clip's color, for reports and tests. */
     var lastColor: EncodedColorSpec? = null
@@ -92,6 +103,7 @@ internal class EncodedMp4Session(
             ),
         )
         s.plannedPath = decision.path
+        s.plannedOneToOne = oneToOne
         val b = EncodedExportPlanner.gpuBudget(s.info.width, s.info.height, s.info.color.bitDepth)
         log("encoded export path: ${decision.path.name.lowercase()} - ${decision.reason}; " +
             "gpu budget ${b.total / (1024 * 1024)} MiB (chain ${b.chainTextureBytes / (1024 * 1024)} + yuv ${b.yuvPlaneBytes / (1024 * 1024)} + cfa ${b.cfaTextureBytes / (1024 * 1024)})")
@@ -140,16 +152,52 @@ internal class EncodedMp4Session(
                 log("encoded export develop path: " + (if (gpuRgb != null) "gpu (readback)" else "cpu (oracle)"))
             }
             if (gpuRgb != null) return gpuRgb
-            // The CPU oracle allocates the whole frame (planes + ARGB + RGB888): when that cannot fit the heap
-            // (8K), say so in one short line instead of dying with an OutOfMemoryError.
+            // Whole-frame oracle while its allocations fit the heap — byte-identical to the pre-A7 path.
+            if (EncodedExportPlanner.cpuOracleFits(
+                    s.info.width, s.info.height, s.info.color.bitDepth, heapLimitBytes(),
+                )
+            ) {
+                val argb = s.source.renderFrame(frameIndex, grade, lutPath, upright = false, chainWire = chainWire)
+                return argbToRgb888(argb, s.info.width, s.info.height)
+            }
+            // A7 (night 2026-11-26): the striped CPU oracle — the frame developed in horizontal
+            // stripes (the ARGB detour is gone; the native working set is stripe-height bound,
+            // core kEncodedStripeMargin rows of context). Reached only for a 1:1 job (the planner
+            // was asked and said geometryOneToOne): a cropped/scaled job's downstream rotate/scale
+            // buffers still hold whole frames, so those keep the honest refusal below.
+            if (s.plannedOneToOne == true) {
+                EncodedExportPlanner.stripedCpuFallbackRefusal(
+                    s.info.width, s.info.height, s.info.color.bitDepth, heapLimitBytes(),
+                )?.let { return fail(it) }
+                val striped = s.source.renderFrameRgbStriped(frameIndex, grade, lutPath, chainWire, heapLimitBytes())
+                if (striped != null) {
+                    if (striped.size != s.info.width * s.info.height * 3) {
+                        return fail(
+                            "striped develop returned ${striped.size} bytes for a " +
+                                "${s.info.width}x${s.info.height} frame (recovery: re-open the clip)",
+                        )
+                    }
+                    if (!stripedLogged) {
+                        stripedLogged = true
+                        log("encoded export develop path: cpu (oracle, striped ${EncodedExportPlanner.stripeRowsFor(s.info.width)}-row stripes)")
+                    }
+                    return striped
+                }
+                // Null only from a developer without a striped door (a fake); the real native door throws.
+                return fail(
+                    "the striped CPU fallback was unavailable for this ${s.info.width}x${s.info.height} frame " +
+                        "(recovery: the GPU path, or an export size that fits the whole-frame CPU path)",
+                )
+            }
+            // No 1:1 verdict (the planner was never asked): the pre-A7 honest refusal.
             EncodedExportPlanner.cpuFallbackRefusal(
                 s.info.width, s.info.height, s.info.color.bitDepth, heapLimitBytes(),
             )?.let { return fail(it) }
-            val argb = s.source.renderFrame(frameIndex, grade, lutPath, upright = false, chainWire = chainWire)
-            argbToRgb888(argb, s.info.width, s.info.height)
+            fail("the CPU fallback refused this ${s.info.width}x${s.info.height} frame")
         } catch (e: OutOfMemoryError) {
             fail(
-                EncodedExportPlanner.cpuFallbackRefusal(s.info.width, s.info.height, s.info.color.bitDepth, 0L)
+                EncodedExportPlanner.stripedCpuFallbackRefusal(s.info.width, s.info.height, s.info.color.bitDepth, 0L)
+                    ?: EncodedExportPlanner.cpuFallbackRefusal(s.info.width, s.info.height, s.info.color.bitDepth, 0L)
                     ?: "out of memory developing a ${s.info.width}x${s.info.height} frame"
             )
         } catch (e: Throwable) {

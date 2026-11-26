@@ -290,4 +290,131 @@ class EncodedMp4SessionTest {
         assertFalse(s.attachEncoderSurface(h, Any()))
         assertTrue(s.detail()!!.contains("refused the input surface"))
     }
+
+    // ---- A7 (night 2026-11-26): the striped CPU oracle ----
+
+    /** A tall thin fake frame so a small HEAP leaves the whole-frame path over budget but the striped one under. */
+    private class TallDecoder : EncodedFrameDecoder {
+        private val pending = ArrayList<EncodedSample>()
+        private var eos = false
+        override fun configure(format: EncodedVideoFormat): String? = null
+        override fun flush() { pending.clear(); eos = false }
+        override fun queueSample(sample: EncodedSample) { pending.add(sample) }
+        override fun queueEos() { eos = true }
+        override fun dequeueFrame(timeoutUs: Long): YuvPlanes? {
+            if (pending.isEmpty()) return null
+            val s = pending.removeAt(0)
+            // 64x4096 NV12 8-bit: pooled-adapter shape (one interleaved chroma array)
+            val cw = 32
+            val ch = 2048
+            val y = ByteArray(64 * 4096)
+            val c = ByteArray(cw * 2 * ch)
+            return YuvPlanes(
+                s.ptsUs, 64, 4096,
+                YuvPlane(y, 0, 64, 1), YuvPlane(c, 0, cw * 2, 2), YuvPlane(c, 1, cw * 2, 2),
+            )
+        }
+        override fun release() {}
+    }
+
+    /** The fake develop with a striped door: returns full-frame RGB888 with a recognizable pattern. */
+    private class StripedDeveloper : EncodedDeveloper {
+        var stripedCalls = 0
+        var wholeCalls = 0
+        override fun develop(frame: YuvFrameK, color: EncodedColorSpec, orientationDeg: Int, grade: GradeK, lutPath: String?, chainWire: FloatArray?): IntArray? {
+            wholeCalls++
+            return IntArray(2).also { it[0] = frame.width; it[1] = frame.height }
+        }
+        override fun developStriped(frame: YuvFrameK, color: EncodedColorSpec, grade: GradeK, lutPath: String?, chainWire: FloatArray?, stripeRows: Int): ByteArray? {
+            stripedCalls++
+            stripeRowsSeen = stripeRows
+            lastStripeStripeView = frame
+            return ByteArray(frame.width * frame.height * 3) { (it % 251).toByte() }
+        }
+        var stripeRowsSeen = 0
+        lateinit var lastStripeStripeView: YuvFrameK
+        override fun code() = 0
+        override fun stage() = 0
+        override fun detail(): String? = null
+    }
+
+    private fun tallSession(
+        dev: EncodedDeveloper,
+        w: Int = 64,
+        h: Int = 4096,
+        heap: Long,
+        logs: MutableList<String> = ArrayList(),
+    ): EncodedMp4Session {
+        val format = EncodedVideoFormat("video/hevc", w, h, 0, color)
+        return EncodedMp4Session(
+            newSource = { EncodedSource(Reader(3, format), TallDecoder(), dev, FakeGpu(available = false)) },
+            dupFd = { it },
+            log = { logs.add(it) },
+            maxTextureSize = { 16384 },
+            heapLimitBytes = { heap },
+        )
+    }
+
+    @Test
+    fun the_8k_fake_frame_still_refuses_short_when_the_planner_was_never_asked() {
+        // Pre-A7 behavior preserved: without a 1:1 planner verdict the refusal
+        // fires BEFORE any develop (nothing allocated, no oracle run).
+        val dev = Developer()
+        val s = tallSession(dev, w = 7680, h = 4320, heap = 256L * 1024 * 1024)
+        val h = s.open(1)!!.handle
+        assertNull(s.renderFrame(h, 0, GradeK(), null, null))
+        val d = s.detail()!!
+        assertTrue(d.contains("7680x4320"))
+        assertTrue(d.length < 250)
+        assertEquals(0, dev.colors.size) // the oracle never ran
+    }
+
+    @Test
+    fun a_one_to_one_verdict_opens_the_striped_oracle_when_the_whole_frame_does_not_fit() {
+        // 64x4096, heap 3 MB, container color 10-bit (BT2020 spec): whole-frame
+        // (planes 786 KB + ARGB 4 MB + RGB 786 KB = 2.6 MB) is over the 0.7 share
+        // (2.1 MB); the striped budget (planes + rgb = 1.6 MB) fits. The
+        // planner's 1:1 verdict admits the striped door.
+        val dev = StripedDeveloper()
+        val logs = ArrayList<String>()
+        val s = tallSession(dev, heap = 3_000_000L, logs = logs)
+        val h = s.open(1)!!.handle
+        assertFalse(s.encoderSurfaceCapable(h, GradeK(), null, true)) // no GPU door; planner asked with oneToOne=true
+        val rgb = s.renderFrame(h, 1, GradeK(), null, null)
+        if (rgb == null) throw AssertionError("striped render refused: " + s.detail())
+        assertNotNull(rgb)
+        assertEquals(64 * 4096 * 3, rgb!!.size)
+        assertEquals(1, dev.stripedCalls)
+        assertEquals(0, dev.wholeCalls) // the ARGB detour never ran
+        assertTrue(dev.stripeRowsSeen % 2 == 0)
+        // the zero-copy view: the striped frame IS the decoded planes (NV12 pooled shape)
+        assertEquals(4096, dev.lastStripeStripeView.height)
+        assertTrue(dev.lastStripeStripeView.semiPlanar)
+        assertTrue(logs.any { it.contains("cpu (oracle, striped") })
+    }
+
+    @Test
+    fun without_the_one_to_one_verdict_the_striped_door_stays_closed() {
+        val dev = StripedDeveloper()
+        val s = tallSession(dev, heap = 1_700_000L)
+        val h = s.open(1)!!.handle
+        // planner never asked (no encoderSurfaceCapable call): conservative refusal
+        assertNull(s.renderFrame(h, 0, GradeK(), null, null))
+        assertEquals(0, dev.stripedCalls)
+        assertTrue(s.detail()!!.isNotEmpty())
+    }
+
+    @Test
+    fun the_whole_frame_path_still_runs_when_it_fits_the_heap() {
+        // 64x4096 with a healthy heap: byte-identical pre-A7 path — the striped
+        // door is NOT taken (the whole-frame ARGB path returns).
+        val dev = StripedDeveloper()
+        val s = tallSession(dev, heap = 64L * 1024 * 1024)
+        val h = s.open(1)!!.handle
+        s.encoderSurfaceCapable(h, GradeK(), null, true)
+        assertNull(s.renderFrame(h, 0, GradeK(), null, null)) // the fake's whole develop: [w,h] only -> substitution fails
+        assertEquals(1, dev.wholeCalls)
+        assertEquals(0, dev.stripedCalls)
+        assertTrue(s.detail()!!.contains("developed frame is"))
+    }
 }

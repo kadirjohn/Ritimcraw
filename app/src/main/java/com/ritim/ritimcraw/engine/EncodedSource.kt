@@ -317,6 +317,29 @@ interface EncodedDeveloper {
         chainWire: FloatArray? = null,
     ): IntArray?
 
+    /**
+     * A7 (night 2026-11-26): the striped CPU oracle — the encoded EXPORT's
+     * bounded-memory develop, the fallback for frames the whole-frame path
+     * cannot hold on the JVM heap (8K: planes + full-frame ARGB + RGB888
+     * ~= 281 MB over a 256 MB heap). [frame] is the decoded frame's plane
+     * VIEW (or its packed repack) exactly like [develop]'s; the native side
+     * consumes it in horizontal stripes ([stripeRows] =
+     * EncodedExportPlanner.stripeRowsFor(width); core kEncodedStripeMargin
+     * rows of vertical context per stripe) and returns the full-frame
+     * RGB888 (w*h*3, row-major, NOT rotated — the export pipeline rotates,
+     * the same contract as [develop] with orientationDeg 0). Returns null
+     * ONLY when this developer has no striped door (a fake); every failure
+     * throws IllegalStateException with the complete message.
+     */
+    fun developStriped(
+        frame: YuvFrameK,
+        color: EncodedColorSpec,
+        grade: GradeK,
+        lutPath: String?,
+        chainWire: FloatArray?,
+        stripeRows: Int,
+    ): ByteArray? = null
+
     /** rawedit::ErrorCode of the last failed develop (0 ok, 1 truncated, 2 badHeader, 3 ioError, 4 unsupported). */
     fun code(): Int
 
@@ -382,6 +405,60 @@ object EncodedYuv {
             w, h, semiPlanar = true, p.y.buffer, c, ByteArray(0),
             stride = p.y.rowStride, uvStride = cStride, bitDepth = if (bps == 2) 10 else 8,
         )
+    }
+
+    /**
+     * A7 (night 2026-11-26): the striped CPU develop's ZERO-COPY frame view —
+     * the decoded planes read IN PLACE (their own row strides, no repack)
+     * when the layout is one [YuvFrameK] can address:
+     *  - NV12/P010 with ONE interleaved chroma array (the pooled adapter's
+     *    shape, what real decoders hand out): the luma buffer + the shared
+     *    chroma buffer, semiPlanar (developEncoded reads interleaved UV from
+     *    u; v stays empty);
+     *  - true planar I420 (u and v separate, one sample per element, one
+     *    shared row stride, offset 0).
+     * Null when the layout needs the [toNv12] repack (NV21, padded pixel
+     * strides, short planes): the caller then packs — and counts the pack's
+     * extra plane-set against the heap FIRST (the honest budget,
+     * EncodedExportPlanner.stripedOracleFits(packed = true)).
+     */
+    fun toCpuView(p: YuvPlanes): YuvFrameK? {
+        val w = p.width
+        val h = p.height
+        if (w <= 0 || h <= 0) return null
+        val bps = if (p.bitDepth > 8) 2 else 1
+        if (p.y.pixelStride != bps || p.y.offset != 0) return null
+        val ch = (h + 1) / 2
+        val cw = (w + 1) / 2
+        // NV12/P010: one interleaved chroma array, V the same buffer at bps.
+        if (p.u.buffer === p.v.buffer && p.u.offset == 0 && p.v.offset == bps &&
+            p.u.pixelStride == 2 * bps && p.v.pixelStride == 2 * bps &&
+            p.u.rowStride == p.v.rowStride && p.u.rowStride % (2 * bps) == 0 &&
+            p.y.rowStride % bps == 0
+        ) {
+            val cs = p.u.rowStride
+            val yn = (h - 1) * p.y.rowStride + w * bps
+            val cn = (ch - 1) * cs + cw * 2 * bps
+            if (p.y.buffer.size < yn || p.u.buffer.size < cn) return null
+            return YuvFrameK(
+                w, h, true, p.y.buffer, p.u.buffer, ByteArray(0),
+                p.y.rowStride, cs, bitDepth = if (bps == 2) 10 else 8,
+            )
+        }
+        // planar I420: u/v separate, one sample per element.
+        if (p.u.pixelStride == bps && p.v.pixelStride == bps &&
+            p.u.offset == 0 && p.v.offset == 0 && p.u.rowStride == p.v.rowStride
+        ) {
+            val cs = p.u.rowStride
+            val yn = (h - 1) * p.y.rowStride + w * bps
+            val cn = (ch - 1) * cs + cw * bps
+            if (p.y.buffer.size < yn || p.u.buffer.size < cn || p.v.buffer.size < cn) return null
+            return YuvFrameK(
+                w, h, false, p.y.buffer, p.u.buffer, p.v.buffer,
+                p.y.rowStride, cs, bitDepth = if (bps == 2) 10 else 8,
+            )
+        }
+        return null
     }
 
     fun toNv12(p: YuvPlanes): YuvFrameK {
@@ -691,6 +768,61 @@ internal object NativeEncodedDeveloper : EncodedDeveloper {
         return result
     }
 
+    /**
+     * A7: the striped door (see the interface). The native call returns null
+     * only on failure — mapped here to the same complete-message throw the
+     * whole-frame path's caller makes; null never escapes (this developer
+     * HAS the door).
+     */
+    override fun developStriped(
+        frame: YuvFrameK,
+        color: EncodedColorSpec,
+        grade: GradeK,
+        lutPath: String?,
+        chainWire: FloatArray?,
+        stripeRows: Int,
+    ): ByteArray? {
+        if (!NativeSource.nativeAvailable) {
+            throw IllegalStateException(NativeSource.nativeUnavailableMessage)
+        }
+        val tDev = System.nanoTime()
+        val result = NativeSource.jniEncodedDevelopStriped(
+            frame.y, frame.u, frame.v,
+            frame.width, frame.height, frame.stride, frame.uvStride,
+            frame.semiPlanar, color.nativeMatrix != 0,
+            frame.bitDepth, color.fullRange, color.nativeMatrix, color.nativeTransfer,
+            color.nativePrimaries,
+            grade.exposureEv, grade.highlights, grade.tempK, grade.tint,
+            grade.saturation, grade.blackPoint, grade.whitePoint,
+            grade.shadows, grade.midtones, grade.contrast,
+            grade.asShot, grade.highlightReconstruction, grade.keepVignetting, grade.highlightRecovery,
+            grade.sharpness, grade.detail, grade.tonemap,
+            lutPath, grade.lutStrength / 100f,
+            grade.noiseReduction, grade.chromaDenoise,
+            grade.temporalNr, grade.temporalStrength,
+            grade.wheelShadowX, grade.wheelShadowY,
+            grade.wheelMidX, grade.wheelMidY,
+            grade.wheelHighX, grade.wheelHighY,
+            grade.splitShadowHue, grade.splitHighlightHue, grade.splitBalance,
+            grade.lutInterp?.role?.value ?: -1,
+            grade.lutInterp?.input?.gamut?.value ?: -1,
+            grade.lutInterp?.input?.transfer?.value ?: -1,
+            grade.lutInterp?.output?.gamut?.value ?: -1,
+            grade.lutInterp?.output?.transfer?.value ?: -1,
+            chainWire,
+            stripeRows,
+        )
+        EncodedFrameTrace.logFrame(
+            frame.width, frame.height, frame.bitDepth, System.nanoTime() - tDev, result != null,
+        )
+        return result ?: throw IllegalStateException(
+            EncodedErrors.message(
+                NativeSource.jniPreviewErrorCode(), NativeSource.jniPreviewErrorStage(),
+                NativeSource.previewLastError(),
+            )
+        )
+    }
+
     override fun code(): Int = NativeSource.jniPreviewErrorCode()
 
     override fun stage(): Int = NativeSource.jniPreviewErrorStage()
@@ -967,6 +1099,67 @@ class EncodedSource(
         } finally {
             if (!refused) decoder.recycle(planes)
         }
+    }
+
+    /**
+     * A7 (night 2026-11-26): the EXPORT frame developed on the CPU in horizontal stripes — the bounded-memory
+     * oracle for frames the whole-frame path cannot hold (8K: the whole-frame path's planes + full ARGB IntArray
+     * + RGB888 ≈ 281 MB over a 256 MB heap; the striped path holds the decoded planes + the output RGB888 and
+     * develops stripe views whose native working set is stripe-height bound — core kEncodedStripeMargin rows of
+     * context per stripe, see core/Transfer.h). The decoded planes are read IN PLACE when the layout allows
+     * ([EncodedYuv.toCpuView]); a layout that needs the [EncodedYuv.toNv12] repack is budget-checked against
+     * [heapLimitBytes] FIRST (the pack is a second plane-set) and refused with a short message instead of an
+     * OutOfMemoryError. Returns the full-frame RGB888 (w*h*3, row-major, NOT rotated — the pipeline rotates, the
+     * same contract as [renderFrame] with upright=false) or null when the developer has no striped door (a
+     * fake); failures throw IllegalStateException with the complete message. Planes a refused GPU door already
+     * decoded are reused ([pendingExport]); the frame is never decoded twice.
+     */
+    fun renderFrameRgbStriped(
+        frameIndex: Int,
+        grade: GradeK,
+        lutPath: String?,
+        chainWire: FloatArray?,
+        heapLimitBytes: Long,
+    ): ByteArray? {
+        val fmt = requireOpen()
+        require(frameIndex in pts.indices) { "frameIndex $frameIndex outside 0..${pts.size - 1}" }
+        // Highlights/Shadows ride the same wire as every other develop door.
+        val wire = EncodedToneBridge.apply(grade.highlights, grade.shadows, chainWire)
+        val planes = pendingExport?.takeIf { it.first == frameIndex }?.second?.also { pendingExport = null }
+            ?: (if (readAhead) fetchAhead(frameIndex) else decodePlanes(frameIndex))
+        val color = fmt.color.withDecodedBitDepth(planes.bitDepth)
+        val view = EncodedYuv.toCpuView(planes)
+        if (view != null) {
+            try {
+                return developer.developStriped(
+                    view, color, grade, lutPath, wire,
+                    com.ritim.ritimcraw.export.EncodedExportPlanner.stripeRowsFor(view.width),
+                )
+            } finally {
+                decoder.recycle(planes)
+            }
+        }
+        // The layout needs the packed repack: budget the pack's extra plane-set
+        // honestly BEFORE allocating it (an 8K NV21-shaped frame does not fit
+        // the double set — refuse with the short message instead of dying
+        // mid-copy).
+        if (!com.ritim.ritimcraw.export.EncodedExportPlanner.stripedOracleFits(
+                fmt.width, fmt.height, planes.bitDepth, heapLimitBytes, packed = true,
+            )
+        ) {
+            decoder.recycle(planes)
+            throw IllegalStateException(
+                com.ritim.ritimcraw.export.EncodedExportPlanner.stripedCpuFallbackRefusal(
+                    fmt.width, fmt.height, planes.bitDepth, heapLimitBytes,
+                ) ?: "the ${fmt.width}x${fmt.height} frame's plane layout needs a repack that does not fit the heap",
+            )
+        }
+        val packed = EncodedYuv.toNv12(planes)
+        decoder.recycle(planes)
+        return developer.developStriped(
+            packed, color, grade, lutPath, wire,
+            com.ritim.ritimcraw.export.EncodedExportPlanner.stripeRowsFor(packed.width),
+        )
     }
 
     /**

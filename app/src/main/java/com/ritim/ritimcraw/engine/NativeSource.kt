@@ -808,6 +808,82 @@ class NativeSource private constructor(
         ): IntArray?
 
         /**
+         * A7 (night 2026-11-26): the striped CPU oracle — the encoded export's
+         * bounded-memory develop, the fallback for frames the whole-frame
+         * path cannot hold on the heap (8K). Same develop math as
+         * [nativeEncodedDevelop] (the SAME grade mapping, developEncoded, v2
+         * chain and Rec709 tail), but the frame is consumed in horizontal
+         * stripes: per stripe the bridge copies ONLY its rows out of the JVM
+         * plane arrays (bounded GetByteArrayRegion), develops the stripe view
+         * with kEncodedStripeMargin rows of vertical context (the stacked
+         * reach of the windowed stage chain — see core Transfer.h), and
+         * writes the emitted rows into the one full-frame RGB888 output.
+         * [stripeRows] is EncodedExportPlanner.stripeRowsFor(width).
+         * Returns w*h*3 RGB888 row-major, NOT rotated (the export pipeline
+         * rotates pixels itself; the whole-frame CPU caller passes
+         * orientation 0 for the same reason) or null on failure (read the
+         * error accessors from the same thread). The plane layouts and
+         * strides arrive exactly like nativeEncodedDevelop's (vPlane null
+         * for semi-planar). No orientationDeg parameter: this door is the
+         * export fallback's, always orientation 0.
+         */
+        @JvmStatic private external fun nativeEncodedDevelopStriped(
+            yPlane: ByteArray,
+            uPlane: ByteArray,
+            vPlane: ByteArray?,
+            width: Int,
+            height: Int,
+            stride: Int,
+            uvStride: Int,
+            semiPlanar: Boolean,
+            isBt709: Boolean,
+            bitDepth: Int,
+            fullRange: Boolean,
+            matrix: Int,
+            transfer: Int,
+            primaries: Int,
+            exposureEv: Float,
+            highlights: Float,
+            tempK: Float,
+            tint: Float,
+            saturation: Float,
+            blackPoint: Float,
+            whitePoint: Float,
+            shadows: Float,
+            midtones: Float,
+            contrast: Float,
+            asShot: Boolean,
+            highlightReconstruction: Boolean,
+            keepVignetting: Boolean,
+            highlightRecovery: Boolean,
+            sharpness: Float,
+            detail: Float,
+            tonemap: Int,
+            lutPath: String?,
+            lutStrength: Float,
+            noiseReduction: Float,
+            chromaDenoise: Float,
+            temporalNr: Boolean,
+            temporalStrength: Float,
+            wheelShadowX: Float,
+            wheelShadowY: Float,
+            wheelMidX: Float,
+            wheelMidY: Float,
+            wheelHighX: Float,
+            wheelHighY: Float,
+            splitShadowHue: Float,
+            splitHighlightHue: Float,
+            splitBalance: Float,
+            lutRole: Int,
+            lutInGamut: Int,
+            lutInTransfer: Int,
+            lutOutGamut: Int,
+            lutOutTransfer: Int,
+            chainWire: FloatArray?,
+            stripeRows: Int,
+        ): ByteArray?
+
+        /**
          * LUT probe (COL-07): parses the .cube at [path] statelessly and
          * returns its TITLE ("" when the file has no TITLE line), or null on
          * a parse failure — then the error accessors say why. No handle, no
@@ -1765,6 +1841,79 @@ class NativeSource private constructor(
 
         /** JNI bridge: readAudio for export sessions. */
         internal fun jniReadAudio(handle: Long): ShortArray? = nativeReadAudio(handle)
+
+        /** JNI bridge: see nativeEncodedDevelopStriped. Same flat-register order as jniEncodedDevelop, plus stripeRows. */
+        internal fun jniEncodedDevelopStriped(
+            yPlane: ByteArray,
+            uPlane: ByteArray,
+            vPlane: ByteArray?,
+            width: Int,
+            height: Int,
+            stride: Int,
+            uvStride: Int,
+            semiPlanar: Boolean,
+            isBt709: Boolean,
+            bitDepth: Int,
+            fullRange: Boolean,
+            matrix: Int,
+            transfer: Int,
+            primaries: Int,
+            exposureEv: Float,
+            highlights: Float,
+            tempK: Float,
+            tint: Float,
+            saturation: Float,
+            blackPoint: Float,
+            whitePoint: Float,
+            shadows: Float,
+            midtones: Float,
+            contrast: Float,
+            asShot: Boolean,
+            highlightReconstruction: Boolean,
+            keepVignetting: Boolean,
+            highlightRecovery: Boolean,
+            sharpness: Float,
+            detail: Float,
+            tonemap: Int,
+            lutPath: String?,
+            lutStrength: Float,
+            noiseReduction: Float,
+            chromaDenoise: Float,
+            temporalNr: Boolean,
+            temporalStrength: Float,
+            wheelShadowX: Float,
+            wheelShadowY: Float,
+            wheelMidX: Float,
+            wheelMidY: Float,
+            wheelHighX: Float,
+            wheelHighY: Float,
+            splitShadowHue: Float,
+            splitHighlightHue: Float,
+            splitBalance: Float,
+            lutRole: Int,
+            lutInGamut: Int,
+            lutInTransfer: Int,
+            lutOutGamut: Int,
+            lutOutTransfer: Int,
+            chainWire: FloatArray? = null,
+            stripeRows: Int = 0,
+        ): ByteArray? = nativeEncodedDevelopStriped(
+            yPlane, uPlane, vPlane,
+            width, height, stride, uvStride,
+            semiPlanar, isBt709,
+            bitDepth, fullRange, matrix, transfer, primaries,
+            exposureEv, highlights, tempK, tint,
+            saturation, blackPoint, whitePoint, shadows, midtones, contrast,
+            asShot, highlightReconstruction, keepVignetting, highlightRecovery,
+            sharpness, detail, tonemap,
+            lutPath, lutStrength,
+            noiseReduction, chromaDenoise,
+            temporalNr, temporalStrength,
+            wheelShadowX, wheelShadowY, wheelMidX, wheelMidY,
+            wheelHighX, wheelHighY, splitShadowHue, splitHighlightHue, splitBalance,
+            lutRole, lutInGamut, lutInTransfer, lutOutGamut, lutOutTransfer,
+            chainWire, stripeRows,
+        )
 
         /**
          * JNI bridge: see nativeLutProbe. Throws IllegalStateException when
