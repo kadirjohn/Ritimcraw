@@ -158,3 +158,36 @@ Sahip: "küçük teknik olanları kendin seç; 20 GB cap ONAYLI". Gece ajanını
 1. **Oynatılan / üretilen proxy'yi kullanıcı "bunu sil" / "hepsini sil" ile silerse.** Bugünkü `clear`/`clearClip`/`clearAll` koruma setine bakmaz (yalnız LRU bakar). Seçenekler: (A) silme anında çalan klip orijinale düşer, proxy silinir (kullanıcı ne istediyse o; oturum bir sonraki seek/play'de geçer, §5); (B) çalan/üretilen proxy atlanır ve "kullanımda, şimdi silinmedi" yazılır; (C) silmeyi oturum kapanana kadar ertele (silindi gibi göster, gizli kuyruk). Öneri: A, ama onay sende.
 2. **Cap kullanıcı tarafından düşürülürse ve korunan proxy'ler tek başına cap'i aşarsa.** Bugün LRU korunanları atlar, toplam geçici olarak cap üstünde kalır. Seçenekler: (A) böyle kalsın, oynatma bitince tahliye (öneri); (B) kullanıcıya "şu an kullanımda, X GB üstünde" göster; (C) oynatmayı bırakıp tahliye.
 3. **Cap'in birimi: GiB (20 x 2^30) yerine ondalık 20 GB (20e9) istenir mi?** Tek sabit; şimdilik GiB.
+
+## Sahip kararları 2026-11-26 (kapanan üç soru) ve boyut ölçümü
+Sahip, yukarıdaki üç "Sahip kararı gerekenler" maddesini kapattı. Dal: `feat-proxy-p1-sizing`.
+
+1. **Silme (madde 1) = A.** Kullanıcı çalan/üretilen proxy'yi "bunu sil" / "hepsini sil" ile silerse proxy silinir; çalan klip bir sonraki seek/play'de orijinale düşer (§5 geçiş kuralı: çalarken kaynak değişmez). Üretilmekte olan proxy'de iş iptal edilir, `.tmp` silinir.
+2. **Cap düşürme (madde 2) = A + UI göstergesi.** Cap korunan proxy'lerin toplamının altına indirilirse tahliye oynatma bitince yapılır (korunanlar atlanır, bugünkü davranış). Buna ek olarak toplam cap'i aşarken UI "X GB cap üstünde" gösterir.
+   **P3 UI gereksinimi:** satır, `ProxyCapUsage(totalBytes, capBytes, protectedBytes)` değerinden beslenir: `totalBytes` = `ProxyCache.totalBytes()`, `capBytes` = güncel cap, `protectedBytes` = tahliyenin atladığı proxy'lerin bayt toplamı (`ProxyInUse` + `Building` anahtarlarının `ProxyEntry.bytes` toplamı). Satır `overCapBytes > 0` iken görünür; sayı `overCapBytes` (saf, `>= 0`); biçimlendirme (GiB, yuvarlama, yerel metin) UI katmanında, pakette metin yok. Saf yardımcılar kodda: `overCapBytes(total, cap)` (negatif girdi 0 sayılır, taşma yok) ve `ProxyCapUsage` (`overCapBytes`, `isOverCap`, `overCapBecauseProtectedBytes`), `ProxyOverCapTest` 7 test.
+3. **Birim (madde 3) = GiB kalır;** 20 GiB cap onaylı (`PROXY_CAP_DEFAULT_BYTES`).
+
+### Gerçek proxy boyutu: MB/dk
+Birim notu: "MB" burada MiB (2^20 bayt), sahibin "night.mcraw 15153 MB" sayısıyla aynı okuma (15 888 842 131 / 2^20 = 15 152,8). Ondalık MB (1e6) ayrıca verildi.
+Yöntem: boyut = `stat -f %z`; kare sayısı ve PTS = `build/desktop/rawcli info` (`frameCount`, ilk/son `ptsUs`); kare periyodu = (son-ilk PTS)/(frameCount-1); süre = frameCount x periyot; fps = 1e6/periyot. Hepsi komut çıktısıdır, aritmetik python ile.
+
+**Ham MCRAW (ölçüldü: boyut + metadata komutlarından, dosya/süre):**
+| Klip | Boyut (bayt) | MiB | Çözünürlük | Kare | fps | Süre (sn) | Ham MiB/dk | Ham MB/dk (1e6) |
+|---|---|---|---|---|---|---|---|---|
+| night.mcraw | 15 888 842 131 | 15 152,8 | 3840x2160 | 1749 | 29,809 | 58,674 | 15 495,2 | 16 247,9 |
+| cam24b.mcraw | 4 249 603 511 | 4 052,7 | 4096x3072 | 688 | 59,994 | 11,468 | 21 203,9 | 22 233,9 |
+| cam72.mcraw | 485 055 500 | 462,6 | 3840x2160 | 73 | 30,052 | 2,429 | 11 426,0 | 11 981,1 |
+(Klipler kısa dilimler; ham akış 11-21 GiB/dk mertebesinde, kaynak: yukarıdaki komutlar. Bu üç klibin süresi kısa olduğundan fps tahmini ilk/son PTS farkından gelir.)
+
+**Planlanan proxy (aritmetik, ölçülmüş dosya değil):** kaynak satırı: bu dosya §2.1 tablosu, "Bitrate" satırı: 1080p HEVC VBR ~20 Mbit/s ("başlangıç önerisi, kesin değer ölçülerek seçilir"); kodda bitrate yok (`ProxySettings.bitrateClass` opak etiket, `ProxySignature.kt:16-23`), ses yok. Çözünürlük kısa kenar 1080: 3840x2160 -> 1920x1080, 4096x3072 -> 1440x1080.
+- 20 Mbit/s = 2,5 MB/s (1e6) = 150,0 MB/dk (1e6) = 143,05 MiB/dk. Bitrate çözünürlük/fps'den bağımsız alındığı için üç klip için de aynı (gerçek VBR çıktısı içeriğe göre sapar).
+- 20 GiB (21 474 836 480 bayt) / 143,05 MiB/dk = 143,2 dk (~2 sa 23 dk) proxy. Kaynak, aynı aritmetik: 21 474 836 480 / (20e6/8 x 60).
+- Karşılaştırma: ham/proxy boyut oranı night 15 495,2/143,05 = 108x, cam24b 21 203,9/143,05 = 148x, cam72 11 426,0/143,05 = 80x (aritmetik).
+- Hassasiyet: 10 Mbit/s ile 286,3 dk, 40 Mbit/s ile 71,6 dk sığar (aynı formül).
+
+**Gerçek kodlama (ölçüldü, ama MCRAW değil):** MCRAW'ı ffmpeg açamaz ve nötr develop proxy kodu henüz yok; bu yüzden gerçek 4K60 10-bit HEVC encoded kaynak (`/tmp/claude-501/m0/e0-src4k.mp4`, 3840x2160, 60 fps, yuv420p10le, Mi-Log) ilk 10 sn'si 1920x1080'e küçültüldü, 10-bit HEVC, 20 Mbit/s hedef, GOP 60, B-kare yok, ses yok (`ffmpeg` 8.1.1, `-vf scale=1920:1080`):
+| Kodlayıcı | Çıktı bayt | MiB | Süre (sn) | Kare | Gerçek bitrate (Mbit/s) | MiB/dk |
+|---|---|---|---|---|---|---|
+| `hevc_videotoolbox` Main10, `-b:v 20M` | 23 581 651 | 22,49 | 10,017 | 597 | 18,83 | 134,7 |
+| `libx265` fast, VBV 20000 kbit, 10-bit | 25 250 212 | 24,08 | 10,017 | 597 | 20,17 | 144,2 |
+Okuma: iki kodlayıcı hedefin %94-%101'inde (18,83 ve 20,17 / 20 Mbit/s); yani 143 MiB/dk aritmetiği gerçek çıktıyla 135-144 MiB/dk aralığında örtüşüyor. Sınırlar: tek içerik (Mi-Log 4K60 klibi), 10 sn, masaüstü kodlayıcı; telefonun `MediaCodec` HEVC'si ve MCRAW nötr proxy (log benzeri transfer, farklı içerik/gürültü) **ölçülmedi**, P1/P3 cihaz ölçümünde (§7) yapılır. Kaynak MCRAW'dan proxy boyutu bu yüzden hâlâ yalnız bitrate aritmetiğidir.
