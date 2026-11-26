@@ -68,4 +68,96 @@ class ClipNameRulesTest {
         assertEquals("first", repo.rename(imported.id, "first")?.displayName)
         assertEquals(imported.id, repo.all().single().id)
     }
+
+    // ---- namePart / extensionOf (owner request 2026-11-26: the rename
+    // dialog edits the name WITHOUT the extension) ----
+
+    @Test
+    fun name_part_splits_the_last_extension() {
+        assertEquals("sunset", ClipNameRules.namePart("sunset.mcraw"))
+        // Double extensions: only the LAST one is the system's.
+        assertEquals("clip.x", ClipNameRules.namePart("clip.x.mcraw"))
+        assertEquals("Sunset  Trip", ClipNameRules.namePart("Sunset  Trip.raw"))
+    }
+
+    @Test
+    fun name_part_keeps_names_without_a_real_extension() {
+        // No dot, a bare dot, a trailing dot: nothing to strip.
+        assertEquals("clip", ClipNameRules.namePart("clip"))
+        assertEquals(".", ClipNameRules.namePart("."))
+        assertEquals("clip.", ClipNameRules.namePart("clip."))
+        // A name that was ONLY the extension: the part is empty (the
+        // dialog edits an empty field; the Unchanged rule still applies).
+        assertEquals("", ClipNameRules.namePart(".mcraw"))
+    }
+
+    @Test
+    fun extension_of_is_lowercase_after_the_last_dot() {
+        assertEquals("mcraw", ClipNameRules.extensionOf("sunset.mcraw"))
+        assertEquals("mp4", ClipNameRules.extensionOf("clip.X.MP4"))
+        assertEquals("", ClipNameRules.extensionOf("clip"))
+        assertEquals("", ClipNameRules.extensionOf("clip."))
+        assertEquals("", ClipNameRules.extensionOf(""))
+    }
+
+    @Test
+    fun name_part_is_code_point_safe() {
+        // A surrogate pair before the dot survives the split.
+        assertEquals("🎥", ClipNameRules.namePart("🎥.mcraw"))
+    }
+
+    // ---- validateName / clampName: the dialog's extension-free rules ----
+
+    @Test
+    fun validate_name_compares_the_name_part_not_the_whole_name() {
+        // The pre-split current name is the NAME PART: retyping the same
+        // name is Unchanged (the extension never enters the comparison).
+        assertEquals(
+            ClipNameRules.Result.Unchanged,
+            ClipNameRules.validateName("sunset", "sunset"),
+        )
+        // The whole current name (with extension) against the part:
+        // "sunset" != "sunset.mcraw" — a REAL change (the dialog
+        // pre-fills the PART, so this is the honest comparison).
+        assertEquals(
+            ClipNameRules.Result.Ok("new"),
+            ClipNameRules.validateName(" new ", "sunset"),
+        )
+    }
+
+    @Test
+    fun validate_name_counts_length_without_the_extension() {
+        // NAME_MAX applies to the NAME the user types — a max-length
+        // name plus the extension the system re-appends would exceed
+        // NAME_MAX as a whole name, but the rule the dialog runs sees
+        // only the name part.
+        val max = "a".repeat(ClipNameRules.NAME_MAX)
+        assertEquals(ClipNameRules.Result.Ok(max), ClipNameRules.validateName(max, "x"))
+        assertEquals(
+            ClipNameRules.Result.TooLong,
+            ClipNameRules.validateName(max + "a", "x"),
+        )
+        // Blank still rejects: the record never loses its name.
+        assertEquals(ClipNameRules.Result.Blank, ClipNameRules.validateName("  ", "x"))
+    }
+
+    @Test
+    fun dialog_round_trip_preserves_the_extension_through_the_repository_seam() {
+        // The full contract the dialog + repository run: split -> edit ->
+        // validate the part -> re-append -> store. A renamed mcraw keeps
+        // its extension in the RECORD (the grid and the export name
+        // depend on the whole name), while the user never typed it.
+        val file = File(tmp.root, "project.json")
+        val repo = SourceRepository(FakeResolver("clip".toByteArray()), file)
+        val imported = repo.import("content://clip/1")
+        repo.rename(imported.id, "sunset.mcraw")
+
+        val current = repo.get(imported.id)!!.displayName
+        val ext = ClipNameRules.extensionOf(current)
+        val part = ClipNameRules.namePart(current)
+        val edited = (ClipNameRules.validateName("golden hour", part) as ClipNameRules.Result.Ok).name
+        val stored = if (ext.isEmpty()) edited else edited + "." + ext
+
+        assertEquals("golden hour.mcraw", repo.rename(imported.id, stored)?.displayName)
+    }
 }
