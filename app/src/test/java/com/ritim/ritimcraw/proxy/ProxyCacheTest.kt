@@ -7,6 +7,7 @@ import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Before
 import org.junit.Test
 import java.io.File
@@ -347,5 +348,161 @@ class ProxyCacheTest {
         u.release(k); assertFalse(u.isInUse(k))
         u.release(k) // extra release is a no-op
         assertTrue(u.protectedKeys().isEmpty())
+    }
+
+    // ---- C3 boundary fill: cap edges, manifest field variants, eviction ties ----
+
+    @Test fun evictToCapAtExactlyTheCapEvictsNothing() {
+        // total == capBytes is AT the cap (the loop's `total <= capBytes` break fires first):
+        // no evictions, an empty list, everything still resolvable.
+        val c = cache(cap = 90)
+        val ka = sig("a1").key(); val kb = sig("b1").key(); val kc = sig("c1").key()
+        put(c, ka, 30); put(c, kb, 30); put(c, kc, 30)
+        assertEquals(90L, c.totalBytes())
+        assertEquals(emptyList<ProxyKey>(), c.evictToCap())
+        assertNotNull(c.peekPlayable(ka)); assertNotNull(c.peekPlayable(kb)); assertNotNull(c.peekPlayable(kc))
+        // one byte under the cap: still nothing to evict
+        assertEquals(emptyList<ProxyKey>(), ProxyCache(storage, 89 + 1).evictToCap())
+        // one byte OVER: exactly the least-recently-used entry goes
+        val tight = ProxyCache(storage, 89) { now += 10_000; now }
+        assertEquals(1, tight.evictToCap().size)
+        assertEquals(60L, tight.totalBytes())
+    }
+
+    @Test fun aZeroCapPublishesNothingAndRejectsEveryCommit() {
+        val c = cache(cap = 0)
+        assertNull(put(c, sig().key(), 10))
+        assertTrue(storage.names().isEmpty())
+        // even a 1-byte video is over a 0 cap
+        val h = c.begin(sig().key())
+        h.videoFile.writeBytes(ByteArray(1))
+        assertNull(h.commit())
+        assertTrue(storage.names().isEmpty())
+    }
+
+    @Test fun manifestWithBadFieldTypesOrNonIntegerNumbersIsRejected() {
+        // the parser reads JSON numbers as Doubles; num() demands a finite integral Double.
+        // String where a number belongs, a non-integer number, a float "v", extra junk.
+        val good = ProxyManifestCodec.render(ProxyManifest("abc123", "0123456789abcdef", 50, 1, 2, 3, null))
+        val variants = listOf(
+            good.replace("\"videoBytes\":50", "\"videoBytes\":\"50\""), // string, not number
+            good.replace("\"videoBytes\":50", "\"videoBytes\":50.5"),  // non-integer
+            good.replace("\"v\":1", "\"v\":1.5"),                      // version non-integer
+            good.replace("\"v\":1", "\"v\":2.0"),                      // wrong (integral) version
+            good.replace("\"fingerprint\":\"abc123\"", "\"fingerprint\":123"),
+            good.replace("\"sigHash\":\"0123456789abcdef\"", "\"sigHash\":null"),
+            "{\"v\":1,\"fingerprint\":\"abc123\",\"sigHash\":\"0123456789abcdef\",\"videoBytes\":1e300,\"durationUs\":1,\"frameCount\":1,\"createdAtMs\":1}", // 1e300 parses, is integral (finite double) -> ACCEPTED, videoBytes=1e300 as Long
+        )
+        for ((i, text) in variants.withIndex()) {
+            val parsed = ProxyManifestCodec.parse(text.toByteArray())
+            if (i == 6) assertNotNull("1e300 is a finite integral double: accepted by parse", parsed)
+            else assertNull("variant $i: $text", parsed)
+        }
+        // a non-finite number literal never parses (JsonParser throws on "Infinity")
+        assertNull(ProxyManifestCodec.parse("{\"v\":1,\"videoBytes\":Infinity}".toByteArray()))
+    }
+
+    @Test fun manifestNumbersDefaultWhenAbsentButVideoBytesIsRequired() {
+        // duration/frame/created default when missing (-1/-1/0); a missing videoBytes or
+        // fingerprint/sigHash rejects the manifest outright.
+        val base = "{\"v\":1,\"fingerprint\":\"abc123\",\"sigHash\":\"0123456789abcdef\",\"videoBytes\":50"
+        assertEquals(
+            ProxyManifest("abc123", "0123456789abcdef", 50, -1, -1, 0, null),
+            ProxyManifestCodec.parse((base + "}").toByteArray()),
+        )
+        assertNull(ProxyManifestCodec.parse(("{\"v\":1,\"fingerprint\":\"abc123\",\"sigHash\":\"0123456789abcdef\"," + "\"durationUs\":1}").toByteArray()))
+        // a NON-POSITIVE videoBytes parses but never resolves: readEntry's size gate
+        val c = cache(); val k = sig().key()
+        put(c, k, 40)
+        File(root, "${k.baseName}.json").writeBytes(
+            ProxyManifestCodec.render(ProxyManifest(k.fingerprint, k.sigHash, 0, 1, 2, 3, null)).toByteArray(),
+        )
+        assertNull(c.playable(k))
+        assertNull(c.peekPlayable(k))
+        assertTrue(c.entries().isEmpty())
+    }
+
+    @Test fun aManifestWhoseFieldsMismatchTheFileNameNeverResolves() {
+        // The manifest parses fine but carries ANOTHER clip's fingerprint/sigHash: the
+        // key-match gate (readEntry) rejects it — playable and entries never see it.
+        val c = cache(); val k = sig().key()
+        put(c, k, 40)
+        File(root, "${k.baseName}.json").writeBytes(
+            ProxyManifestCodec.render(ProxyManifest("zzz999", "ffffffffffffffff", 40, 1, 2, 3, null)).toByteArray(),
+        )
+        assertNull(c.playable(k))
+        assertTrue(c.entries().isEmpty())
+        // FINDING (night C3, NOT fixed per rules): sweep does NOT reap this pair. The
+        // .json branch of sweep() only deletes a manifest that fails to PARSE
+        // (ProxyCache.kt:121-123); this one parses (its fields just mismatch the
+        // file name), so both files linger on disk forever — invisible to every
+        // gate (playable/entries/totalBytes) but never cleaned. Input: a manifest
+        // renamed onto another key's baseName (or a torn write of a different
+        // key's manifest). Expected (arguably): sweep removes the mismatched pair
+        // (2 files); actual: sweep returns 0 and both files remain. Pinned as-is
+        // with this TODO; the fix (a key-match check in sweep's json branch)
+        // belongs to the owner.
+        assertEquals(0, c.sweep()) // TODO C3 finding: mismatched-but-parseable manifests linger
+        assertEquals(2, storage.names().size) // the pair is still on disk
+    }
+
+    @Test fun evictionPrefersTheOldestLastAccessThenTheOldestCreatedThenTheName() {
+        // All entries at one lastAccess: the createdAt tie-break runs; with both equal the
+        // baseName (alphabetical) order decides. Deterministic and pinned.
+        val keys = listOf("c1", "a1", "b1").map { sig(it).key() }
+        // one commit per key with the SAME clock reading (createdAt equal, lastAccess equal)
+        val fixed = ProxyCache(storage, 1_000_000) { 42L }
+        for (k in keys) put(fixed, k, 30)
+        // at cap: eviction evicts NONE
+        assertEquals(emptyList<ProxyKey>(), fixed.evictToCap())
+        // cap 30 with total 90: TWO evictions in name order (a1, b1), leaving c1 (30 <= 30)
+        val tight = ProxyCache(storage, 30) { 42L }
+        assertEquals(listOf(sig("a1").key(), sig("b1").key()), tight.evictToCap())
+        assertNull(tight.peekPlayable(sig("a1").key()))
+        assertNull(tight.peekPlayable(sig("b1").key()))
+        assertNotNull(tight.peekPlayable(sig("c1").key()))
+        assertEquals(30L, tight.totalBytes())
+    }
+
+    @Test fun allProtectedEntriesLeaveTheCacheOverCapWithNothingEvicted() {
+        // Over cap with EVERY key protected: eviction returns empty, the cache stays
+        // honestly over cap (the caller's problem, not silent data loss).
+        val c0 = cache(cap = 90)
+        val ka = sig("a1").key(); val kb = sig("b1").key()
+        put(c0, ka, 30); put(c0, kb, 30)
+        val inUse = ProxyInUse()
+        inUse.acquire(ka); inUse.acquire(kb)
+        val tight = ProxyCache(storage, 10, inUse) { now += 10_000; now }
+        assertEquals(emptyList<ProxyKey>(), tight.evictToCap())
+        assertEquals(60L, tight.totalBytes()) // still over the 10-byte cap
+        assertNotNull(tight.peekPlayable(ka)); assertNotNull(tight.peekPlayable(kb))
+        inUse.release(ka); inUse.release(kb)
+        // released: the cap is enforced again, LRU order
+        assertEquals(listOf(ka, kb), tight.evictToCap())
+        assertTrue(tight.entries().isEmpty())
+    }
+
+    @Test fun clearClipRemovesEverySignatureOfTheFingerprintAndKeepsOthers() {
+        val c = cache()
+        val s1 = sig("a1"); val s2 = sig("a1", ProxySettings(shortSide = 720)); val s3 = sig("b1")
+        put(c, s1.key(), 100); put(c, s2.key(), 50); put(c, s3.key(), 70)
+        assertEquals(2, c.clearClip("a1"))
+        assertNull(c.peekPlayable(s1.key())); assertNull(c.peekPlayable(s2.key()))
+        assertNotNull(c.peekPlayable(s3.key()))
+        assertEquals(0, c.clearClip("a1")) // already gone: 0
+        assertEquals(70L, c.totalBytes())
+    }
+
+    @Test fun proxyKeyRejectsUnsafeCharactersAndKeepsFilenameSafeNames() {
+        // the key IS the file name: anything outside [A-Za-z0-9] must throw, not become a path
+        for (bad in listOf("abc/def", "../etc", "a b", "abc-def", "")) {
+            try {
+                ProxyKey(bad, "0123456789abcdef"); fail("fingerprint '$bad' must be rejected")
+            } catch (e: IllegalArgumentException) { /* required */ }
+        }
+        try {
+            ProxyKey("abc123", "../x"); fail("sigHash must be rejected")
+        } catch (e: IllegalArgumentException) { /* required */ }
+        assertEquals("abc123-0123456789abcdef", ProxyKey("abc123", "0123456789abcdef").baseName)
     }
 }
