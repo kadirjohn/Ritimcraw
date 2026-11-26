@@ -739,6 +739,13 @@
     <string name="rename_clip_action">Rename</string>
     <string name="rename_clip_cancel">Cancel</string>
     <string name="rename_clip_error">Could not rename this clip. Try another name.</string>
+    <string name="editor_clip_info_original_name">Original name</string>
+    <string name="rename_file_note_app_only">Renamed in Ritimcraw only. The file on storage was not renamed (the folder needs write access: pick the folder again).</string>
+    <string name="rename_file_exists">A file with that name already exists in the folder. Nothing was renamed.</string>
+    <string name="rename_file_invalid">This name cannot be used as a file name (no / \\ : * ? " &lt; &gt; |, no trailing dot).</string>
+    <string name="rename_file_sidecar_ambiguous">More than one .gcsv log matches this clip. Nothing was renamed.</string>
+    <string name="rename_file_sidecar_failed">The .gcsv gyro file could not be renamed. Nothing was changed.</string>
+    <string name="rename_file_partial">The clip file was renamed, but its .gcsv log kept the old name.</string>
     <string name="library_selection_rename">Rename clip</string>
     <string name="editor_rename_clip">Rename clip</string>
     <string name="editor_rename_clip_detail">Change the name shown for this clip</string>

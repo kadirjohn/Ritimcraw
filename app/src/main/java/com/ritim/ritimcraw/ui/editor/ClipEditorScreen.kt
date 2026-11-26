@@ -959,6 +959,8 @@ fun ClipEditorScreen(
     // real file name, id fallback resolved by the caller (never blank).
     // Defaults to the id so every existing caller is unchanged.
     sourceName: String? = null,
+    // The file name the clip was imported under (video info row); blank hides it.
+    sourceOriginalName: String = "",
     // Renames this clip's display name; true when accepted.
     onRenameClip: (String) -> Boolean = { false },
     // ---- LUT wiring (COL-07) ----
@@ -3865,6 +3867,7 @@ fun ClipEditorScreen(
         // record never demands a re-import, whatever is known is shown.
         val clipInfo = ClipInfo(
             name = sourceName ?: sourceId,
+            originalName = sourceOriginalName,
             width = EditorPreviewLogic.recordedWidth(session?.width ?: 0, sourceWidth),
             height = EditorPreviewLogic.recordedWidth(session?.height ?: 0, sourceHeight),
             totalUs = totalUs,

@@ -832,6 +832,12 @@ private fun ClipInfoSheet(
             label = stringResource(R.string.editor_clip_info_name),
             value = info.name.ifBlank { unknown },
         )
+        if (info.originalName.isNotBlank()) {
+            ClipInfoRow(
+                label = stringResource(R.string.editor_clip_info_original_name),
+                value = info.originalName,
+            )
+        }
         ListItem(
             headlineContent = { Text(stringResource(R.string.editor_rename_clip)) },
             supportingContent = { Text(stringResource(R.string.editor_rename_clip_detail)) },
@@ -1077,6 +1083,8 @@ private fun PresetNameDialog(
 /** Clip facts for the info sheet (JVM-pure data holder). */
 data class ClipInfo(
     val name: String,
+    /** The import-time file name; blank = unknown (the row hides). */
+    val originalName: String = "",
     val width: Int,
     val height: Int,
     val totalUs: Long,
