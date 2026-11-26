@@ -1826,6 +1826,25 @@ fun ClipEditorScreen(
         var scrubPreviewFrame by remember(sourceId) {
             mutableStateOf<PreviewFrame?>(null)
         }
+        // ---- Scrub drag metrics (DEBUG-only, behind RenderTrace.enabled
+        // AND the scrub holder) ----
+        // One ScrubDragTrace per editor open, counting the seek drag's
+        // cache asks (hit / miss / served sizes) and the release settle
+        // latency, emitting ONE "scrub drag" ritim-trace line per
+        // completed gesture (the PanelAnimTrace window convention). Pure
+        // object, never state: the counts no more recompose anything than
+        // the playbackTraceHolder array does. THE OFF-STATE RULE: the
+        // object lives inside the same remember block as the facade, so
+        // with the scrubFrames setting OFF (scrub == null) every hook
+        // site below falls through its null check BEFORE touching the
+        // counter — no object is even created, no code path changes,
+        // output and timing identical. In release the hooks'
+        // RenderTrace.enabled (= BuildConfig.DEBUG) gate is a
+        // compile-time false: the same dead-code shape as every other
+        // RenderTrace call site in this file.
+        val scrubDragTrace: ScrubDragTrace? = remember(sourceId, scrubFramesEnabled) {
+            if (scrubFramesEnabled && RenderTrace.enabled && canRender) ScrubDragTrace() else null
+        }
 
         /**
          * Offers a render to the pipeline (replaces any pending one).
@@ -2587,6 +2606,11 @@ fun ClipEditorScreen(
         // the pump.
         val currentRenderBackend by rememberUpdatedState(renderBackend)
         val currentZebraOn by rememberUpdatedState(zebraOn)
+        // Scrub drag metrics: the pump's settle-publish hook must read the
+        // trace object of the CURRENT composition (the holder is keyed to
+        // the scrubFrames setting beside the facade — a settings flip
+        // recreates it), the currentRenderBackend mirror precedent.
+        val currentScrubDragTrace by rememberUpdatedState(scrubDragTrace)
 
         LaunchedEffect(sourceId) {
             // Monotonic publication: the pump is serial and the gate is
@@ -3353,6 +3377,20 @@ fun ClipEditorScreen(
                             )
                             if (BuildConfig.DEBUG && req.renderClass == RenderClass.PLAYBACK && !lastRenderFailed) {
                                 playbackTraceHolder[0]?.onPublished(System.nanoTime() / 1000)
+                            }
+                            // Scrub drag metrics: the release's settle
+                            // publish closes the drag's window — the
+                            // parked frame's real render is on screen, so
+                            // the gesture's summary line emits HERE (one
+                            // line per drag, the PanelAnimTrace throttle;
+                            // the frame-index match drops the superseded
+                            // leftovers the gate coalesced away).
+                            if (BuildConfig.DEBUG && !lastRenderFailed &&
+                                req.renderClass == RenderClass.SETTLE
+                            ) {
+                                currentScrubDragTrace?.onSettlePublished(
+                                    SystemClock.elapsedRealtime(), req.frameIndex,
+                                )?.let { line -> Log.i(RenderTrace.TAG, line) }
                             }
                             lastPublished = req.sequence
                         }
@@ -4476,6 +4514,12 @@ fun ClipEditorScreen(
                             when (val r = sf.onScrub(idx)) {
                                 is ScrubResult.Cached ->
                                     if (ScrubFramesPolicy.shouldServe(idx, r.frameIndex)) {
+                                        // Scrub drag metrics: a served hit
+                                        // (the line's hit count + the
+                                        // served size range).
+                                        scrubDragTrace?.onHit(
+                                            idx, r.pixels.width, r.pixels.height,
+                                        )
                                         // Served: swap the display to the
                                         // small frame and SKIP the real
                                         // render for this step — the drag
@@ -4494,7 +4538,13 @@ fun ClipEditorScreen(
                                 // drag-tier render below catches the step
                                 // up. The picture never rewinds under a
                                 // forward drag either way.
-                                else -> scrubPreviewFrame = null
+                                else -> {
+                                    // Scrub drag metrics: the behind hit and
+                                    // the Miss share the miss count (the
+                                    // line's "full render expected" leg).
+                                    scrubDragTrace?.onMiss(idx)
+                                    scrubPreviewFrame = null
+                                }
                             }
                         }
                         requestRender(
@@ -4508,7 +4558,12 @@ fun ClipEditorScreen(
                         )
                     }
                 },
-                onSeekStarted = { applyTierEvent(SliderTiers.Event.DragStarted) },
+                onSeekStarted = {
+                    // Scrub drag metrics: the window opens with the drag.
+                    // ScrubDragTraceTest pins the reset semantics.
+                    scrubDragTrace?.onDragStart(SystemClock.elapsedRealtime())
+                    applyTierEvent(SliderTiers.Event.DragStarted)
+                },
                 onSeekFinished = {
                     // Scrub frames (F2-C3): a served small frame NEVER
                     // survives the drag (ScrubFramesPolicy.settleAfterDrag
@@ -4519,6 +4574,10 @@ fun ClipEditorScreen(
                     // normal preview path again.
                     scrubPreviewFrame = null
                     scrub?.scrub?.onRelease(positionFrame)
+                    // Scrub drag metrics: the window now awaits the parked
+                    // frame's settle publish (the class matches the frame
+                    // index before emitting).
+                    scrubDragTrace?.onDragEnd(SystemClock.elapsedRealtime(), positionFrame)
                     applyTierEvent(SliderTiers.Event.DragEnded)
                 },
                 // Adaptive readout format (owner request 2026-11-11b
