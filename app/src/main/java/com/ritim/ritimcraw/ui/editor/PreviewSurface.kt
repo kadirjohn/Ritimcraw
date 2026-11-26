@@ -312,9 +312,21 @@ fun PreviewSurface(
     // resize does not reallocate buffers every frame; one layout-sized surfaceChanged (and so one render
     // request) follows when the panel settles. Default false keeps every other call site unchanged.
     freezeSurfaceSize: Boolean = false,
+    // B13 panel-jank diagnosis (DEBUG-only, the debugPathBadge precedent):
+    // fired on every surfaceChanged while non-null, so the screen's
+    // PanelAnimTrace can count SurfaceView resizes inside the panel
+    // animation window. The screen passes it ONLY when RenderTrace.enabled
+    // (= BuildConfig.DEBUG); null — the default and every release
+    // composition — keeps this parameter and its callback a pure no-op.
+    debugOnSurfaceResized: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     val currentGpuSurfaceChanged by rememberUpdatedState(onGpuSurfaceChanged)
+    // B13 diagnosis: the resize-counting callback rides the same
+    // rememberUpdatedState pattern as the lifecycle callback so the
+    // SurfaceView's captured holder object never goes stale across
+    // recompositions.
+    val currentDebugOnSurfaceResized by rememberUpdatedState(debugOnSurfaceResized)
     // §6 zoom/pan state: keyed on the CLIP (a fresh clip starts at 1x
     // centered — the reset rule), saveable (a pinch survives a
     // configuration change), and independent of playback. listSaver
@@ -508,6 +520,12 @@ fun PreviewSurface(
                                     // for a next playback tick strands black.
                                     if (com.ritim.ritimcraw.engine.RenderTrace.enabled) {
                                         android.util.Log.i("ritim-trace", "surfaceChanged ${width}x$height")
+                                        // B13 diagnosis: surfaceChanged events during
+                                        // the panel animation are the buffer-realloc
+                                        // jank suspect the freeze exists to hold at
+                                        // zero; the non-debug composition never
+                                        // passes the callback at all.
+                                        currentDebugOnSurfaceResized?.invoke()
                                     }
                                     if (width > 0 && height > 0) {
                                         currentGpuSurfaceChanged?.invoke(holder.surface)

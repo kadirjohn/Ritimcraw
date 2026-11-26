@@ -1,0 +1,15 @@
+frame_fff,frame_name,frame_ts,actual_dur,jank_type,expected_dur,slice_name,slice_thread,slice_process,slice_ts,slice_dur,waker_type,waker_thread,waker_uiname,expected_deadline_ns
+1010,"FrameMiss #1 (UI thread slow: main-thread Compose re-layout dominates)",100000000,38000000,Dropped Frame,16700000,UI layout 30ms,main,com.ritim.ritimcraw,100000000,30000000,binder,main,ui_thread,116700000
+1010,"FrameMiss #1 (frame row)",100000000,38000000,Dropped Frame,16700000,,,,,,binder,main,ui_thread,116700000
+1010,"FrameMiss #1 (small RT slice)",100000000,38000000,Dropped Frame,16700000,draw 5ms,RenderThread,com.ritim.ritimcraw,100000000,5000000,binder,main,ui_thread,116700000
+1020,"FrameMiss #2 (RenderThread dominates: draw 22ms vs UI 6ms)",200000000,41000000,Dropped Frame,16700000,app onDraw 6ms,main,com.ritim.ritimcraw,200000000,6000000,binder,RenderThread,RenderThread,216700000
+1020,"FrameMiss #2 (RT row)",200000000,41000000,Dropped Frame,16700000,hwui draw 22ms,RenderThread,com.ritim.ritimcraw,200000000,22000000,binder,RenderThread,RenderThread,216700000
+1030,"FrameMiss #3 (GL engine thread dominates: present+texture wait 28ms)",300000000,52000000,Dropped Frame,16700000,engine GL present 28ms,engine,com.ritim.ritimcraw,300000000,28000000,gpu,RenderThread,RenderThread,316700000
+1030,"FrameMiss #3 (UI small)",300000000,52000000,Dropped Frame,16700000,UI small 4ms,main,com.ritim.ritimcraw,300000000,4000000,gpu,RenderThread,RenderThread,316700000
+1040,"FrameMiss #4 (SurfaceFlinger late: app on time, compositor queue burst)",400000000,40000000,Dropped Frame,16700000,SF composition 19ms,binder,surfaceflinger,400000000,19000000,binder,binder,surfaceflinger,416700000
+1040,"FrameMiss #4 (app draw ok)",400000000,40000000,Dropped Frame,16700000,app draw 7ms,RenderThread,com.ritim.ritimcraw,400000000,7000000,binder,binder,surfaceflinger,416700000
+1050,"FrameMiss #5 (tie: UI and RenderThread take exactly 12ms each)",500000000,35000000,Dropped Frame,16700000,UI 12ms,main,com.ritim.ritimcraw,500000000,12000000,,,,,516700000
+1050,"FrameMiss #5 (tie row)",500000000,35000000,Dropped Frame,16700000,dr 12ms,RenderThread,com.ritim.ritimcraw,500000000,12000000,,,,,516700000
+1060,"FrameMiss #6 (missing slices: waker column tells the story)",600000000,29000000,Dropped Frame,16700000,,,,,,,binder,binder,surfaceflinger,616700000
+1070,"FrameOk #1 (control: produced and presented on time)",700000000,16000000,Frame skipped present,16700000,UI layout 8ms,main,com.ritim.ritimcraw,700000000,8000000,,,main,ui_thread,716700000
+1070,"FrameOk #1 (RT small)",700000000,16000000,Frame skipped present,16700000,RT 4ms,RenderThread,com.ritim.ritimcraw,700000000,4000000,,,main,ui_thread,716700000
