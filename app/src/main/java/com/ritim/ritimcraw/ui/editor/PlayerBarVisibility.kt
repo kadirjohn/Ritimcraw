@@ -7,11 +7,11 @@ package com.ritim.ritimcraw.ui.editor
  *
  * Rules:
  * - setting OFF: the bar is always visible, taps never toggle anything.
- * - setting ON + PAUSED: always visible (scrubbing needs it).
- * - setting ON + PLAYING: visible for [hideDelayMs] after the last
- *   interaction (play start, video tap, any touch on the bar), then hidden.
- * - a video tap while PLAYING shows the bar and restarts the timer; it never
- *   pauses. A second tap within [doubleTapMs] is a double tap: the result
+ * - setting ON: visible for [hideDelayMs] after the last interaction
+ *   (play/pause change, video tap, any touch on the bar), then hidden, in
+ *   EVERY playback state (playing, paused, stopped, at the end). While a
+ *   finger is down on the bar the timer is held.
+ * - a video tap shows the bar and restarts the timer; it never pauses. A second tap within [doubleTapMs] is a double tap: the result
  *   asks the caller to toggle play/pause (and the bar shows briefly).
  */
 class PlayerBarVisibility(
@@ -22,13 +22,13 @@ class PlayerBarVisibility(
     enum class TapResult { NONE, TOGGLE_PLAYBACK }
 
     private var autoHide = false
-    private var playing = false
     private var shown = true
+    private var barPressed = false
     private var lastInteractionMs = 0L
     private var lastTapMs: Long? = null
 
     /** True when the bar must be composed/shown right now. */
-    val visible: Boolean get() = !autoHide || !playing || shown
+    val visible: Boolean get() = !autoHide || shown
 
     fun setAutoHide(enabled: Boolean, nowMs: Long) {
         autoHide = enabled
@@ -37,13 +37,18 @@ class PlayerBarVisibility(
     }
 
     /** Playback started/stopped. Either way the bar shows and the timer restarts. */
-    fun setPlaying(isPlaying: Boolean, nowMs: Long) {
-        playing = isPlaying
+    fun setPlaying(@Suppress("UNUSED_PARAMETER") isPlaying: Boolean, nowMs: Long) {
         show(nowMs)
     }
 
     /** A touch on the bar itself (slider drag, buttons): keep it visible, restart the timer. */
     fun onBarInteraction(nowMs: Long) = show(nowMs)
+
+    /** Finger down/up on the bar. Held: never hides; release restarts the timer. */
+    fun setBarPressed(pressed: Boolean, nowMs: Long) {
+        barPressed = pressed
+        show(nowMs)
+    }
 
     /** A clean single tap on the video surface. */
     fun onVideoTap(nowMs: Long): TapResult {
@@ -60,7 +65,7 @@ class PlayerBarVisibility(
 
     /** Milliseconds until the bar should hide, or null when no timer is pending. */
     fun msUntilHide(nowMs: Long): Long? {
-        if (!autoHide || !playing || !shown) return null
+        if (!autoHide || !shown || barPressed) return null
         return (lastInteractionMs + hideDelayMs - nowMs).coerceAtLeast(0L)
     }
 

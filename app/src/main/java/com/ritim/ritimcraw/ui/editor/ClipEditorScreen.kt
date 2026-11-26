@@ -3729,6 +3729,7 @@ fun ClipEditorScreen(
         val compactBar = autoHidePlayerBar && !fullscreen
         val barLogic = remember { PlayerBarVisibility() }
         var barVisible by remember { mutableStateOf(true) }
+        var barPressTick by remember { mutableStateOf(0) }
         val barTransition = remember { MutableTransitionState(true) }
         LaunchedEffect(compactBar) {
             barLogic.setAutoHide(compactBar, SystemClock.uptimeMillis())
@@ -3738,8 +3739,8 @@ fun ClipEditorScreen(
             barLogic.setPlaying(isPlaying, SystemClock.uptimeMillis())
             barVisible = barLogic.visible
         }
-        LaunchedEffect(compactBar, isPlaying, barVisible) {
-            if (!compactBar || !isPlaying || !barVisible) return@LaunchedEffect
+        LaunchedEffect(compactBar, isPlaying, barVisible, barPressTick) {
+            if (!compactBar || !barVisible) return@LaunchedEffect
             while (true) {
                 val ms = barLogic.msUntilHide(SystemClock.uptimeMillis()) ?: break
                 if (ms > 0L) {
@@ -4322,8 +4323,10 @@ fun ClipEditorScreen(
                     // Any touch on the bar keeps it up (never consumed).
                     awaitPointerEventScope {
                         while (true) {
-                            awaitPointerEvent(PointerEventPass.Initial)
-                            barLogic.onBarInteraction(SystemClock.uptimeMillis())
+                            val ev = awaitPointerEvent(PointerEventPass.Initial)
+                            val down = ev.changes.any { it.pressed }
+                            barLogic.setBarPressed(down, SystemClock.uptimeMillis())
+                            barPressTick++
                         }
                     }
                 },

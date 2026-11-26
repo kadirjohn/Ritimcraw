@@ -40,19 +40,84 @@ class PlayerBarVisibilityTest {
     }
 
     @Test
-    fun paused_never_hides() {
+    fun paused_hides_after_delay_too() {
         val v = on(playing = false)
-        assertNull(v.msUntilHide(0))
-        assertFalse(v.tick(60_000))
-        assertTrue(v.visible)
+        assertEquals(3000L, v.msUntilHide(0))
+        assertFalse(v.tick(2999))
+        assertTrue(v.tick(3000))
+        assertFalse(v.visible)
     }
 
     @Test
-    fun pausing_after_hide_shows_bar() {
+    fun ended_or_stopped_hides_after_delay() {
+        val v = on()
+        v.setPlaying(false, 5000) // playback reached the end
+        assertTrue(v.visible)
+        assertEquals(3000L, v.msUntilHide(5000))
+        assertTrue(v.tick(8000))
+        assertFalse(v.visible)
+    }
+
+    @Test
+    fun pausing_after_hide_shows_bar_and_restarts_timer() {
         val v = on()
         v.tick(3000)
         assertFalse(v.visible)
         v.setPlaying(false, 3500)
+        assertTrue(v.visible)
+        assertEquals(3000L, v.msUntilHide(3500))
+    }
+
+    @Test
+    fun matrix_every_state_hides_shows_and_double_taps() {
+        for (playing in listOf(true, false)) {
+            val v = on(playing = playing)
+            assertTrue(v.tick(3000))
+            assertFalse(v.visible)
+            // single tap shows, restarts, never toggles
+            assertEquals(TapResult.NONE, v.onVideoTap(4000))
+            assertTrue(v.visible)
+            assertEquals(3000L, v.msUntilHide(4000))
+            // quick second tap toggles playback
+            assertEquals(TapResult.TOGGLE_PLAYBACK, v.onVideoTap(4100))
+            // seek / bar touch restarts the timer
+            v.onBarInteraction(5000)
+            assertFalse(v.tick(7999))
+            assertTrue(v.tick(8000))
+        }
+    }
+
+    @Test
+    fun setting_off_matrix_never_hides_in_any_state() {
+        for (playing in listOf(true, false)) {
+            val v = PlayerBarVisibility()
+            v.setPlaying(playing, 0)
+            v.onBarInteraction(10)
+            assertNull(v.msUntilHide(10))
+            assertFalse(v.tick(100_000))
+            assertTrue(v.visible)
+            assertEquals(TapResult.NONE, v.onVideoTap(200_000))
+            assertEquals(TapResult.NONE, v.onVideoTap(200_100))
+        }
+    }
+
+    @Test
+    fun finger_held_on_bar_blocks_hide_and_release_restarts_timer() {
+        val v = on(playing = false)
+        v.setBarPressed(true, 1000)
+        assertNull(v.msUntilHide(1000))
+        assertFalse(v.tick(60_000))
+        assertTrue(v.visible)
+        v.setBarPressed(false, 61_000)
+        assertEquals(3000L, v.msUntilHide(61_000))
+        assertTrue(v.tick(64_000))
+    }
+
+    @Test
+    fun tap_while_hidden_and_paused_shows_bar() {
+        val v = on(playing = false)
+        v.tick(3000)
+        assertEquals(TapResult.NONE, v.onVideoTap(9000))
         assertTrue(v.visible)
     }
 
