@@ -69,7 +69,8 @@ add_library(rawedit STATIC
     src/ImageStabPlan.cpp
     src/Loudness.cpp
     src/Resample.cpp
-    src/Yuv.cpp)
+    src/Yuv.cpp
+    src/DngSequenceWriter.cpp)
 # Yuv.cpp is the byte-exact twin of export/YuvConverter.kt: its chroma
 # multiply-add chain must round exactly where the Kotlin float ops round,
 # so this TU alone opts out of FMA contraction (-ffp-contract=off).
