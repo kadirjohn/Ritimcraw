@@ -54,6 +54,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
@@ -2091,7 +2092,51 @@ fun AppNav(
                     )
                 }
             } else {
-                Crossfade(targetState = destination, animationSpec = tween(220), label = "browse") { d ->
+                // Tab swipe (owner request 2026-11-26 D3, "like
+                // Telegram's folder switch"): a horizontal drag anywhere
+                // on the browse content flips to the adjacent tab. The
+                // gesture sits on the CROSSFADE CONTAINER (a parent to
+                // every screen's content), so children — rows, buttons,
+                // chips, the vertical scroll bodies — see every event
+                // first and consume what they want; only drags no child
+                // claims flip the tab (see tabSwipeGesture's doc for
+                // the verified foundation dispatch order). The
+                // drag-follow offset rides the content INSIDE the
+                // Crossfade: the current page nudges with the finger
+                // (capped at 15% of the width, TabSwipe's pure rule),
+                // then snaps back as the flip's fade plays. This branch
+                // is the browse-only scope: the editor, timeline and
+                // Device report routes sit ABOVE it and are untouched.
+                var tabDragDeltaDp by remember { mutableStateOf(0f) }
+                Crossfade(
+                    targetState = destination,
+                    animationSpec = tween(220),
+                    label = "browse",
+                    // The container-level detector: children win (the
+                    // modifier is composed OUTER to every screen's
+                    // content), the flip lands in `destination` — the
+                    // same state the bottom NavigationBar writes, so
+                    // the bar's selection follows the swipe.
+                    modifier = Modifier.tabSwipeGesture(
+                        currentTab = { destination },
+                        onFlip = { destination = it },
+                        onDragDeltaDp = { delta -> tabDragDeltaDp = delta },
+                    ),
+                ) { d ->
+                    // The nudge layer is INSIDE the Crossfade so it
+                    // applies to the fading page only, never to the
+                    // outer Box's other children.
+                    Box(
+                        Modifier
+                            .fillMaxSize()
+                            .graphicsLayer {
+                                translationX =
+                                    TabSwipe.followOffsetFraction(
+                                        tabDragDeltaDp,
+                                        size.width / density,
+                                    ) * size.width
+                            }
+                    ) {
                     when (d) {
                         Destination.LIBRARY -> LibraryScreen(
                             sources = sources,
@@ -2613,6 +2658,7 @@ fun AppNav(
                             customThemeId = customThemeId,
                             onCustomThemePick = onCustomThemePick,
                         )
+                    }
                     }
                 }
             }
