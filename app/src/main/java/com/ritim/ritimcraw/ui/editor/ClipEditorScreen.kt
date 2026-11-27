@@ -4310,9 +4310,14 @@ fun ClipEditorScreen(
                                     if (cleanTap && EditorPreviewLogic.togglesFullscreenChrome(fullscreen)) {
                                         fullscreenChromeVisible = !fullscreenChromeVisible
                                     } else if (cleanTap && compactBar) {
-                                        // Compact bar: a tap shows the bar and
-                                        // restarts its timer (never pauses); a
-                                        // quick second tap toggles playback.
+                                        // Compact bar: the tap TOGGLES the
+                                        // bar (owner request 2026-11-27) —
+                                        // hidden shows, visible hides
+                                        // immediately, no timeout wait. A
+                                        // quick second tap (inside the
+                                        // double-tap window) still toggles
+                                        // playback instead. The mirror below
+                                        // carries every result, HIDE included.
                                         val result = barLogic.onVideoTap(SystemClock.uptimeMillis())
                                         barVisible = barLogic.visible
                                         if (result == PlayerBarVisibility.TapResult.TOGGLE_PLAYBACK &&

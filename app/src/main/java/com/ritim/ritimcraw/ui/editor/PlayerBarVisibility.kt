@@ -11,15 +11,20 @@ package com.ritim.ritimcraw.ui.editor
  *   (play/pause change, video tap, any touch on the bar), then hidden, in
  *   EVERY playback state (playing, paused, stopped, at the end). While a
  *   finger is down on the bar the timer is held.
- * - a video tap shows the bar and restarts the timer; it never pauses. A second tap within [doubleTapMs] is a double tap: the result
- *   asks the caller to toggle play/pause (and the bar shows briefly).
+ * - a video tap TOGGLES the bar (owner request 2026-11-27): hidden bar
+ *   shows, a VISIBLE bar hides immediately — the same tap that opens it
+ *   closes it again, no waiting for the timeout. A second tap within
+ *   [doubleTapMs] of the first is a double tap: the result asks the caller
+ *   to toggle play/pause (and the bar shows briefly). The close consumes
+ *   the double-tap window: a close-then-quick-tap reopens as a fresh
+ *   single tap, never a playback toggle.
  */
 class PlayerBarVisibility(
     private val hideDelayMs: Long = DEFAULT_HIDE_DELAY_MS,
     private val doubleTapMs: Long = DEFAULT_DOUBLE_TAP_MS,
 ) {
     /** What the caller must do after a video tap. */
-    enum class TapResult { NONE, TOGGLE_PLAYBACK }
+    enum class TapResult { NONE, TOGGLE_PLAYBACK, HIDE }
 
     private var autoHide = false
     private var shown = true
@@ -57,6 +62,17 @@ class PlayerBarVisibility(
         if (previous != null && nowMs - previous <= doubleTapMs) {
             lastTapMs = null
             return TapResult.TOGGLE_PLAYBACK
+        }
+        // A tap on a VISIBLE bar closes it immediately (the toggle's close
+        // half): the pending hide timer dies with it (msUntilHide reads
+        // null once hidden). The close also consumes the double-tap
+        // window, so a quick reopen tap is a fresh single tap. A finger
+        // held on the bar keeps it up: the video tap can never rip the
+        // bar out from under a live press.
+        if (shown && !barPressed) {
+            lastTapMs = null
+            shown = false
+            return TapResult.HIDE
         }
         lastTapMs = nowMs
         show(nowMs)
