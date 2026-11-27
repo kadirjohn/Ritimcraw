@@ -595,6 +595,7 @@ private fun ExportSheet(
                     facts = facts,
                     rate = exportRate,
                     tenBitAvailable = exportContext.tenBitPathAvailable,
+                    hlgGateOpen = ExportSheetState.hlgGateOpen(settings, summarySubject, facts, exportContext),
                     resolution = resolutionUi,
                     onPickResolution = { kind ->
                         selectedKind = kind

@@ -213,6 +213,28 @@ internal object ExportSheetState {
      * that never carried HLG (SDR request or no gate: the wall's own
      * issue or an SDR plan, both closed).
      */
+    /**
+     * The DYNAMIC_RANGE row's gate state for the sheet's CURRENT settings
+     * and context: the plan an HLG REQUEST would resolve to (the settings
+     * with dynamicRange=HLG), read through [hlgSelectable]. The row must
+     * ask about the HLG request, not about the current selection: while
+     * SDR is selected the current plan is SDR by construction, so reading
+     * it would close the row on every device that supports HLG. [context]
+     * carries the probed hlgGate (the planner's wall stands without it).
+     */
+    fun hlgGateOpen(
+        settings: com.ritim.ritimcraw.export.ExportSettings,
+        subject: com.ritim.ritimcraw.export.ExportSheetModel.Subject?,
+        facts: List<com.ritim.ritimcraw.export.EncoderFacts>,
+        context: com.ritim.ritimcraw.export.ExportContext,
+    ): Boolean =
+        subject != null && hlgSelectable(
+            com.ritim.ritimcraw.export.ExportSheetModel.plan(
+                settings.copy(dynamicRange = com.ritim.ritimcraw.export.ExportDynamicRange.HLG),
+                subject, facts, context,
+            ),
+        )
+
     fun hlgSelectable(plan: ExportPlan?): Boolean =
         plan != null &&
             plan.effective.dynamicRange == com.ritim.ritimcraw.export.ExportDynamicRange.HLG &&

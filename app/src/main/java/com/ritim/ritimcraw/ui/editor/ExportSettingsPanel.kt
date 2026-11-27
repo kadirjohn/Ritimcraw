@@ -111,6 +111,7 @@ internal fun ExportBody(
     facts: List<EncoderFacts>,
     rate: ExportSheetModel.Rate?,
     tenBitAvailable: Boolean,
+    hlgGateOpen: Boolean = false,
     resolution: ResolutionUi?,
     onPickResolution: (ExportResolution.Kind) -> Unit,
     onCustomResolution: () -> Unit,
@@ -178,6 +179,7 @@ internal fun ExportBody(
                 subject = subject,
                 facts = facts,
                 tenBitAvailable = tenBitAvailable,
+                hlgGateOpen = hlgGateOpen,
                 resolution = resolution,
                 onPickResolution = { onPickResolution(it); onPage(null) },
                 onCustomResolution = onCustomResolution,
@@ -555,6 +557,7 @@ private fun SubPage(
     plan: ExportPlan?,
     subject: ExportSheetModel.Subject?,
     facts: List<EncoderFacts>,
+    hlgGateOpen: Boolean = false,
     tenBitAvailable: Boolean,
     resolution: ResolutionUi?,
     onPickResolution: (ExportResolution.Kind) -> Unit,
@@ -719,10 +722,9 @@ private fun SubPage(
             stringResource(R.string.export_help_dynamic_range),
             onBack,
         ) {
-            // The gate's honest state, a PURE read of the CURRENT plan
-            // (ExportSheetState.hlgSelectable — the single resolved
-            // truth; the row never re-derives the gate).
-            val hlgGateOpen = ExportSheetState.hlgSelectable(planFor(settings))
+            // The gate's honest state arrives resolved from the sheet (EditorTopBar), computed
+            // from the HLG REQUEST plan with the probed gate in its context — planFor()
+            // here has no hlgGate and the current settings are SDR, so neither can say.
             for (range in listOf(ExportDynamicRange.SDR, ExportDynamicRange.HLG)) {
                 val hint = when {
                     range == ExportDynamicRange.SDR -> stringResource(R.string.export_dynamic_range_sdr_hint)
