@@ -64,22 +64,6 @@ object CubeExportPlan {
     /** The TITLE the bake writes above LUT_3D_SIZE ("" = no TITLE line). */
     fun title(clipName: String): String = clipName.trim()
 
-    /**
-     * The SAF save sheet's pre-filled file name: "<clipName> <grid>
-     * points.cube" — never blank (a blank name falls back to "grade"), the
-     * grid named in plain words so two exports of the same clip at
-     * different grids cannot collide in the user's head (or in the
-     * picker's overwrite prompt). The extension rides in the contract's
-     * mime; the CreateDocument caller passes it separately so the system
-     * sheet owns the display.
-     */
-    fun fileName(clipName: String, grid: Grid): String {
-        val base = clipName.trim().ifEmpty { "grade" }
-        val safe = base.filterNot { it == '\n' || it == '\r' || it == '/' || it == '\\' }
-            .trim().ifEmpty { "grade" }
-        return "$safe ${grid.n}${grid.n}${grid.n}${EXTENSION}"
-    }
-
     /** Extensions stripped from a clip name before it becomes a LUT name. */
     private val CLIP_EXTENSIONS = setOf("mcraw", "mp4", "mov")
 
