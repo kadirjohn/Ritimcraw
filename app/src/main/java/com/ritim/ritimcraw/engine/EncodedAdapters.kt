@@ -154,6 +154,16 @@ internal class MediaExtractorTrackReader : EncodedTrackReader {
                     orientationDeg = orientation,
                     color = color,
                     codecConfig = csd,
+                    // G3 (proxy pass-through): the RAW COLOR_* keys the track
+                    // carried, null when untagged — the proxy encoder writes
+                    // the source's own tags unchanged; [color] above RESOLVES
+                    // an untagged transfer to MiLog, so the raw form is the
+                    // honest one for re-tagging.
+                    rawColor = com.ritim.ritimcraw.engine.EncodedRawColor(
+                        standard = intOrNull(MediaFormat.KEY_COLOR_STANDARD),
+                        range = intOrNull(MediaFormat.KEY_COLOR_RANGE),
+                        transfer = intOrNull(MediaFormat.KEY_COLOR_TRANSFER),
+                    ),
                 ),
                 index = EncodedSampleIndex(pts.toLongArray(), sync.toBooleanArray()),
                 sampleRate = sampleRate,

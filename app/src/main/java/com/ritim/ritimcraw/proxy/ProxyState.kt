@@ -41,6 +41,15 @@ class ProxyStateMap {
     /** The whole queue, front lane first (front lane preserves its own order, then back FIFO). */
     fun queued(): List<ProxyKey> = synchronized(lock) { frontQueue.toList() + backQueue.toList() }
 
+    /**
+     * G3 (storage page): every key that FAILED this session with its honest
+     * reason — the page's per-clip "failed" line reads this, keyed by
+     * fingerprint so the UI never recomputes a key.
+     */
+    fun failures(): Map<ProxyKey, String> = synchronized(lock) {
+        states.filterValues { it == ProxyState.Failed }.keys.associateWith { reasons[it] ?: "" }
+    }
+
     /** Queue [key] unless it is already Queued/Building/Ready, or it already failed too often this session. */
     fun enqueue(key: ProxyKey, front: Boolean = false): Boolean = synchronized(lock) {
         when (states[key]) {

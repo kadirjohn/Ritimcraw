@@ -28,4 +28,18 @@ object FeatureFlags {
      * pre-S4 behavior; a stored `stabilizationEngine = 1` is kept untouched.
      */
     const val IMAGE_STABILIZATION_ENABLED = false
+
+    /**
+     * Background proxy generation (G3, docs/PROXY_PLAN.md): the P1 cache and
+     * the E2 pure layers are always compiled in; this flag gates the WIRED
+     * leg — the runtime's drive loop, the auto-enqueue pass and the storage
+     * page's actions. Ships DARK for the first device leg (the owner's
+     * morning run must confirm the real MediaCodec encode, the thermal
+     * behaviour and the playback switch before the queue ever runs by
+     * itself); the flag turns true after that acceptance, the owner's call.
+     * While false: the runtime is constructed (its sweep only deletes crash
+     * leftovers) but never started, no clip is ever auto-enqueued, and the
+     * storage page renders read-only (no delete/cancel actions).
+     */
+    const val PROXY_PRODUCTION_ENABLED = false
 }

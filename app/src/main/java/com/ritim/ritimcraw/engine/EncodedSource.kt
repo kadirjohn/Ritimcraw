@@ -92,6 +92,20 @@ object EncodedErrors {
     }
 }
 
+/**
+ * The container's raw COLOR_* keys, as the track format carried them (G3
+ * proxy pass-through): standard/range/transfer, each null when the container
+ * did not tag it. The proxy encoder writes the source's own tags unchanged
+ * ([ProxyMediaCodecEncoder]) — an untagged Mi-Log transfer stays untagged,
+ * which [EncodedColorSpec] cannot express (it RESOLVES untagged to MiLog);
+ * the raw keys are the honest form (the truth rule: never invent a tag).
+ */
+data class EncodedRawColor(
+    val standard: Int? = null,
+    val range: Int? = null,
+    val transfer: Int? = null,
+)
+
 /** Video track format as the container reports it (MediaExtractor track format). */
 data class EncodedVideoFormat(
     /** Container codec mime, e.g. "video/avc" (must be in [EncodedSource.SUPPORTED_VIDEO_MIMES]). */
@@ -112,6 +126,13 @@ data class EncodedVideoFormat(
      * never inspects it — it travels from the reader to the decoder adapter.
      */
     val codecConfig: List<ByteArray> = emptyList(),
+    /**
+     * G3 (proxy pass-through): the container's RAW COLOR_* keys, each null
+     * when the track did not tag it — the proxy encoder re-writes the
+     * source's own tags unchanged instead of re-deriving them from
+     * [color] (which RESOLVES an untagged transfer to MiLog).
+     */
+    val rawColor: EncodedRawColor? = null,
 ) {
     /** True unless the track is BT.601 (kept for the UI's format line). */
     val isBt709: Boolean get() = color.profile.matrix != com.ritim.ritimcraw.data.color.SourceMatrix.BT601

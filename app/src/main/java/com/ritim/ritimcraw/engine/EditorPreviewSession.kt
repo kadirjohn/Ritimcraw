@@ -196,8 +196,26 @@ object PreviewSessions {
         fdProvider: () -> Int,
         engine: ExecutorService,
         newEncodedSource: () -> EncodedSource = { EncodedSource(readAhead = true) },
+        /**
+         * G3 (proxy playback): the ORIGINAL clip's audio facts, handed to the
+         * encoded session when the fd opened the clip's PROXY (a video-only
+         * file — the plan's "ses orijinalden çalar, proxy'de ses yok"); the
+         * MCRAW path ignores them (it reads audio through its native handle).
+         * LAZY BY CONTRACT (the auditor's re-verify finding): whether a
+         * proxy opened is only known AFTER the fd resolution ran —
+         * [fdProvider] itself flips that flag — so this lambda is evaluated
+         * inside the open, after `val fd = fdProvider()` (an eager argument
+         * would read the flag before the fdProvider lambda ever ran, and
+         * the facts would always be null). A null answer = the original
+         * file opened; unchanged for every existing caller.
+         */
+        audioFacts: () -> Pair<Int, Int>? = { null },
     ): Result<EditorPreviewSession> {
         val fd = fdProvider()
+        // Facts AFTER the fd: the lambda may read state only fdProvider's
+        // run could set (the editor's openedFromProxy flag). Evaluated once,
+        // after the fd resolved, before either engine path runs.
+        val facts = audioFacts()
         if (fd < 0) {
             return Result.failure(
                 PreviewRenderer.Companion.PreviewRenderException(
@@ -218,7 +236,7 @@ object PreviewSessions {
             // failure. Closing it here would cut a live session off its
             // file — nothing may touch the fd after this call.
             SourcePath.ENCODED ->
-                EncodedPreviewSession.open(fd, engine, newEncodedSource)
+                EncodedPreviewSession.open(fd, engine, newEncodedSource, audioFacts = { facts })
         }
     }
 }
@@ -308,6 +326,20 @@ class EncodedPreviewSession private constructor(
     private val channels: Int,
     private val newAudioSource: (Int, Int, Int) -> ClipAudioSource =
         { fd, rate, ch -> MediaExtractorAudioSource(fd, rate, ch) },
+    /**
+     * G3 (proxy playback, the auditor's finding 1): when the session opened
+     * the clip's PROXY file (a video-only MP4 — plan docs/PROXY_PLAN.md
+     * section 1: "Ses | yok | orijinalden"), the open's own 0/0 audio facts
+     * are the PROXY's, and [openAudio]'s no-audio-track short-circuit would
+     * make the clip play SILENT. The ORIGINAL's audio facts come in here
+     * (the caller knows the clip it opened, not the file). LAZY — evaluated
+     * at openAudio time (never as an eager argument at the call site), so
+     * the caller's "did a proxy open" decision keeps its own timing (the
+     * auditor's re-verify finding). A null answer = the session opened the
+     * original and the open's own facts stand (the pre-G3 behavior,
+     * byte-identical for every existing caller).
+     */
+    private val audioFactsOverride: () -> Pair<Int, Int>? = { null },
 ) : EditorPreviewSession {
 
     private val closed = AtomicBoolean(false)
@@ -482,10 +514,11 @@ class EncodedPreviewSession private constructor(
      * the preview engine here, so the video path pays no audio cost.
      */
     override suspend fun openAudio(fdProvider: () -> Int): ClipAudioSource? {
-        if (sampleRate <= 0 || channels <= 0) return null // no audio track
+        val (rate, ch) = audioFactsOverride() ?: (sampleRate to channels)
+        if (rate <= 0 || ch <= 0) return null // no audio track
         val fd = fdProvider()
         if (fd < 0) return null
-        return newAudioSource(fd, sampleRate, channels)
+        return newAudioSource(fd, rate, ch)
     }
 
     companion object {
@@ -511,12 +544,29 @@ class EncodedPreviewSession private constructor(
             newSource: () -> EncodedSource = { EncodedSource(readAhead = true) },
             newAudioSource: (Int, Int, Int) -> ClipAudioSource =
                 { fd, rate, ch -> MediaExtractorAudioSource(fd, rate, ch) },
+            /**
+             * G3 (proxy playback): the ORIGINAL clip's audio facts
+             * (sampleRate to channels), handed in when the fd opened the
+             * clip's PROXY — a video-only file whose own 0/0 would make
+             * [openAudio]'s no-audio short-circuit silence the clip. LAZY
+             * (the auditor's re-verify finding): evaluated inside the open,
+             * never as an eager argument at the call site, so a caller whose
+             * "did a proxy open" flag flips inside its fd provider still
+             * sees the right facts. A null answer (the default) = the
+             * session opened the original; every existing caller is
+             * unchanged.
+             */
+            audioFacts: () -> Pair<Int, Int>? = { null },
         ): Result<EncodedPreviewSession> = suspendCoroutine { cont ->
             try {
                 engine.execute {
                     val outcome: Result<EncodedPreviewSession> = try {
                         val source = newSource()
                         val info = source.open(fd)
+                        // Facts evaluated HERE, inside the open, after the
+                        // source resolved the clip — never an eager argument
+                        // the call site read before any fdProvider ran.
+                        val facts = audioFacts()
                         Result.success(
                             EncodedPreviewSession(
                                 source,
@@ -527,6 +577,7 @@ class EncodedPreviewSession private constructor(
                                 info.sampleRate,
                                 info.channels,
                                 newAudioSource,
+                                audioFactsOverride = { facts },
                             )
                         )
                     } catch (t: Throwable) {

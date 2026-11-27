@@ -507,6 +507,80 @@ fun AppNav(
             publisher = MediaStorePublisher(context),
         )
     }
+    // ---- Proxy runtime (G3, docs/PROXY_PLAN.md P2-P4) ----
+    // The app-lifetime owner of the proxy queue: the P1 cache at
+    // filesDir/cache/proxies, the E2 state map, the build engine (the real
+    // MediaCodec encoder adapter) and the foreground seam. Ships DARK
+    // until start() is called below (FeatureFlags keeps the first
+    // device leg off until the owner's morning run): CONSTRUCTING it
+    // changes nothing — the sweep only deletes crash leftovers, and the
+    // AUTO pass only enqueues through the pure decision table.
+    val proxyRuntime = remember {
+        // The clip's record + its measured metadata, resolved live per call
+        // (the TimelineExporter's rule: the queue must see the world as it
+        // is when the job runs, never a UI snapshot).
+        fun recordFor(fingerprint: String) =
+            stores.sources.all().firstOrNull { it.fingerprint == fingerprint }
+        fun metaFor(id: String) = stores.metadata.get(id)
+        com.ritim.ritimcraw.proxy.ProxyRuntime(
+            context = context,
+            exportingProbe = {
+                stores.exports.all().any { it.state == com.ritim.ritimcraw.export.State.RUNNING }
+            },
+            encoder = com.ritim.ritimcraw.proxy.ProxyMediaCodecEncoder(
+                openFd = { spec ->
+                    val rec = recordFor(spec.signature.sourceFingerprint) ?: return@ProxyMediaCodecEncoder -1
+                    try {
+                        context.contentResolver
+                            .openFileDescriptor(Uri.parse(rec.uri), "r")
+                            ?.detachFd() ?: -1
+                    } catch (e: Exception) {
+                        -1
+                    }
+                },
+            ),
+            clipInfoFor = { fingerprint ->
+                val rec = recordFor(fingerprint) ?: return@ProxyRuntime null
+                val meta = metaFor(rec.id)
+                val kind = if (rec.kind == com.ritim.ritimcraw.data.SourceKind.ENCODED) {
+                    com.ritim.ritimcraw.proxy.ProxySourceKind.ENCODED
+                } else {
+                    com.ritim.ritimcraw.proxy.ProxySourceKind.MCRAW
+                }
+                com.ritim.ritimcraw.proxy.ProxyClipInfo(
+                    kind = kind,
+                    width = meta?.resolution?.value?.substringBefore('x')?.toIntOrNull() ?: rec.width,
+                    height = meta?.resolution?.value?.substringAfter('x')?.toIntOrNull() ?: rec.height,
+                    fps = meta?.fpsMeasured?.value ?: 0.0,
+                )
+            },
+            jobFor = { fingerprint ->
+                val rec = recordFor(fingerprint) ?: return@ProxyRuntime null
+                val meta = metaFor(rec.id)
+                val frames = meta?.frameCount?.value?.toLong() ?: -1L
+                // A clip without an honest frame count cannot be VALIDATED
+                // against its source — no signature, no build (never a guess).
+                if (frames <= 0L) return@ProxyRuntime null
+                val kind = if (rec.kind == com.ritim.ritimcraw.data.SourceKind.ENCODED) {
+                    com.ritim.ritimcraw.proxy.ProxySourceKind.ENCODED
+                } else {
+                    com.ritim.ritimcraw.proxy.ProxySourceKind.MCRAW
+                }
+                val signature = com.ritim.ritimcraw.proxy.ProxySignature(
+                    sourceFingerprint = rec.fingerprint,
+                    sourceSize = meta?.fileSize?.value ?: 0L,
+                    sourceModifiedMs = 0L,
+                    colorSpecKey = meta?.transfer?.value ?: "untagged",
+                    kind = kind,
+                )
+                signature to com.ritim.ritimcraw.proxy.ProxyBuildSpec(
+                    signature = signature,
+                    frameCount = frames,
+                    durationUs = meta?.durationUs?.value ?: -1L,
+                )
+            },
+        )
+    }
     // Queue bookkeeping: a monotonically increasing kick counter — every
     // enqueue/retry bumps it and the runner effect drains the queue.
     var queueKick by remember { mutableStateOf(0) }
@@ -577,6 +651,42 @@ fun AppNav(
         LaunchedEffect(Unit) {
             stores.previewStats.applyPersisted()
         }
+    }
+    // ---- Proxy runtime start (G3) ----
+    // The flag keeps the first device leg dark (FeatureFlags' own contract:
+    // the owner's morning run confirms the encode before the queue ever runs
+    // by itself). While false the runtime exists (its constructor only swept
+    // crash leftovers) but never starts: no build, no notification, and the
+    // auto pass below never enqueues.
+    if (com.ritim.ritimcraw.util.FeatureFlags.PROXY_PRODUCTION_ENABLED) {
+        LaunchedEffect(Unit) { proxyRuntime.start() }
+        // The AUTO pass (plan section 6): every clip whose facts the metadata
+        // pass measured goes through the pure decision table once per app
+        // session — 8K / 4K60 encoded clips enqueue (MCRAW stays opt-in by
+        // the policy's own default). The queue's own policy gate decides
+        // when a build actually starts (export > playing > proxy).
+        LaunchedEffect(Unit) {
+            stores.sources.all().forEach { rec ->
+                proxyRuntime.maybeQueue(rec.fingerprint)
+            }
+        }
+    }
+    // ---- Proxy storage page state (G3) ----
+    // The pure feed over the runtime's cache + queue, recomputed on every
+    // kick (a queue state change, a delete/clear). The state itself is a
+    // plain snapshot — the storage page is not a live stream (the export
+    // rows' own refresh cadence).
+    var proxyStorageKick by remember { mutableStateOf(0) }
+    val proxyStorageState by remember(proxyStorageKick) {
+        mutableStateOf(
+            com.ritim.ritimcraw.proxy.ProxyStorageFeed.state(
+                cache = proxyRuntime.cache,
+                queue = proxyRuntime.queue,
+                capBytes = com.ritim.ritimcraw.proxy.PROXY_CAP_DEFAULT_BYTES,
+                inUse = proxyRuntime.inUse,
+                building = proxyRuntime.queue.buildingSource(),
+            ),
+        )
     }
     var destination by rememberSaveable { mutableStateOf(Destination.LIBRARY) }
     // EditorRoute is a data class — rememberSaveable cannot put it in a
@@ -1100,7 +1210,15 @@ fun AppNav(
     // the persisted store stays the single source of truth, so a conflated
     // bump just means "re-read now" and the data itself is never stale.
     LaunchedEffect(queue) {
-        queue.revisionFlow().collect { exportJobs = stores.exports.all() }
+        queue.revisionFlow().collect {
+            exportJobs = stores.exports.all()
+            // G3: every export-state change re-kicks the proxy queue — an
+            // export that just went RUNNING must hold it (the monitor sees
+            // it within its poll), one that just went terminal releases it.
+            if (com.ritim.ritimcraw.util.FeatureFlags.PROXY_PRODUCTION_ENABLED) {
+                proxyRuntime.kick()
+            }
+        }
     }
 
     // The runner: drains every QUEUED job serially, one at a time. Kicks
@@ -1817,6 +1935,48 @@ fun AppNav(
                         },
                         sourceFd = sourceFd,
                         sourceFdProvider = sourceFdProvider,
+                        // ---- Proxy playback (G3, additive) ----
+                        // The clip's playable proxy, resolved through the
+                        // runtime's own gate at session open ([ProxyPlaybackGate]
+                        // applies the E2 switch rule; the cache's playable is
+                        // the never-half gate). -1 = NO PLAYABLE PROXY (the
+                        // cache holds none for this clip's signature — or the
+                        // runtime has no job for it); the ORIGINAL fd opens.
+                        // NOTE (the auditor's finding 3): this seam is NOT
+                        // flag-conditional — while PROXY_PRODUCTION_ENABLED
+                        // is false the runtime is never started and no build
+                        // ever runs, so nothing resolves and the answer is -1
+                        // BECAUSE THE CACHE IS EMPTY; if the flag is turned
+                        // off again AFTER proxies were built, the built
+                        // proxies KEEP PLAYING (reading the cache is safe —
+                        // the never-half gate is the cache's own contract).
+                        // The fingerprint is resolved LIVE (the queue's own
+                        // rule: the session must see the clip as it is when
+                        // it opens).
+                        proxyOpenFd = {
+                            val rec = stores.sources.get(r.sourceId)
+                            rec?.let { proxyRuntime.openPlaybackProxy(it.fingerprint) } ?: -1
+                        },
+                        // The ORIGINAL clip's audio facts for a proxy-opened
+                        // session (the plan's "ses orijinalden çalar, proxy'de
+                        // ses yok" — the proxy is video-only): resolved from
+                        // the ORIGINAL's measured metadata record. The audio
+                        // DESCRIPTOR stays sourceFdProvider (the original's
+                        // fd) — only the FACTS ride the session's open, and
+                        // only when a proxy opened (the screen's own
+                        // openedFromProxy flag decides that).
+                        proxyAudioFacts = stores.sources.get(r.sourceId)?.let { rec ->
+                            stores.metadata.get(rec.id)?.audio?.value?.let { a ->
+                                a.sampleRateHz to a.channels
+                            }
+                        },
+                        // The session-close seam: the runtime's gate releases
+                        // the proxy's in-use protection with the session.
+                        onProxySessionClose = {
+                            stores.sources.get(r.sourceId)?.let {
+                                proxyRuntime.closePlaybackProxy(it.fingerprint)
+                            }
+                        },
                         accessLost = accessLost,
                         sourceWidth = sourceDims.first,
                         sourceHeight = sourceDims.second,
@@ -2713,6 +2873,35 @@ fun AppNav(
                                 stores.scrubFrames.put(enabled)
                                 scrubFramesEnabled = enabled
                             },
+                            // ---- Proxy storage section (G3) ----
+                            // The pure feed over the runtime's own cache and
+                            // queue; refreshed by the proxyStorageKick effect
+                            // (every state change of the queue bumps it).
+                            // While the feature flag is off the actions stay
+                            // null: the page is read-only by construction.
+                            proxyStorage = proxyStorageState,
+                            proxyNameFor = { fp ->
+                                sources.firstOrNull { it.fingerprint == fp }?.displayOrId
+                            },
+                            onDeleteProxyClip =
+                                if (com.ritim.ritimcraw.util.FeatureFlags.PROXY_PRODUCTION_ENABLED) {
+                                    { fp ->
+                                        proxyRuntime.cache.clearClip(fp)
+                                        proxyRuntime.cancel(fp)
+                                        proxyStorageKick += 1
+                                    }
+                                } else {
+                                    null
+                                },
+                            onClearProxyAll =
+                                if (com.ritim.ritimcraw.util.FeatureFlags.PROXY_PRODUCTION_ENABLED) {
+                                    {
+                                        proxyRuntime.cache.clearAll()
+                                        proxyStorageKick += 1
+                                    }
+                                } else {
+                                    null
+                                },
                             onThemeModeChange = onThemeModeChange,
                             customThemeId = customThemeId,
                             onCustomThemePick = onCustomThemePick,

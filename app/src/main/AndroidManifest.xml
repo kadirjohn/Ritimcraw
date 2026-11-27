@@ -66,6 +66,18 @@
             android:name=".export.ExportForegroundService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+        <!-- Proxy foreground service (G3, docs/PROXY_PLAN.md section 4): the
+             same owner finding and the same shape as the export service —
+             a background proxy build takes minutes (8K decode + downscale +
+             encode) and a frozen process would leave a half .tmp the
+             never-half rule discards, so the build holds the process at
+             foreground priority for its own duration. Started and stopped
+             by the proxy queue's own state transitions; never outlives the
+             build. -->
+        <service
+            android:name=".proxy.ProxyForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
         <!-- Own exports through content:// (owner request 2026-11-11 §1): a
              DONE row whose media-store publish failed still opens, through
              FileProvider with a temporary read grant — the file never leaves

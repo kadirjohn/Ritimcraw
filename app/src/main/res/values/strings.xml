@@ -476,6 +476,25 @@
     <string name="exports_notification_channel">Exports</string>
     <string name="exports_notification_running">Export running</string>
 
+    <!-- Proxy background build notification (G3): the visible side of the
+         process priority that keeps a backgrounded proxy build alive — the
+         ExportForegroundService shape, its own channel and id. -->
+    <string name="proxy_notification_channel">Proxy builds</string>
+    <string name="proxy_notification_running">Proxy building</string>
+    <string name="proxy_notification_frames">%1$d / %2$d frames</string>
+
+    <!-- Proxy storage page section (G3, plan section 6): usage against the
+         cap, per-clip rows, the over-cap line (owner decision 2026-11-26),
+         delete actions. -->
+    <string name="proxy_storage_title">Proxy cache</string>
+    <string name="proxy_storage_usage">%1$s GB of %2$s GB</string>
+    <string name="proxy_storage_over_cap">%1$s GB over the limit — older proxies will be removed automatically</string>
+    <string name="proxy_storage_clear_all">Clear proxy cache</string>
+    <string name="proxy_clip_delete">Delete proxies of %1$s</string>
+    <string name="proxy_clip_queued">queued</string>
+    <string name="proxy_clip_building">building</string>
+    <string name="proxy_clip_failed">failed: %1$s</string>
+
     <!-- Projects -->
     <string name="projects_title">Projects</string>
     <string name="projects_open_timeline">Open timeline</string>
