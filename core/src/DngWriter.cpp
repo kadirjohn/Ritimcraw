@@ -344,10 +344,21 @@ void smpteFpsFlags(double fps, uint8_t flagsOut[2]) {
     flagsOut[1] = drop;
 }
 
-// The DNG 1.4 TimeCodes (51043) byte layout: hour/min/sec/frame with the
-// flag bit (0x80) on each, then the flag bytes [4]=drop-frame,
-// [5]=user-bits group flags, [6..7]=user bits (0 when the caller carried
-// none). frameOffset advances the frame field under the fps's
+namespace {
+int bcdEncode(int v) {
+    if (v < 0) v = 0;
+    v %= 100;
+    return ((v / 10) << 4) | (v % 10);
+}
+int bcdDecode(uint8_t b, uint8_t tensMask) {
+    return ((b & tensMask) >> 4) * 10 + (b & 0x0f);
+}
+} // namespace
+
+// The DNG TimeCodes (51043) byte layout, SMPTE 331M-2004 8.3 (12M linear
+// time code word, BCD, FRAMES FIRST): [0] frames (+ bit 6 drop-frame),
+// [1] seconds, [2] minutes, [3] hours, [4..7] user bytes (carried from
+// the input, 0 otherwise). frameOffset advances the frame field under the fps's
 // frames-per-second rollover (the integer fps the layout encodes: 24, 25
 // or 30 — a 29.97 source rolls at 30 with the drop-frame flag set in the
 // START code the caller derived; the drop arithmetic itself is the
@@ -367,10 +378,12 @@ void smpteTimeCodesRaw(const uint8_t in[8], int frameOffset, double fps,
             if (r >= 1.0 && r <= 60.0) perSecond = static_cast<int>(r);
         }
     }
-    int hour = static_cast<int>(in[0] & 0x7f);
-    int minute = static_cast<int>(in[1] & 0x7f);
-    int second = static_cast<int>(in[2] & 0x7f);
-    int frame = static_cast<int>(in[3] & 0x7f);
+    // Input is the same SMPTE 331M 8.3 layout the output uses: BCD,
+    // frames byte first (flag bits masked off).
+    int frame = bcdDecode(in[0], 0x30);
+    int second = bcdDecode(in[1], 0x70);
+    int minute = bcdDecode(in[2], 0x70);
+    int hour = bcdDecode(in[3], 0x30);
     if (frameOffset != 0 && perSecond > 0) {
         long total = static_cast<long>(frame) + frameOffset;
         if (total < 0) total = 0; // a caller error stays honest, not wraps
@@ -384,11 +397,11 @@ void smpteTimeCodesRaw(const uint8_t in[8], int frameOffset, double fps,
     }
     uint8_t flags[2] = {0, 0};
     smpteFpsFlags(fps, flags);
-    out[0] = static_cast<uint8_t>(hour | (flags[0] ? 0x80 : 0));
-    out[1] = static_cast<uint8_t>(minute);
-    out[2] = static_cast<uint8_t>(second);
-    out[3] = static_cast<uint8_t>(frame);
-    out[4] = flags[1];
+    out[0] = static_cast<uint8_t>(bcdEncode(frame) | (flags[1] ? 0x40 : 0));
+    out[1] = static_cast<uint8_t>(bcdEncode(second));
+    out[2] = static_cast<uint8_t>(bcdEncode(minute));
+    out[3] = static_cast<uint8_t>(bcdEncode(hour));
+    out[4] = in[4];
     out[5] = in[5];
     out[6] = in[6];
     out[7] = in[7];
@@ -397,10 +410,10 @@ void smpteTimeCodesRaw(const uint8_t in[8], int frameOffset, double fps,
 void smpteTimeCodes(int hour, int minute, int second, int frame,
                     int frameOffset, double fps, uint8_t out[8]) {
     uint8_t start[8] = {0, 0, 0, 0, 0, 0, 0, 0};
-    start[0] = static_cast<uint8_t>(hour & 0x7f);
-    start[1] = static_cast<uint8_t>(minute & 0x7f);
-    start[2] = static_cast<uint8_t>(second & 0x7f);
-    start[3] = static_cast<uint8_t>(frame & 0x7f);
+    start[0] = static_cast<uint8_t>(bcdEncode(frame));
+    start[1] = static_cast<uint8_t>(bcdEncode(second));
+    start[2] = static_cast<uint8_t>(bcdEncode(minute));
+    start[3] = static_cast<uint8_t>(bcdEncode(hour));
     smpteTimeCodesRaw(start, frameOffset, fps, out);
 }
 
