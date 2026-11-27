@@ -139,6 +139,44 @@ class WebVttCodecTest {
         assertTrue(r.issues.isEmpty())
     }
 
+    @Test
+    fun `truncated start timecode is rejected not zero`() {
+        val r = WebVttCodec.parse(vtt("00:00:0.000 --> 00:00:02.000\nA\n"))
+        assertTrue("cues must be empty: ${r.cues}", r.cues.isEmpty())
+        assertEquals(1, r.issues.size)
+        assertTrue(r.issues[0].reason.contains("timing"))
+    }
+
+    @Test
+    fun `one digit minute and second fields are rejected`() {
+        val oneDigitSecond = WebVttCodec.parse(vtt("00:00:01.000 --> 00:00:1.000\nA\n"))
+        assertTrue(oneDigitSecond.cues.isEmpty())
+        assertEquals(1, oneDigitSecond.issues.size)
+        assertTrue(oneDigitSecond.issues[0].reason.contains("timing"))
+
+        val oneDigitMinute = WebVttCodec.parse(vtt("00:0:01.000 --> 00:00:02.000\nA\n"))
+        assertTrue(oneDigitMinute.cues.isEmpty())
+        assertEquals(1, oneDigitMinute.issues.size)
+        assertTrue(oneDigitMinute.issues[0].reason.contains("timing"))
+    }
+
+    @Test
+    fun `truncated end above start is still rejected`() {
+        val r = WebVttCodec.parse(vtt("00:00:01.000 --> 00:00:4\nA\n"))
+        assertTrue("cues must be empty: ${r.cues}", r.cues.isEmpty())
+        assertEquals(1, r.issues.size)
+        assertTrue(r.issues[0].reason.contains("timing"))
+    }
+
+    @Test
+    fun `one digit hour with leading zero dropped still parses`() {
+        val r = WebVttCodec.parse(vtt("0:00:01.000 --> 0:00:02.000\nA\n"))
+        assertEquals(1, r.cues.size)
+        assertEquals(1_000_000L, r.cues[0].startUs)
+        assertEquals(2_000_000L, r.cues[0].endUs)
+        assertTrue(r.issues.isEmpty())
+    }
+
     // ---- formatter + round trip -------------------------------------
 
     @Test

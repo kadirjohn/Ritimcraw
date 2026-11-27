@@ -99,8 +99,18 @@ internal object SubtitleTimes {
         // and >99 h files exist); mm/ss: EXACTLY two digits — the spec shape.
         // A truncated timecode like "00:00:0" is broken, not zero seconds.
         for ((idx, p) in parts.withIndex()) {
-            val maxLen = if (parts.size == 3 && idx == 0) 3 else 2
-            if (p.isEmpty() || p.length > maxLen || !p.all { it.isDigit() }) return null
+            val isHours = parts.size == 3 && idx == 0
+            if (!p.all { it.isDigit() }) return null
+            // mm/ss are EXACTLY two digits (the spec shape): a truncated
+            // field like "00:00:0" or "00:0:01" is a broken timecode, not
+            // a zero or a four — "reported, never guessed". Hours keep
+            // 1..3 digits (real files drop the leading zero; >99 h
+            // files exist).
+            if (isHours) {
+                if (p.length !in 1..3) return null
+            } else if (p.length != 2) {
+                return null
+            }
         }
         val h: Long
         val m: Long

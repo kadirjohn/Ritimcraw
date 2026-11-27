@@ -107,16 +107,44 @@ class SrtCodecTest {
         )
         assertEquals(listOf("B"), r.cues.map { it.cleanText })
         assertEquals(1, r.issues.size)
-        // Either the truncated end timecode failed to parse (timing issue)
-        // or it parsed as 0 and was rejected as end<=start: both are
-        // honest reports; what matters is: no cue fabricated, one issue,
-        // parsing continued.
-        val reason = r.issues[0].reason
-        assertTrue(
-            "unexpected reason: $reason",
-            reason.contains("timing") || reason.contains("not after"),
-        )
-        assertEquals(2, r.issues[0].line) // 1-based: the arrow line (line 1 is the "1")
+        // Contract: a truncated END timecode is a malformed timing line —
+        // exactly one reason, never silently reparsed as 0 (which would
+        // fabricate a cue or masquerade as an end<=start issue).
+        assertTrue(r.issues[0].reason.contains("timing"))
+        assertEquals(1, r.issues[0].line) // 1-based: the block's first line
+    }
+
+    @Test
+    fun `truncated start hour field is rejected not zero`() {
+        // "00:00:0" as the START would parse as 0 us and fabricate a cue
+        // at the file origin — must be a timing issue instead.
+        val r = SrtCodec.parse("1\n00:00:0 --> 00:00:02,000\nA\n")
+        assertTrue("cues must be empty: ${r.cues}", r.cues.isEmpty())
+        assertEquals(1, r.issues.size)
+        assertTrue(r.issues[0].reason.contains("timing"))
+    }
+
+    @Test
+    fun `one digit minute and second fields are rejected`() {
+        val oneDigitSecond = SrtCodec.parse("1\n00:00:01,000 --> 00:00:1,000\nA\n")
+        assertTrue(oneDigitSecond.cues.isEmpty())
+        assertEquals(1, oneDigitSecond.issues.size)
+        assertTrue(oneDigitSecond.issues[0].reason.contains("timing"))
+
+        val oneDigitMinute = SrtCodec.parse("1\n00:0:01,000 --> 00:00:02,000\nA\n")
+        assertTrue(oneDigitMinute.cues.isEmpty())
+        assertEquals(1, oneDigitMinute.issues.size)
+        assertTrue(oneDigitMinute.issues[0].reason.contains("timing"))
+    }
+
+    @Test
+    fun `truncated end above start is still rejected`() {
+        // "00:00:4" would fabricate endUs=4s (> startUs=1s) — the end<=start
+        // guard cannot catch this; the two-digit rule must.
+        val r = SrtCodec.parse("1\n00:00:01,000 --> 00:00:4\nA\n")
+        assertTrue("cues must be empty: ${r.cues}", r.cues.isEmpty())
+        assertEquals(1, r.issues.size)
+        assertTrue(r.issues[0].reason.contains("timing"))
     }
 
     @Test
@@ -161,6 +189,24 @@ class SrtCodecTest {
         assertEquals(2, r.cues.size) // kept, reported — not guessed away
         assertEquals(1, r.issues.size)
         assertTrue(r.issues[0].reason.contains("before previous"))
+    }
+
+    @Test
+    fun `one digit hour with leading zero dropped still parses`() {
+        // Real files write "0:00:01,000"; hours stay 1..3 digits.
+        val r = SrtCodec.parse("1\n0:00:01,000 --> 0:00:02,000\nA\n")
+        assertEquals(1, r.cues.size)
+        assertEquals(1_000_000L, r.cues[0].startUs)
+        assertEquals(2_000_000L, r.cues[0].endUs)
+        assertTrue(r.issues.isEmpty())
+    }
+
+    @Test
+    fun `four digit hour field is rejected`() {
+        val r = SrtCodec.parse("1\n0000:00:01,000 --> 0000:00:02,000\nA\n")
+        assertTrue(r.cues.isEmpty())
+        assertEquals(1, r.issues.size)
+        assertTrue(r.issues[0].reason.contains("timing"))
     }
 
     // ---- formatter + round trip -------------------------------------
