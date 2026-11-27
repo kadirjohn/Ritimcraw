@@ -32,6 +32,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.TextStyle
@@ -409,14 +410,27 @@ private fun ClipThumbnail(
 
 /**
  * A media row's format badge (owner request 2026-11-26): the clip's kind
- * token in a small squircle pill at the row's bottom-end — the native
- * format in the HIGHLIGHTED treatment (the theme's primaryContainer
- * pair, a light blue pill in the browse themes), every other kind
- * NEUTRAL (the surfaceContainerHighest pair the duration badge uses).
- * The style rides the badge (caller-decided, the pure kindBadge rule) so
- * this shared component stays theme-driven — no hardcoded colors.
+ * token in a small squircle pill at the row's bottom-end. The style rides
+ * the badge (caller-decided, the pure kindBadge rule): HIGHLIGHTED (the
+ * theme's primaryContainer pair), NEUTRAL (the surfaceContainerHighest
+ * pair the duration badge uses) and MOTIONCAM — the MCRAW badge's fixed
+ * MotionCam blue (owner request 2026-11-27, M2: "MCRAW rozeti monet veya
+ * custom temaya aldırış etmeden mavi renk olsun, motioncam'in rengi
+ * bu"), the ONE deliberately theme-independent style in this component.
  */
-enum class FormatBadgeStyle { HIGHLIGHTED, NEUTRAL }
+enum class FormatBadgeStyle { HIGHLIGHTED, NEUTRAL, MOTIONCAM }
+
+/**
+ * The MOTIONCAM badge's fixed container color (M2): a lively blue close
+ * to MotionCam's brand blue, constant across every theme (monet and
+ * custom alike) because the OWNER asked for the brand color itself, not
+ * a theme role — the documented exception to this component's
+ * theme-driven contract. One definition; white 10sp text reads on it
+ * (contrast about 4.0). MotionCam's exact brand value cannot be
+ * verified from code (image-blind agent): a morning tweak is a
+ * one-line change HERE.
+ */
+val MOTIONCAM_BLUE = Color(0xFF1E88E5)
 
 /** The badge a row renders: its style plus its (never localized) text. */
 data class FormatBadge(val style: FormatBadgeStyle, val text: String)
@@ -437,10 +451,14 @@ private fun FormatBadgePill(badge: FormatBadge) {
     val containerColor = when (badge.style) {
         FormatBadgeStyle.HIGHLIGHTED -> colorScheme.primaryContainer
         FormatBadgeStyle.NEUTRAL -> colorScheme.surfaceContainerHighest
+        // Fixed brand blue, never a theme role (M2) — the deliberate
+        // exception documented on [MOTIONCAM_BLUE].
+        FormatBadgeStyle.MOTIONCAM -> MOTIONCAM_BLUE
     }
     val contentColor = when (badge.style) {
         FormatBadgeStyle.HIGHLIGHTED -> colorScheme.onPrimaryContainer
         FormatBadgeStyle.NEUTRAL -> colorScheme.onSurface
+        FormatBadgeStyle.MOTIONCAM -> Color.White
     }
     Box(
         modifier = Modifier

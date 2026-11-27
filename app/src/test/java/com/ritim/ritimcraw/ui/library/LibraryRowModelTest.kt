@@ -3,6 +3,7 @@ package com.ritim.ritimcraw.ui.library
 import com.ritim.ritimcraw.data.Access
 import com.ritim.ritimcraw.data.MediaSource
 import com.ritim.ritimcraw.data.SourceKind
+import com.ritim.ritimcraw.ui.components.MOTIONCAM_BLUE
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
@@ -225,14 +226,16 @@ class LibraryRowModelTest {
         assertEquals("abc123", LibraryRowModel.listDisplayName(source(displayName = "")))
     }
 
-    // ---- kindBadge (owner request 2026-11-26: blue MCRAW / gray MP4) ----
+    // ---- kindBadge (owner request 2026-11-26: blue MCRAW / gray MP4;
+    // 2026-11-27 M2: the blue is MOTIONCAM's own fixed style, not the
+    // shared highlighted treatment) ----
 
     @Test
     fun badge_is_derived_from_the_kind_not_the_name() {
         // A RENAMED mcraw ("sunset", no extension at all) keeps its
         // MCRAW badge — the kind is the record's own classification.
         assertEquals(
-            LibraryRowModel.Badge(LibraryRowModel.BadgeStyle.HIGHLIGHTED, "MCRAW"),
+            LibraryRowModel.Badge(LibraryRowModel.BadgeStyle.MOTIONCAM, "MCRAW"),
             LibraryRowModel.kindBadge(source(kind = SourceKind.MCRAW, displayName = "sunset")),
         )
         assertEquals(
@@ -247,6 +250,34 @@ class LibraryRowModelTest {
         // "never localized" convention for file-derived text.
         val tr = LibraryRowModel.kindBadge(source(kind = SourceKind.MCRAW))
         assertEquals("MCRAW", tr?.text)
+    }
+
+    // ---- M2 pins (owner request 2026-11-27: fixed blue MCRAW / gray MP4) ----
+
+    @Test
+    fun mcraw_badge_wears_the_motioncam_style_encoded_stays_neutral() {
+        // The two kinds' styles stay distinct and pinned: MCRAW takes the
+        // MOTIONCAM treatment (the fixed blue the pill renders, constant
+        // in every theme), ENCODED keeps NEUTRAL (the gray squircle).
+        val mcraw = LibraryRowModel.kindBadge(source(kind = SourceKind.MCRAW))
+        assertEquals(LibraryRowModel.BadgeStyle.MOTIONCAM, mcraw?.style)
+        assertEquals("MCRAW", mcraw?.text)
+        val encoded = LibraryRowModel.kindBadge(source(kind = SourceKind.ENCODED))
+        assertEquals(LibraryRowModel.BadgeStyle.NEUTRAL, encoded?.style)
+        assertEquals("MP4", encoded?.text)
+    }
+
+    @Test
+    fun motioncam_blue_is_the_single_fixed_pill_color() {
+        // The M2 contract in numbers: ONE constant, pinned here against
+        // the Color literal itself (0xFF1E88E5, a lively blue; white 10sp
+        // text reads on it, contrast about 4.0) — a morning brand-color
+        // tweak changes the constant AND this expectation together, so
+        // the test keeps the two in lockstep and catches accidental
+        // drift elsewhere. NOT verified: MotionCam's exact brand tone
+        // (image-blind agent, the owner compares on device).
+        val expected = androidx.compose.ui.graphics.Color(0xFF1E88E5)
+        assertEquals(expected.value, MOTIONCAM_BLUE.value)
     }
 
     @Test

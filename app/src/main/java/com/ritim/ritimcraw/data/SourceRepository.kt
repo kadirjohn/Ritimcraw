@@ -227,21 +227,53 @@ class SourceRepository(
     private val store: File,
 ) {
 
+    /**
+     * Imports a clip into the catalog (fingerprint dedupe: the same bytes
+     * keep their id and grade).
+     *
+     * KIND (owner request 2026-11-27, M1): the classification routes on the
+     * FILE's own name — [VideoTree.kindFor] of the display name the
+     * resolver already resolves here — so a single-file pick of an .mp4
+     * lands [SourceKind.ENCODED] (the honest gray MP4 badge), not the
+     * [SourceKind.MCRAW] default. The [kind] parameter stays an explicit
+     * OVERRIDE: the folder paths pass the kind they already computed
+     * (VideoTree.kindFor, same rule), and a record whose name the resolver
+     * cannot resolve keeps the parameter's value — the MCRAW default, the
+     * single-file picker's behavior before this change. The dedupe branch
+     * refreshes an EXISTING record's kind the same way (a fingerprint
+     * match is the same file, so the same name's rule): an old record
+     * imported before this fix re-classifies itself on re-import, without
+     * any project.json format change.
+     */
     fun import(uri: String, kind: SourceKind = SourceKind.MCRAW): MediaSource {
         val fingerprint = fingerprintOf(uri)
         // The clip's real file name (owner request 2026-11-11 §2b): null when
         // the resolver cannot name it — the id is the display fallback.
         val name = resolver.displayName(uri)
+        // The honest kind from the name's own extension (M1): positive
+        // EVIDENCE only — null when the resolver could not name the file,
+        // in which case the caller's [kind] parameter decides a NEW
+        // record and an EXISTING one keeps its own kind (an unknown name
+        // never overrides what the record already knows).
+        val nameKind = name?.let { VideoTree.kindFor(it) }
         val sources = load().toMutableList()
         val existing = sources.find { it.fingerprint == fingerprint }
         if (existing != null) {
             // Same file: keep the id (and its grade); refresh the uri in case
             // the picker returned a different document id for the same bytes.
-            // A fresh display name backfills records imported before §2b.
+            // A fresh display name backfills records imported before §2b,
+            // and the kind self-heals the same way (M1): the fingerprint
+            // match guarantees the same file, so the name's rule is the
+            // truth — but only when the name RESOLVED (nameKind != null;
+            // no name never overrides the record's own kind). Only a real
+            // difference rewrites the field, an equal kind stays
+            // byte-identical (no spurious project.json rewrite).
+            val updatedKind = nameKind ?: existing.kind
             val updated = existing.copy(
                 uri = uri,
                 access = Access.OK,
                 displayName = name ?: existing.displayName,
+                kind = if (existing.kind == updatedKind) existing.kind else updatedKind,
             )
             sources[sources.indexOf(existing)] = updated
             write(sources)
@@ -251,7 +283,7 @@ class SourceRepository(
             id = idFrom(fingerprint),
             uri = uri,
             fingerprint = fingerprint,
-            kind = kind,
+            kind = nameKind ?: kind,
             access = Access.OK,
             displayName = name ?: "",
         )
