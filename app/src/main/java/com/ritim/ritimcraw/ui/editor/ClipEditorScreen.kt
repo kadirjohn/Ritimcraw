@@ -3987,6 +3987,12 @@ fun ClipEditorScreen(
         val barLogic = remember { PlayerBarVisibility() }
         var barVisible by remember { mutableStateOf(true) }
         var barPressTick by remember { mutableStateOf(0) }
+        // Bumped on every video tap (owner device report 2026-11-27): a tap
+        // on the visible bar ARMS a delayed close — the hide deadline moves
+        // to the double-tap window's end. The timer loop below keys on this
+        // so it re-reads that shortened deadline immediately instead of
+        // sleeping until the old full-timer deadline.
+        var barTapTick by remember { mutableStateOf(0) }
         val barTransition = remember { MutableTransitionState(true) }
         LaunchedEffect(compactBar) {
             barLogic.setAutoHide(compactBar, SystemClock.uptimeMillis())
@@ -3996,7 +4002,7 @@ fun ClipEditorScreen(
             barLogic.setPlaying(isPlaying, SystemClock.uptimeMillis())
             barVisible = barLogic.visible
         }
-        LaunchedEffect(compactBar, isPlaying, barVisible, barPressTick) {
+        LaunchedEffect(compactBar, isPlaying, barVisible, barPressTick, barTapTick) {
             if (!compactBar || !barVisible) return@LaunchedEffect
             while (true) {
                 val ms = barLogic.msUntilHide(SystemClock.uptimeMillis()) ?: break
@@ -4310,16 +4316,22 @@ fun ClipEditorScreen(
                                     if (cleanTap && EditorPreviewLogic.togglesFullscreenChrome(fullscreen)) {
                                         fullscreenChromeVisible = !fullscreenChromeVisible
                                     } else if (cleanTap && compactBar) {
-                                        // Compact bar: the tap TOGGLES the
-                                        // bar (owner request 2026-11-27) —
-                                        // hidden shows, visible hides
-                                        // immediately, no timeout wait. A
-                                        // quick second tap (inside the
-                                        // double-tap window) still toggles
-                                        // playback instead. The mirror below
-                                        // carries every result, HIDE included.
+                                        // Compact bar: a tap on the hidden
+                                        // bar shows it; a tap on the VISIBLE
+                                        // bar arms a DELAYED close at the
+                                        // double-tap deadline (owner device
+                                        // report 2026-11-27: the old instant
+                                        // close ate the double tap — the bar
+                                        // flashed closed-and-open instead of
+                                        // toggling playback). A quick second
+                                        // tap inside the window still pairs
+                                        // as TOGGLE_PLAYBACK. The mirror
+                                        // carries every result; the tick
+                                        // re-reads the shortened deadline
+                                        // through barTapTick.
                                         val result = barLogic.onVideoTap(SystemClock.uptimeMillis())
                                         barVisible = barLogic.visible
+                                        barTapTick++
                                         if (result == PlayerBarVisibility.TapResult.TOGGLE_PLAYBACK &&
                                             pts != null && pts.size > 1
                                         ) {
