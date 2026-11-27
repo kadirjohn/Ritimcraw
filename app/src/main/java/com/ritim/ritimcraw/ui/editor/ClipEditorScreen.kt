@@ -5419,7 +5419,13 @@ fun ClipEditorScreen(
                     cubeClipName = clipInfo.name,
                     onCubeGridSelect = { cubeGrid = it },
                     onCubeExport = {
-                        cubeSaver.launch(CubeExportPlan.fileName(clipInfo.name, cubeGrid))
+                        cubeSaver.launch(
+                            CubeExportPlan.suggestedFileName(
+                                clipInfo.name,
+                                java.time.Instant.now(),
+                                java.time.ZoneId.systemDefault(),
+                            ),
+                        )
                     },
                 )
                 EditorCategories.DETAIL -> DetailPanel(

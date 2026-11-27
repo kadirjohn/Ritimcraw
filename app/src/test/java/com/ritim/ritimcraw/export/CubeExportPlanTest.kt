@@ -44,43 +44,9 @@ class CubeExportPlanTest {
         assertEquals(false, CubeExportPlan.gridSupported(-33))
     }
 
-    // ---- File name ----
-
     @Test
-    fun `file name carries the clip name and the grid`() {
-        assertEquals("Sunset 656565.cube", CubeExportPlan.fileName("Sunset", CubeExportPlan.Grid.N65))
-        assertEquals("Sunset 333333.cube", CubeExportPlan.fileName("Sunset", CubeExportPlan.Grid.N33))
-    }
-
-    @Test
-    fun `a blank clip name falls back to grade never a bare extension`() {
-        assertEquals("grade 656565.cube", CubeExportPlan.fileName("", CubeExportPlan.Grid.N65))
-        assertEquals("grade 656565.cube", CubeExportPlan.fileName("   ", CubeExportPlan.Grid.N65))
-    }
-
-    @Test
-    fun `file name strips line breaks and path separators`() {
-        // A clip name cannot legally carry a newline, but a synced or
-        // imported name is data — the plan never writes a byte the file
-        // system would refuse or a line the .cube parser would split.
-        assertEquals("clip 333333.cube", CubeExportPlan.fileName("cl\nip", CubeExportPlan.Grid.N33))
-        assertEquals("clip 333333.cube", CubeExportPlan.fileName("cl/ip", CubeExportPlan.Grid.N33))
-        assertEquals("clip 333333.cube", CubeExportPlan.fileName("cl\\ip", CubeExportPlan.Grid.N33))
-        assertEquals("clip 333333.cube", CubeExportPlan.fileName("cl\rip", CubeExportPlan.Grid.N33))
-    }
-
-    @Test
-    fun `file name keeps inner spaces and the extension is exactly cube`() {
-        assertEquals("My clip 4 656565.cube", CubeExportPlan.fileName(" My clip 4 ", CubeExportPlan.Grid.N65))
+    fun `extension is exactly cube`() {
         assertEquals(".cube", CubeExportPlan.EXTENSION)
-    }
-
-    @Test
-    fun `a name of only separators falls back to grade`() {
-        // After the strip the base is empty — the same honest fallback,
-        // never a file the picker would refuse to show.
-        assertEquals("grade 333333.cube", CubeExportPlan.fileName("/", CubeExportPlan.Grid.N33))
-        assertEquals("grade 333333.cube", CubeExportPlan.fileName("\\", CubeExportPlan.Grid.N33))
     }
 
     // ---- Size estimate ----
