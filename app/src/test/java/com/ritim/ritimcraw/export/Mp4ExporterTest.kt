@@ -4335,6 +4335,32 @@ class Mp4ExporterTest {
     }
 
     @Test
+    fun converting_23_976_to_30_writes_the_plan_case_recipe() {
+        // The plan §6/§4.6 duplication case at the PIPELINE: a 10-frame
+        // 23.976 fps source (pts steps 41_708 us, the measured rate snaps
+        // to 23.976) converts to 30 fps with 12 output frames — the ~20 %
+        // duplication shows source 2 and source 6 twice each, the writer
+        // receives the exact 30-grid pts, and the develop count is the
+        // DISTINCT frames (10), never the written count (12).
+        val session = FakeSession(frames = 10, ptsStepUs = 41_708L, audio = false)
+        val writer = PtsWriter()
+        ExportPipeline(session, writer, planRun = fpsRun(TargetFps.FPS_30)).run(
+            7, GradeK(), "/tmp/out.partial",
+        )
+        assertEquals(12, writer.videoPts.size)
+        // The exact 30 grid, pinned from gridPtsUs itself (the same
+        // integer-arithmetic rounding the production mapping runs).
+        assertEquals(
+            (0 until 12).map { FrameRateMap.gridPtsUs(it, TargetFps.FPS_30) },
+            writer.videoPts,
+        )
+        // The recipe: [0, 1, 2, 2, 3, 4, 5, 6, 6, 7, 8, 9] — the duplicates
+        // at output j=3 (source 2) and j=8 (source 6) never redevelop.
+        assertEquals(listOf(0, 1, 2, 3, 4, 5, 6, 7, 8, 9), session.rendered)
+        assertTrue(session.rendered.size < writer.videoPts.size)
+    }
+
+    @Test
     fun audio_pts_stay_untouched_through_a_conversion() {
         // §2.4's contract, pinned at the writer boundary: the video pts
         // move to the target grid, the AUDIO block pts do not — the same
