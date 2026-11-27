@@ -27,7 +27,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.SwipeToDismissBox
-import androidx.compose.material3.SwipeToDismissBoxDefaults
 import androidx.compose.material3.SwipeToDismissBoxState
 import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.ui.draw.clip
@@ -464,7 +463,21 @@ private fun DismissableJobCard(
     // the next one; a half-swipe lost to a process death restoring
     // settled is the right outcome anyway.
     val density = LocalDensity.current
-    val threshold = SwipeToDismissBoxDefaults.positionalThreshold
+    // THE DISMISS THRESHOLD IS HALF THE ROW (owner request 2026-11-27,
+    // the M3 polish pass: "sayfalar arası kaydırma yaparken exports
+    // kısmında yanlışlıkla video silinebiliyor"). material3's own
+    // default is a fixed 56dp ([SwipeToDismissBoxDefaults]) — a small
+    // share of this screen's full-width cards, so a short sideways
+    // drift (the same axis the page-turn swipe lives on) reached the
+    // arm easily. Half the row's width demands a deliberate,
+    // half-the-card drag before the confirm dialog even asks; the
+    // threshold lambda's [totalDistance] parameter IS the row's width
+    // (material3's own computeTarget passes the inter-anchor distance).
+    // A FLING still arms below the threshold (material3's
+    // computeTarget lets velocity decide past 125dp/s) — intended: a
+    // fast purposeful flick is clearly deliberate, and the confirm
+    // dialog guards the rest either way.
+    val threshold: (Float) -> Float = { totalDistance -> totalDistance * 0.5f }
     // Fresh-callback trampoline (the ThemeSlider / TabSwipeUi pattern):
     // the state below restarts only on its keys, but its arm callback
     // must always be the CURRENT composition's — the caller rebuilds
