@@ -192,7 +192,13 @@ TEST_CASE("normalize: stereo sine converges to the social target") {
         CHECK(r.report.skipped == NormalizeSkipped::None);
         CHECK(r.report.iterations <= 2);
         CHECK(std::isfinite(r.report.final_lufs));
-        CHECK(std::fabs(r.report.final_lufs - (-14.0)) <= 0.1);
+        if (r.report.measured_lufs + 12.0 < -14.0 - 0.1) {
+            // +12 dB gain cap: the target is out of reach and says so.
+            CHECK(r.report.applied_gain_db == doctest::Approx(12.0));
+            CHECK(r.report.shortfall == rawedit::NormalizeShortfall::GainCapped);
+        } else {
+            CHECK(std::fabs(r.report.final_lufs - (-14.0)) <= 0.1);
+        }
         // A sine's TP sits at its sample level: starts at -12 must NOT
         // need the ceiling (−12 + 2 = −10 ≤ −1), starts at -23 needs
         // +9 dB → −14 dBTP, still inside.
@@ -216,7 +222,13 @@ TEST_CASE("normalize: pink-like noise converges, mono and stereo") {
         INFO("channels " << ch);
         CHECK(r.report.skipped == NormalizeSkipped::None);
         CHECK(r.report.iterations <= 2);
-        CHECK(std::fabs(r.report.final_lufs - (-14.0)) <= 0.1);
+        if (r.report.measured_lufs + 12.0 < -14.0 - 0.1) {
+            // +12 dB gain cap: the target is out of reach and says so.
+            CHECK(r.report.applied_gain_db == doctest::Approx(12.0));
+            CHECK(r.report.shortfall == rawedit::NormalizeShortfall::GainCapped);
+        } else {
+            CHECK(std::fabs(r.report.final_lufs - (-14.0)) <= 0.1);
+        }
         // Pink noise at the −14 target needs the ceiling at −1: the
         // hard clip may trade a little loudness, but the peak holds.
         CHECK(r.report.final_dbtp <= -1.0 + 0.5);
@@ -251,8 +263,9 @@ TEST_CASE("normalize: target-exceeding TP clamps the gain") {
     NormalizeResult r = normalizePcm(pcm, 48000, 2, -14.0, -1.0);
     CHECK(r.report.skipped == NormalizeSkipped::None);
     CHECK(r.report.iterations <= 2);
-    // The gain must be the clamped one, never the wanted one.
-    CHECK(r.report.applied_gain_db < 4.0);
+    // The limiter handles the spikes, so the gain may now exceed the
+    // old peak clamp; it stays far below the +12 dB cap.
+    CHECK(r.report.applied_gain_db < 6.0);
     // The honest result: TP at/under the ceiling, I short of the target.
     CHECK(r.report.final_dbtp <= -1.0 + 0.6);
     CHECK(r.report.final_lufs < -14.0);
