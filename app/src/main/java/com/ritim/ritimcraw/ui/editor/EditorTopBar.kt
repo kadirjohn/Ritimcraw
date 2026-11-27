@@ -432,6 +432,38 @@ private fun ExportSheet(
     // FLAG_GRANT_WRITE_URI_PERMISSION too). The URI lives in the sheet's
     // state and travels into the job's cinemaDng snapshot at queue time.
     var cinemaFolderUri by remember { mutableStateOf<String?>(null) }
+    // (night I5) The enqueue-time free-space probe: the CinemaDNG
+    // section opens -> the picked folder is measured ONCE, off the main
+    // thread (StatFs + the resolver query are disk IO; the sheet's own
+    // produceState precedent runs probes off the UI thread, and disk
+    // work rides Dispatchers.IO — the AppNav trimFolder pattern). The
+    // measured value (or -1, unmeasurable — a removable provider)
+    // feeds the pure verdict, so the lock/warn line shows BEFORE the
+    // queue accepts. The probe re-runs when the folder pick changes
+    // (produceState keyed on the URI); no polling, no re-query on tab
+    // swaps (a stale number is honest for as long as the sheet is open
+    // — the sheet's own dismissal-forget rule). The probe runs
+    // unconditionally in composition (never inside an if — Compose's
+    // own rule); the lambda skips the IO when nothing is picked.
+    val cinemaFreeBytes by produceState(
+        initialValue = -1L,
+        key1 = cinemaFolderUri,
+    ) {
+        val uri = cinemaFolderUri
+        value = if (uri == null) {
+            -1L
+        } else {
+            withContext(Dispatchers.IO) {
+                try {
+                    com.ritim.ritimcraw.export.CinemaDngFolder(
+                        context, uri,
+                    ).freeBytes()
+                } catch (e: Exception) {
+                    -1L
+                }
+            }
+        }
+    }
     val cinemaFolderPicker = androidx.activity.compose.rememberLauncherForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.OpenDocumentTree()
     ) { uri ->
@@ -526,10 +558,14 @@ private fun ExportSheet(
                             // folder/estimate/warn rows + the raw note. The
                             // section is its own body (no MP4 plan rows
                             // apply — the sequence has no encoder plan).
+                            // (Night I5) the measured free space rides in:
+                            // the pure verdict turns it into the
+                            // lock/warn/unknown line the section renders.
                             ExportSheetState.Tab.CINEMA_DNG -> CinemaDngSection(
                                 clipInfo = clipInfo,
                                 folderUri = cinemaFolderUri,
                                 folderLabel = cinemaFolderUri?.let { GyroTree.folderLabel(it) },
+                                freeBytes = cinemaFreeBytes,
                                 onPickFolder = { cinemaFolderPicker.launch(null) },
                             )
                         }
@@ -565,10 +601,13 @@ private fun ExportSheet(
                         lastFrame = -1,
                         width = clipInfo.width,
                         height = clipInfo.height,
-                        // The sheet's own free-space probe: unknown (-1)
-                        // never locks (the plan's rule) — the honest
-                        // mid-write exhaustion is the backstop.
-                        freeBytes = -1L,
+                        // (Night I5) the section's own measured free space
+                        // (the I/O probe above): a real number locks/warns
+                        // at ENQUEUE time now; unknown (-1, the SAF folder
+                        // could not be measured) never locks — the plan's
+                        // honesty rule, and the run-time gate stays the
+                        // backstop.
+                        freeBytes = cinemaFreeBytes,
                     )
                 )
             } else {
