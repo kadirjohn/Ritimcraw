@@ -178,4 +178,32 @@ class ExportSettingsExportTest {
         // and a job without one stays byte-identical (no "report" key)
         assertFalse(ExportStore.renderExports(listOf(job(null))).contains("report"))
     }
+
+    @Test
+    fun the_measured_loudness_pair_rides_the_report_and_omits_when_absent() {
+        // (E5, night D2) A chain that ran leaves its honest measurement on
+        // the report; the wire carries the pair and omits it when null —
+        // a pre-E5 report row parses exactly as it always did.
+        val with = ExportReport(
+            "c2.a.hevc", true, "video/hevc", 1080, 1920, 30.0, 8, "VBR", null, 1f, 6_000_000, 192,
+            123_456L, 10.5, listOf("plan: x"), emptyList(),
+            wallMs = 8_000L, audioLufs = -14.02, audioDbtp = -1.01,
+        )
+        val job = job(ExportSettings()).copy(state = State.DONE, report = with)
+        val back = ExportStore.parseExports("{\"exports\":" + ExportStore.renderExports(listOf(job)) + "}").single()
+        assertEquals(with, back.report)
+        assertEquals(-14.02, back.report!!.audioLufs!!, 1e-9)
+        assertEquals(-1.01, back.report!!.audioDbtp!!, 1e-9)
+        // The wire carries the pair only when measured.
+        val text = ExportStore.renderExports(listOf(job))
+        assertTrue(text, text.contains("\"audioLufs\":-14.02"))
+        assertTrue(text, text.contains("\"audioDbtp\":-1.01"))
+        // Without the pair, nothing is written (byte-identical old rows).
+        val without = with.copy(audioLufs = null, audioDbtp = null)
+        val plainText = ExportStore.renderExports(
+            listOf(job(ExportSettings()).copy(state = State.DONE, report = without)),
+        )
+        assertFalse(plainText, plainText.contains("audioLufs"))
+        assertFalse(plainText, plainText.contains("audioDbtp"))
+    }
 }

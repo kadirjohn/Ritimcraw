@@ -31,6 +31,7 @@
 
 #include <rawedit/Develop.h>
 #include <rawedit/DngWriter.h>
+#include <rawedit/AudioNormalize.h>
 #include <rawedit/Gyro.h>
 #include <rawedit/ImageStab.h>
 #include <rawedit/Lut.h>
@@ -6218,6 +6219,77 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeAudioInfo(
                  std::string("audio info: ") + e.what() + " (recovery: reopen the clip)");
         return nullptr;
     }
+}
+
+// E5 loudness normalization (night D2) -----------------------------------------
+//
+// The two-pass measure -> gain -> clip -> verify chain over one clip's
+// whole PCM (core/src/AudioNormalize.cpp; the measurement reuses the E5-A
+// BS.1770-4 port, Loudness.cpp). Stateless entry points like
+// nativeRgbToI420: no handle, the PCM travels by value. Two functions,
+// one report slot:
+//  - nativeAudioNormalize(pcm, rate, channels, targetLufs, tpDbtp)
+//    returns the normalized interleaved 16-bit PCM, or null on a
+//    malformed request (the error state says why).
+//  - nativeAudioNormalizeReport() then returns [measuredLufs,
+//    measuredDbtp, finalLufs, finalDbtp, appliedGainDb, iterations,
+//    skipped] — read from the SAME thread, like the error accessors.
+//    Unmeasurable values travel as -HUGE_VAL (Java: Double.NEGATIVE_
+//    INFINITY), never a guess.
+thread_local rawedit::NormalizeReport gLastNormalize;
+
+JNIEXPORT jshortArray JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativeAudioNormalize(
+        JNIEnv* env, jclass, jshortArray pcm, jint sampleRate, jint channels,
+        jfloat targetLufs, jfloat tpDbtp) {
+    if (pcm == nullptr || sampleRate <= 0 || channels <= 0) {
+        setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageFrameRead,
+                 "audio normalize: empty clip or bad audio description");
+        return nullptr;
+    }
+    const jsize n = env->GetArrayLength(pcm);
+    if (n <= 0 || n % channels != 0) {
+        setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageFrameRead,
+                 "audio normalize: the PCM does not match its channel count");
+        return nullptr;
+    }
+    std::vector<int16_t> in(static_cast<size_t>(n));
+    env->GetShortArrayRegion(pcm, 0, n, in.data());
+    const size_t frames = static_cast<size_t>(n) / static_cast<size_t>(channels);
+    try {
+        rawedit::NormalizeResult r = rawedit::normalizePcm(
+            in.data(), frames, sampleRate, channels,
+            static_cast<double>(targetLufs), static_cast<double>(tpDbtp));
+        gLastNormalize = r.report;
+        const jsize outN = static_cast<jsize>(r.pcm.size());
+        jshortArray out = env->NewShortArray(outN);
+        if (out == nullptr) return nullptr;
+        env->SetShortArrayRegion(out, 0, outN, r.pcm.data());
+        return out;
+    } catch (const std::bad_alloc&) {
+        setError("audio normalize: out of memory (recovery: free memory and retry)");
+        return nullptr;
+    } catch (const std::exception& e) {
+        setError(std::string("audio normalize: ") + e.what() +
+                 " (recovery: export again)");
+        return nullptr;
+    }
+}
+
+JNIEXPORT jdoubleArray JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativeAudioNormalizeReport(
+        JNIEnv* env, jclass) {
+    jdouble out[7] = {
+        gLastNormalize.measured_lufs, gLastNormalize.measured_dbtp,
+        gLastNormalize.final_lufs, gLastNormalize.final_dbtp,
+        gLastNormalize.applied_gain_db,
+        static_cast<jdouble>(gLastNormalize.iterations),
+        static_cast<jdouble>(static_cast<int>(gLastNormalize.skipped)),
+    };
+    jdoubleArray arr = env->NewDoubleArray(7);
+    if (arr == nullptr) return nullptr;
+    env->SetDoubleArrayRegion(arr, 0, 7, out);
+    return arr;
 }
 
 // RGB888 -> I420 (MP4 export YUV step) -----------------------------------------

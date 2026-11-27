@@ -776,6 +776,7 @@ private fun presetName(p: ExportPreset): Int = when (p) {
     ExportPreset.COMPATIBLE -> R.string.export_preset_compatible
     ExportPreset.SMALLER -> R.string.export_preset_smaller
     ExportPreset.QUALITY -> R.string.export_preset_quality
+    ExportPreset.SOCIAL -> R.string.export_preset_social
     ExportPreset.CUSTOM -> R.string.export_preset_custom
 }
 
@@ -783,6 +784,7 @@ private fun presetHint(p: ExportPreset): Int = when (p) {
     ExportPreset.COMPATIBLE -> R.string.export_preset_compatible_hint
     ExportPreset.SMALLER -> R.string.export_preset_smaller_hint
     ExportPreset.QUALITY -> R.string.export_preset_quality_hint
+    ExportPreset.SOCIAL -> R.string.export_preset_social_hint
     ExportPreset.CUSTOM -> R.string.export_preset_custom_hint
 }
 

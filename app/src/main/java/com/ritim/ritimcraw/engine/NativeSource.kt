@@ -622,6 +622,34 @@ class NativeSource private constructor(
         @JvmStatic private external fun nativeAudioInfo(handle: Long): IntArray?
 
         /**
+         * (E5, night D2) The two-pass loudness normalization of one
+         * clip's whole PCM: measure (BS.1770-4) -> gain -> true-peak
+         * ceiling -> verify, at most 2 iterations (the chain lives in
+         * core/src/AudioNormalize.cpp). Returns the normalized
+         * interleaved 16-bit PCM — the SAME layout and length as the
+         * input — or null on a malformed request (read the error
+         * accessors from the same thread). The measurement report is a
+         * SEPARATE call ([nativeAudioNormalizeReport]): the honest
+         * report of the last run on this thread, never guessed values.
+         */
+        @JvmStatic private external fun nativeAudioNormalize(
+            pcm: ShortArray,
+            sampleRate: Int,
+            channels: Int,
+            targetLufs: Float,
+            tpDbtp: Float,
+        ): ShortArray?
+
+        /**
+         * (E5, night D2) The last [nativeAudioNormalize] call's honest
+         * report, from the same thread: [measuredLufs, measuredDbtp,
+         * finalLufs, finalDbtp, appliedGainDb, iterations, skipped
+         * (0 none, 1 too-short, 2 silent/gated)]. Unmeasurable values
+         * travel as Double.NEGATIVE_INFINITY.
+         */
+        @JvmStatic private external fun nativeAudioNormalizeReport(): DoubleArray
+
+        /**
          * Stateless RGB888 -> I420 conversion (MP4 export YUV step): the
          * byte-exact native twin of export/YuvConverter.kt's toI420 (the
          * contract lives in core/include/rawedit/Yuv.h). [matrix] is the
@@ -1765,6 +1793,38 @@ class NativeSource private constructor(
 
         /** JNI bridge: [sampleRate, channels] or null. */
         internal fun jniAudioInfo(handle: Long): IntArray? = nativeAudioInfo(handle)
+
+        /**
+         * JNI bridge: the E5 loudness normalization of [pcm] toward
+         * [targetLufs] with a [tpDbtp] true-peak ceiling — the whole
+         * clip's PCM in, the normalized PCM out, the honest report one
+         * [jniAudioNormalizeReport] away. Throws IllegalStateException
+         * when the .so is absent; null with the library loaded is a
+         * malformed request and the error accessors say why.
+         */
+        internal fun jniAudioNormalize(
+            pcm: ShortArray,
+            sampleRate: Int,
+            channels: Int,
+            targetLufs: Float,
+            tpDbtp: Float,
+        ): ShortArray? {
+            if (!nativeAvailable) {
+                throw IllegalStateException(nativeUnavailableMessage)
+            }
+            return nativeAudioNormalize(pcm, sampleRate, channels, targetLufs, tpDbtp)
+        }
+
+        /**
+         * JNI bridge: the last jniAudioNormalize's report, as
+         * [measuredLufs, measuredDbtp, finalLufs, finalDbtp,
+         * appliedGainDb, iterations, skipped]. Unmeasurable values read
+         * as Double.NEGATIVE_INFINITY.
+         */
+        internal fun jniAudioNormalizeReport(): DoubleArray? {
+            if (!nativeAvailable) return null
+            return nativeAudioNormalizeReport()
+        }
 
         /** JNI bridge: see nativeRgbToI420 (byte-exact toI420 twin). */
         internal fun jniRgbToI420(

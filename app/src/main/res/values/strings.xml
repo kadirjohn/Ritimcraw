@@ -373,6 +373,7 @@
     <string name="export_preset_compatible">Compatible</string>
     <string name="export_preset_smaller">Smaller</string>
     <string name="export_preset_quality">Quality</string>
+    <string name="export_preset_social">Social</string>
     <string name="export_preset_custom">Custom</string>
     <string name="export_preset_quality_note">Quality uses HEVC at the highest bitrate level. It becomes 10-bit when this export can use the GPU path.</string>
     <string name="export_produced_title">What will be produced</string>
@@ -662,6 +663,7 @@
     <string name="export_preset_compatible_hint">H.264, plays on almost every device</string>
     <string name="export_preset_smaller_hint">HEVC at a low bitrate</string>
     <string name="export_preset_quality_hint">HEVC at the highest bitrate level</string>
+    <string name="export_preset_social_hint">Vertical 1080×1920, loudness −14 LUFS</string>
     <string name="export_preset_custom_hint">Your own settings match no preset</string>
     <string name="export_option_unavailable">Not available on this phone</string>
     <string name="export_codec_avc_hint">Plays on almost every device</string>

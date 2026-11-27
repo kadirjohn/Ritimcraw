@@ -370,6 +370,7 @@
     <string name="export_preset_compatible">Uyumlu</string>
     <string name="export_preset_smaller">Küçük</string>
     <string name="export_preset_quality">Kalite</string>
+    <string name="export_preset_social">Sosyal</string>
     <string name="export_preset_custom">Özel</string>
     <string name="export_preset_quality_note">Kalite, en yüksek bit hızı seviyesinde HEVC kullanır. Bu dışa aktarma GPU yolunu kullanabiliyorsa 10-bit olur.</string>
     <string name="export_produced_title">Ne üretilecek</string>
@@ -653,6 +654,7 @@
     <string name="export_preset_compatible_hint">H.264, hemen her cihazda oynar</string>
     <string name="export_preset_smaller_hint">Düşük bit hızında HEVC</string>
     <string name="export_preset_quality_hint">En yüksek bit hızı seviyesinde HEVC</string>
+    <string name="export_preset_social_hint">Dikey 1080×1920, ses şiddeti −14 LUFS</string>
     <string name="export_preset_custom_hint">Ayarlar hiçbir hazır ayara uymuyor</string>
     <string name="export_option_unavailable">Bu telefonda yok</string>
     <string name="export_codec_avc_hint">Hemen her cihazda oynar</string>

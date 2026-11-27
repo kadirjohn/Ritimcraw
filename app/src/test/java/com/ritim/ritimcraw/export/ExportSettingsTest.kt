@@ -3,6 +3,7 @@ package com.ritim.ritimcraw.export
 import com.ritim.ritimcraw.data.JsonParser
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -19,7 +20,7 @@ class ExportSettingsTest {
 
     @Test
     fun every_preset_round_trips_through_apply_and_of() {
-        for (p in listOf(ExportPreset.COMPATIBLE, ExportPreset.SMALLER, ExportPreset.QUALITY)) {
+        for (p in listOf(ExportPreset.COMPATIBLE, ExportPreset.SMALLER, ExportPreset.QUALITY, ExportPreset.SOCIAL)) {
             assertEquals(p, ExportPreset.of(p.apply(ExportSettings())))
             // apply is independent of the starting settings
             assertEquals(p.apply(ExportSettings()), p.apply(ExportSettings(bitDepth = 10, customMbps = 5.0, uncapped = true)))
@@ -75,6 +76,53 @@ class ExportSettingsTest {
         assertEquals(s, ExportPreset.CUSTOM.apply(s))
     }
 
+    // ---- the SOCIAL preset (E5, night D2) ----
+
+    @Test
+    fun social_preset_is_the_plans_social_row() {
+        val s = ExportPreset.SOCIAL.apply(ExportSettings())
+        // The plan's Social row (docs/E5_AUDIO_PORT_PLAN.md §4.2): −14
+        // LUFS-I target, −1 dBTP ceiling, vertical 1080×1920 — on the
+        // play-everywhere AVC 8-bit STANDARD shape with 192 kbps AAC.
+        assertEquals(-14f, s.loudnessTargetLufs)
+        assertEquals(-1f, s.truePeakDbtp)
+        assertEquals(1080, s.resolutionW)
+        assertEquals(1920, s.resolutionH)
+        assertEquals(ExportCodec.AVC, s.codec)
+        assertEquals(8, s.bitDepth)
+        assertEquals(BitrateLevel.STANDARD, s.bitrateLevel)
+        assertEquals(192, s.audioKbps)
+    }
+
+    @Test
+    fun changing_any_social_field_drops_it_to_custom() {
+        val base = ExportPreset.SOCIAL.apply(ExportSettings())
+        val changed = listOf(
+            base.copy(loudnessTargetLufs = null),
+            base.copy(loudnessTargetLufs = -16f),
+            base.copy(truePeakDbtp = -2f),
+            base.copy(resolutionW = null, resolutionH = null),
+            base.copy(resolutionH = 1080),
+            base.copy(codec = ExportCodec.HEVC),
+            base.copy(audioKbps = 128),
+        )
+        for (s in changed) assertEquals("$s", ExportPreset.CUSTOM, ExportPreset.of(s))
+        // and the untouched preset is itself
+        assertEquals(ExportPreset.SOCIAL, ExportPreset.of(base))
+    }
+
+    @Test
+    fun applying_any_other_preset_clears_the_loudness_target() {
+        // A preset application never inherits a stale target: the base
+        // resets the E5 fields, so COMPATIBLE after SOCIAL is honestly
+        // loudness-OFF (and the pair with it).
+        val social = ExportPreset.SOCIAL.apply(ExportSettings())
+        val compatible = ExportPreset.COMPATIBLE.apply(social)
+        assertNull(compatible.loudnessTargetLufs)
+        assertNull(compatible.resolutionW)
+        assertEquals(ExportPreset.COMPATIBLE, ExportPreset.of(compatible))
+    }
+
     // ---- wire ----
 
     private fun parseWire(text: String): ExportSettingsWire.Parsed =
@@ -86,9 +134,10 @@ class ExportSettingsTest {
             codec = ExportCodec.HEVC, bitDepth = 10, dynamicRange = ExportDynamicRange.HLG,
             rateMode = ExportRateMode.CBR, bitrateLevel = BitrateLevel.CUSTOM, customMbps = 62.5,
             uncapped = true, keyframe = KeyframeInterval.ALL_INTRA, profile = 2, audioKbps = 320,
+            loudnessTargetLufs = -14f, truePeakDbtp = -1.5f, resolutionW = 1080, resolutionH = 1920,
         )
         val text = ExportSettingsWire.render(s)
-        assertTrue(text, text.startsWith("{\"v\":1,"))
+        assertTrue(text, text.startsWith("{\"v\":2,"))
         assertEquals(ExportSettingsWire.Parsed.Ok(s), parseWire(text))
         assertEquals(ExportSettingsWire.Parsed.Ok(ExportSettings()), parseWire(ExportSettingsWire.render(ExportSettings())))
     }
@@ -98,16 +147,70 @@ class ExportSettingsTest {
         val text = ExportSettingsWire.render(ExportSettings())
         assertFalse(text, text.contains("customMbps"))
         assertFalse(text, text.contains("profile"))
+        // v2's fields are omit-when-default too: OFF loudness, the −1
+        // ceiling default and a null resolution pair render nothing, so a
+        // default row keeps its v1 shape (plus the version bump).
+        assertFalse(text, text.contains("loudnessTargetLufs"))
+        assertFalse(text, text.contains("truePeakDbtp"))
+        assertFalse(text, text.contains("resolutionW"))
     }
 
     @Test
     fun wire_never_guesses_a_newer_or_unknown_value() {
         fun unsupported(text: String) = parseWire(text) is ExportSettingsWire.Parsed.Unsupported
         val ok = ExportSettingsWire.render(ExportSettings())
-        assertTrue(unsupported(ok.replace("\"v\":1", "\"v\":2")))
+        // A version this build cannot read refuses — v2 is now US, so the
+        // unknown-version case is v3.
+        assertTrue(unsupported(ok.replace("\"v\":2", "\"v\":3")))
         assertTrue(unsupported(ok.replace("\"AVC\"", "\"AV1\"")))
         assertTrue(unsupported(ok.replace("\"VBR\"", "\"ABR\"")))
         assertTrue(unsupported("{\"codec\":\"AVC\"}")) // no version
         assertTrue(unsupported("\"not an object\""))
+    }
+
+    // ---- wire v1 <-> v2 (E5, night D2) ----
+
+    @Test
+    fun wire_v1_rows_parse_with_the_v1_behavior() {
+        // A row this app's v1 build wrote (no loudness, no ceiling, no
+        // resolution pair): parses back as EXACTLY the v1 settings — the
+        // loudness chain stays OFF and the ladder keeps deciding the size.
+        val v1 = "{\"v\":1,\"codec\":\"AVC\",\"bitDepth\":8," +
+            "\"dynamicRange\":\"SDR\",\"rateMode\":\"VBR\"," +
+            "\"bitrateLevel\":\"STANDARD\",\"uncapped\":false," +
+            "\"keyframe\":\"AUTO\",\"audioKbps\":192}"
+        val parsed = parseWire(v1)
+        assertTrue(parsed is ExportSettingsWire.Parsed.Ok)
+        val s = (parsed as ExportSettingsWire.Parsed.Ok).settings
+        assertEquals(ExportSettings(codec = ExportCodec.AVC, audioKbps = 192), s)
+        assertNull(s.loudnessTargetLufs)
+        assertEquals(-1f, s.truePeakDbtp)
+        assertNull(s.resolutionW)
+        assertNull(s.resolutionH)
+    }
+
+    @Test
+    fun wire_v2_round_trips_the_loudness_fields_and_the_pair() {
+        val s = ExportSettings(loudnessTargetLufs = -16f, truePeakDbtp = -2f, resolutionW = 1080, resolutionH = 1920)
+        val back = parseWire(ExportSettingsWire.render(s))
+        assertEquals(ExportSettingsWire.Parsed.Ok(s), back)
+        // A ceiling without a target round-trips too (inert, but kept).
+        val inert = ExportSettings(truePeakDbtp = -2f)
+        assertEquals(ExportSettingsWire.Parsed.Ok(inert), parseWire(ExportSettingsWire.render(inert)))
+        // A half pair is honest about what it holds: the wire is lossless
+        // (each side travels on its own), so nothing is guessed away.
+        val half = ExportSettings(resolutionW = 1080)
+        assertEquals(ExportSettingsWire.Parsed.Ok(half), parseWire(ExportSettingsWire.render(half)))
+    }
+
+    @Test
+    fun wire_v2_defaults_are_off_not_zero() {
+        // A hand-written v2 row without the loudness key parses as null
+        // (OFF) — never 0 LUFS, never a guessed target.
+        val v2 = "{\"v\":2,\"codec\":\"AVC\",\"bitDepth\":8," +
+            "\"dynamicRange\":\"SDR\",\"rateMode\":\"VBR\"," +
+            "\"bitrateLevel\":\"STANDARD\",\"uncapped\":false," +
+            "\"keyframe\":\"AUTO\",\"audioKbps\":128}"
+        assertEquals(ExportSettingsWire.Parsed.Ok(ExportSettings()), parseWire(v2))
     }
 }

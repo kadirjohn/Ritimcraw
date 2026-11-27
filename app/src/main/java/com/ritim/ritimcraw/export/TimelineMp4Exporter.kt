@@ -256,6 +256,21 @@ class TimelineMp4Exporter(
         if (plan.audioSkipped) {
             stageLog?.invoke("timeline audio: skipped (v1 exports the video track only)")
         }
+        // (E5, night D2) A loudness target in the job's settings has
+        // nothing to normalize here: the timeline export carries NO
+        // audio track in v1 (the mix pass is AUD-05/07, a later
+        // milestone), so the honest line says the target was not
+        // applied — the report stays without an audioLufs pair, never a
+        // guessed measurement. When the timeline mix lands, the
+        // audio-preparation hook is the Mp4Exporter's shape (plan §4.2's
+        // timeline leg); until then a targeted job exports exactly what
+        // an untargeted one does, and says so.
+        if (planRun?.settings?.loudnessTargetLufs != null) {
+            stageLog?.invoke(
+                "timeline loudness: not applied (v1 exports the video track only)"
+            )
+            planRun?.note("loudness: not applied (timeline has no audio track in v1)")
+        }
 
         val black = blackI420(plan.width, plan.height)
         val writer = writerFactory()
