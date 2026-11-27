@@ -1925,6 +1925,27 @@ fun AppNav(
                         },
                         sourceFd = sourceFd,
                         sourceFdProvider = sourceFdProvider,
+                        // ---- Proxy playback (G3, additive) ----
+                        // The clip's playable proxy, resolved through the
+                        // runtime's own gate at session open ([ProxyPlaybackGate]
+                        // applies the E2 switch rule; the cache's playable is
+                        // the never-half gate). -1 = no proxy (the original fd),
+                        // and while the feature flag is off the runtime is
+                        // never started so nothing ever resolves — the
+                        // pre-G3 open, byte-identical. The fingerprint is
+                        // resolved LIVE (the queue's own rule: the session
+                        // must see the clip as it is when it opens).
+                        proxyOpenFd = {
+                            val rec = stores.sources.get(r.sourceId)
+                            rec?.let { proxyRuntime.openPlaybackProxy(it.fingerprint) } ?: -1
+                        },
+                        // The session-close seam: the runtime's gate releases
+                        // the proxy's in-use protection with the session.
+                        onProxySessionClose = {
+                            stores.sources.get(r.sourceId)?.let {
+                                proxyRuntime.closePlaybackProxy(it.fingerprint)
+                            }
+                        },
                         accessLost = accessLost,
                         sourceWidth = sourceDims.first,
                         sourceHeight = sourceDims.second,

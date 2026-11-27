@@ -947,6 +947,18 @@ fun ClipEditorScreen(
     exportRate: com.ritim.ritimcraw.export.ExportSheetModel.Rate? = null,
     sourceFd: Int = -1,
     sourceFdProvider: () -> Int = { -1 },
+    // ---- Proxy playback (G3, additive) ----
+    // The proxy gate the session opens through: non-null = the caller wired
+    // the proxy runtime's cache for this clip ([ProxyPlaybackGate.open]
+    // already resolved the playable entry), and the session's fd comes from
+    // the PROXY file (the gate's own [ProxyPlaybackGate.open] result holds
+    // the file). Null (the default) = the flag-off path, byte-identical to
+    // the pre-G3 open: every existing caller keeps sourceFdProvider.
+    proxyOpenFd: () -> Int = { -1 },
+    // The session-close seam: called ONCE when the editor leaves composition
+    // (the sameDisposableEffect that closes the session), so the runtime
+    // releases the proxy's in-use protection ([ProxyPlaybackGate.close]).
+    onProxySessionClose: () -> Unit = {},
     accessLost: Boolean = false,
     // Persisted import stats (engine pass at import time); 0 when unknown.
     // Only the preview surface's placeholder shape reads them — the ratio
@@ -2216,9 +2228,18 @@ fun ClipEditorScreen(
         // per-render fallback (MCRAW-only, below) takes over.
         LaunchedEffect(sourceFd, nativeAvailable, sourcePath) {
             if (!canRender) return@LaunchedEffect
+            // G3 (additive): a wired proxy runtime resolves the clip's
+            // playable proxy FIRST ([ProxyPlaybackGate.open] — the never-half
+            // gate: only a committed, size-verified entry ever resolves); a
+            // hit opens the PROXY file's fd, a miss keeps the original fd
+            // exactly as before. The default (-1) keeps the pre-G3 open
+            // byte-identical.
             val opened = PreviewSessions.open(
                 path = sourcePath,
-                fdProvider = sourceFdProvider,
+                fdProvider = {
+                    val proxyFd = proxyOpenFd()
+                    if (proxyFd >= 0) proxyFd else sourceFdProvider()
+                },
                 engine = PreviewRenderer.previewEngine,
             )
             val s = opened.getOrNull()
@@ -2517,6 +2538,9 @@ fun ClipEditorScreen(
                 session?.close()
                 gpuSession?.close()
                 audio.release()
+                // G3 (additive): the proxy session's in-use protection goes
+                // with the session (the gate's own close rule).
+                onProxySessionClose()
             }
         }
 

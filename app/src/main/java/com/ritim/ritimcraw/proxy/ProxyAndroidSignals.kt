@@ -195,6 +195,39 @@ class ProxyRuntime(
         }
     }
 
+    // ---- playback (plan section 5) ----
+
+    /** One gate per open editor session, keyed by fingerprint. */
+    private val gates = HashMap<String, ProxyPlaybackGate>()
+
+    /**
+     * The editor session's proxy resolution (plan section 5, the single
+     * decision point): the clip's playable proxy through its [ProxyPlaybackGate]
+     * — a hit returns a DETACHED read-only fd of the proxy FILE (the session's
+     * reader adopts and closes it), a miss returns -1 (open the original).
+     * The gate holds the in-use protection for the session's lifetime;
+     * [closePlaybackProxy] releases it.
+     */
+    fun openPlaybackProxy(fingerprint: String): Int {
+        val job = jobFor(fingerprint) ?: return -1
+        val gate = synchronized(gates) { gates.getOrPut(fingerprint) { ProxyPlaybackGate(cache, inUse) } }
+        val entry = gate.open(job.first) ?: return -1
+        return try {
+            android.os.ParcelFileDescriptor.open(
+                entry.file,
+                android.os.ParcelFileDescriptor.MODE_READ_ONLY,
+            ).detachFd()
+        } catch (e: Exception) {
+            gate.close()
+            -1
+        }
+    }
+
+    /** The editor session closed: release its proxy's in-use protection. */
+    fun closePlaybackProxy(fingerprint: String) {
+        synchronized(gates) { gates.remove(fingerprint) }?.close()
+    }
+
     // ---- the work loop ----
 
     private suspend fun workLoop() {
