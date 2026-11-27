@@ -643,6 +643,9 @@
     <string name="settings_codec_measure_row_failed">%1$s · reddedildi (%2$s)</string>
     <string name="settings_preview_stats">Önizleme istatistik geri okuması</string>
     <string name="settings_preview_stats_body">Hata ayıklama: GPU önizlemesinin istatistik paketini her karede geri okur. Kapalıyken geri okuma atlanır — maliyetini görmek için izdeki istatistik süresini ve toplamı karşılaştırın.</string>
+    <string name="settings_licenses">Lisanslar</string>
+    <string name="settings_licenses_hint">Açık kaynak bileşenler</string>
+    <string name="settings_licenses_intro">ritiMCRAW Apache-2.0 lisanslıdır. Aşağıdaki üçüncü taraf bileşenleri içerir.</string>
     <string name="settings_version">Sürüm %1$s</string>
 
     <!-- Preview quality (owner request 2026-11-11b section 3) -->

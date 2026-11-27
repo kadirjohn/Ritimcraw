@@ -122,7 +122,7 @@ import com.ritim.ritimcraw.ui.components.ThemeSlider
  */
 @Composable
 fun SettingsScreen(
-    versionName: String = "1.0",
+    versionName: String = BuildConfig.VERSION_NAME,
     reports: List<CodecReport> = remember { runCatching { CodecProbe.probe() }.getOrDefault(emptyList()) },
     // The screen's scroll position, hoisted by AppNav above the browse
     // Crossfade (rememberSaveable(saver = ScrollState.Saver)) so it
@@ -133,6 +133,8 @@ fun SettingsScreen(
     // Opens the Device report full screen (the spec's replacement for
     // the old codec AlertDialog): AppNav owns the route flag.
     onOpenDeviceReport: () -> Unit = {},
+    // Opens the dependency-free Licenses page.
+    onOpenLicenses: () -> Unit = {},
     onMeasure: (() -> Unit)? = null,
     // Debug-only GPU-vs-CPU per-control parity sweep (2026-11-23, owner
     // report: GPU preview shows no change on slider moves); null in release.
@@ -369,14 +371,14 @@ fun SettingsScreen(
                     ?: stringResource(R.string.settings_gyro_folder_not_set),
                 onClick = onPickGyroFolder,
                 index = 0,
-                count = 2,
+                count = 3,
             )
             if (reports.isEmpty()) {
                 // The probe's empty placeholder keeps its designed
                 // wording and no false affordance (the pre-probe
                 // contract): no chevron, no click — the report
                 // screen would have nothing to show.
-                SettingsGroupItem(index = 1, count = 2) {
+                SettingsGroupItem(index = 1, count = 3) {
                     SettingRowBase(
                         icon = Report,
                         title = stringResource(R.string.settings_device_report),
@@ -397,9 +399,17 @@ fun SettingsScreen(
                     ),
                     onClick = onOpenDeviceReport,
                     index = 1,
-                    count = 2,
+                    count = 3,
                 )
             }
+            SettingRowNavigation(
+                icon = Report,
+                title = stringResource(R.string.settings_licenses),
+                hint = stringResource(R.string.settings_licenses_hint),
+                onClick = onOpenLicenses,
+                index = 2,
+                count = 3,
+            )
         }
         // ---- Proxy storage (G3, plan section 6 / P4) ----
         // The pure feed's rows: usage against the 20 GiB cap, the per-clip

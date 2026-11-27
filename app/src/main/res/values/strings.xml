@@ -641,6 +641,9 @@
     <string name="settings_codec_measure_row_failed">%1$s · refused (%2$s)</string>
     <string name="settings_preview_stats">Preview stats readback</string>
     <string name="settings_preview_stats_body">Debug: read the GPU preview\'s stats pack back each frame. Off skips the readback — compare the trace\'s stats span and total to see what it costs.</string>
+    <string name="settings_licenses">Licenses</string>
+    <string name="settings_licenses_hint">Open-source components</string>
+    <string name="settings_licenses_intro">ritiMCRAW is Apache-2.0. It includes these third-party components.</string>
     <string name="settings_version">Version %1$s</string>
 
     <!-- Preview quality (owner request 2026-11-11b section 3) -->

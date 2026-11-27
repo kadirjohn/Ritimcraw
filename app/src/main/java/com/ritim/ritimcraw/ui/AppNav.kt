@@ -157,6 +157,7 @@ import com.ritim.ritimcraw.ui.library.FolderFlow
 import com.ritim.ritimcraw.ui.library.LibraryScreen
 import com.ritim.ritimcraw.ui.projects.ProjectsScreen
 import com.ritim.ritimcraw.ui.settings.DeviceReportScreen
+import com.ritim.ritimcraw.ui.settings.LicensesScreen
 import com.ritim.ritimcraw.ui.settings.SettingsScreen
 import com.ritim.ritimcraw.ui.theme.SystemBarIconsEffect
 import com.ritim.ritimcraw.ui.theme.SystemBars
@@ -751,6 +752,7 @@ fun AppNav(
     // wins), DeviceReportScreen owns its own back handling, and the
     // bottom-bar gate below hides the NavigationBar while it is open.
     var deviceReportOpen by rememberSaveable { mutableStateOf(false) }
+    var licensesOpen by rememberSaveable { mutableStateOf(false) }
     // Settings' scroll position, hoisted HERE above the browse
     // Crossfade (spec device_report_screen: back from the report
     // RESTORES the Settings scroll). A rememberSaveable ScrollState
@@ -1588,7 +1590,7 @@ fun AppNav(
     // Editors — the timeline — and the Device report — are full screen
     // without nav; the browse destinations show it (bottom bar on phones,
     // rail on wide windows).
-    val showNav = editorRoute == null && !timelineOpen && !deviceReportOpen
+    val showNav = editorRoute == null && !timelineOpen && !deviceReportOpen && !licensesOpen
     val wideNav = LocalConfiguration.current.screenWidthDp >= WIDE_NAV_MIN_WIDTH_DP
     // Status/navigation bar icon colors follow the APP's resolved theme, not
     // the system's (owner report 2026-11-23); the editor and timeline are
@@ -1675,7 +1677,9 @@ fun AppNav(
             // here and confirms through the shell's snackbar (the
             // screen stays presentation-only, no Android clipboard type
             // in its API).
-            if (deviceReportOpen) {
+            if (licensesOpen) {
+                LicensesScreen(onBack = { licensesOpen = false })
+            } else if (deviceReportOpen) {
                 DeviceReportScreen(
                     reports = codecReports,
                     onBack = { deviceReportOpen = false },
@@ -3294,6 +3298,7 @@ fun AppNav(
                                 // device_report_screen): the row navigates,
                                 // AppNav owns the route flag.
                                 onOpenDeviceReport = { deviceReportOpen = true },
+                                onOpenLicenses = { licensesOpen = true },
                                 onMeasure = if (BuildConfig.DEBUG) {
                                     {
                                         if (!measuring) {

@@ -81,13 +81,22 @@ namespace {
 // DEBUG A/B switches (off by default; one property read per frame): `setprop debug.ritim.recnoexit 1` disables the
 // no-clipped-site early exit, so the same build measures the before and the after.
 bool debugPropOn(const char* name) {
+#ifdef NDEBUG
+    (void)name;  // release/staging: debug.ritim.* switches are compiled out
+    return false;
+#else
     char v[PROP_VALUE_MAX] = {0};
     return __system_property_get(name, v) > 0 && v[0] == '1';
+#endif
 }
 
 bool recoveryTimingOn() {
+#ifdef NDEBUG
+    return false;  // release/staging: compiled out
+#else
     char v[PROP_VALUE_MAX] = {0};
     return __system_property_get("debug.ritim.rectime", v) > 0 && v[0] == '1';
+#endif
 }
 double nowMs() {
     return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count();

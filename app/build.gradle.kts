@@ -14,8 +14,8 @@ android {
         applicationId = "com.ritim.ritimcraw"
         minSdk = 34
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "1.0-rc1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -58,6 +58,14 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+        }
+        // Release-identical (R8 + shrink, same keep rules, BuildConfig.DEBUG
+        // false) but debug-signed and installable beside debug.
+        create("staging") {
+            initWith(getByName("release"))
+            signingConfig = signingConfigs.getByName("debug")
+            applicationIdSuffix = ".staging"
+            matchingFallbacks += "release"
         }
     }
     // Offline builds: the release lint-vital task needs lint jars that are
