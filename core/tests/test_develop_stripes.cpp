@@ -176,6 +176,21 @@ TEST_CASE("stripes_with_lut_and_aces_match_whole") {
     CHECK(sameImage(whole, striped));
 }
 
+TEST_CASE("stripes_with_glitter_suppression_match_whole") {
+    // Glitter suppression (stage 8b, +-1 row after luma denoise) stacks on
+    // the chain: chroma 4 + luma 1 + glitter 1 + sharp 2 + detail 2 = 10,
+    // exactly the margin. Locked here at the stage-heavy grade.
+    const YuvFrame f = stripefix::makeFrame(96, 70, /*seed=*/4);
+    Grade g = stripefix::stageHeavyGrade();
+    g.glitterSuppress = true;
+    const ImageF whole = developEncoded(f, g, true);
+    for (uint32_t rows : {2u, 4u, 8u, 16u}) {
+        const ImageF striped = stripefix::developStriped(f, g, true, nullptr, nullptr, rows);
+        CAPTURE(rows);
+        CHECK(sameImage(whole, striped));
+    }
+}
+
 TEST_CASE("node_chain_composes_per_stripe") {
     const uint32_t W = 56, H = 30;
     const YuvFrame f = stripefix::makeFrame(W, H, /*seed=*/11);

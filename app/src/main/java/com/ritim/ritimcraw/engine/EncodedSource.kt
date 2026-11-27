@@ -752,7 +752,7 @@ internal object NativeEncodedDeveloper : EncodedDeveloper {
             grade.exposureEv, grade.highlights, grade.tempK, grade.tint,
             grade.saturation, grade.blackPoint, grade.whitePoint,
             grade.shadows, grade.midtones, grade.contrast,
-            grade.asShot, grade.highlightReconstruction, grade.keepVignetting, grade.highlightRecovery,
+            grade.asShot, grade.highlightReconstruction, grade.keepVignetting, grade.highlightRecovery, grade.glitterSuppress,
             grade.sharpness, grade.detail, grade.tonemap,
             // COL-07: percent 0..100 -> rawedit's 0..1 blend, same mapping
             // as GradeMapping.toNative (every JNI call site passes 0..1).
@@ -816,7 +816,7 @@ internal object NativeEncodedDeveloper : EncodedDeveloper {
             grade.exposureEv, grade.highlights, grade.tempK, grade.tint,
             grade.saturation, grade.blackPoint, grade.whitePoint,
             grade.shadows, grade.midtones, grade.contrast,
-            grade.asShot, grade.highlightReconstruction, grade.keepVignetting, grade.highlightRecovery,
+            grade.asShot, grade.highlightReconstruction, grade.keepVignetting, grade.highlightRecovery, grade.glitterSuppress,
             grade.sharpness, grade.detail, grade.tonemap,
             lutPath, grade.lutStrength / 100f,
             grade.noiseReduction, grade.chromaDenoise,

@@ -67,9 +67,10 @@ struct DevelopGrade {
     float rawLevelsClipG = -1.0f;
     float rawLevelsClipB = -1.0f;
     float highlightKneeRef = 0.0f;
+    bool glitterSuppress = false;  // glitter suppression (opt-in 3x3 chroma median, stage 8b)
 };
 
-constexpr int kGradeParcelSlotCount = 39;
+constexpr int kGradeParcelSlotCount = 40;
 
 constexpr int kGradeParcelChromaDenoise = 0;
 constexpr int kGradeParcelNoiseReduction = 1;
@@ -110,6 +111,7 @@ constexpr int kGradeParcelRawLevelsClipR = 35;
 constexpr int kGradeParcelRawLevelsClipG = 36;
 constexpr int kGradeParcelRawLevelsClipB = 37;
 constexpr int kGradeParcelHighlightKneeRef = 38;
+constexpr int kGradeParcelGlitterSuppress = 39;
 
 // Slot names, index-aligned, for honest refusal messages.
 inline constexpr const char* kGradeParcelSlotNames[] = {
@@ -152,6 +154,7 @@ inline constexpr const char* kGradeParcelSlotNames[] = {
 "rawLevelsClipG",
 "rawLevelsClipB",
 "highlightKneeRef",
+"glitterSuppress",
 };
 
 // Decodes the flat parcel into [out] by NAME. Returns false with the full
@@ -203,6 +206,12 @@ inline bool decodeGradeParcel(const float* parcel, int length, DevelopGrade* out
                      ") (recovery: booleans cross the parcel as 0.0f/1.0f)";
         return false;
     }
+    if (parcel[kGradeParcelGlitterSuppress] != 0.0f && parcel[kGradeParcelGlitterSuppress] != 1.0f) {
+        *error = std::string("grade parcel: glitterSuppress must be 0.0 or 1.0 (got ") +
+                     std::to_string(parcel[kGradeParcelGlitterSuppress]) +
+                     ") (recovery: booleans cross the parcel as 0.0f/1.0f)";
+        return false;
+    }
     out->chromaDenoise = parcel[kGradeParcelChromaDenoise];
     out->noiseReduction = parcel[kGradeParcelNoiseReduction];
     out->temporalNr = parcel[kGradeParcelTemporalNr] != 0.0f;
@@ -242,6 +251,7 @@ inline bool decodeGradeParcel(const float* parcel, int length, DevelopGrade* out
     out->rawLevelsClipG = parcel[kGradeParcelRawLevelsClipG];
     out->rawLevelsClipB = parcel[kGradeParcelRawLevelsClipB];
     out->highlightKneeRef = parcel[kGradeParcelHighlightKneeRef];
+    out->glitterSuppress = parcel[kGradeParcelGlitterSuppress] != 0.0f;
     return true;
 }
 
@@ -284,10 +294,11 @@ inline void applyGradeToRequest(const DevelopGrade& grade, RequestT* req) {
     req->tonemap = grade.tonemap;
     req->highlightRecovery = grade.highlightRecovery;
     req->highlightKneeRef = grade.highlightKneeRef;
+    req->glitterSuppress = grade.glitterSuppress;
 }
 
 // Folds the decoded grade onto a rawedit::Grade (the CPU export path's
-// developCpu input). ALL 30 schema fields copy by name - the temporal pair
+// developCpu input). ALL 31 schema fields copy by name - the temporal pair
 // included (rawedit::Grade carries them so the whole grade pipeline
 // transports the controls; the bridge consumes the temporal stage on the
 // CFA before developCpu, exactly as the flat path's gradeFromKotlin always
@@ -328,6 +339,7 @@ inline void applyGradeToRawedit(const DevelopGrade& grade, GradeT* out) {
     out->tonemap = grade.tonemap;
     out->highlightRecovery = grade.highlightRecovery;
     out->highlightKneeRef = grade.highlightKneeRef;
+    out->glitterSuppress = grade.glitterSuppress;
 }
 
 // The RAW Levels override (D1) from the decoded parcel's eight rawLevels slots, as a rawedit::RawLevelsOverride

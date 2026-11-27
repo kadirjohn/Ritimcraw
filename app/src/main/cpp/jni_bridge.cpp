@@ -1643,7 +1643,7 @@ rawedit::Grade gradeFromKotlin(float exposureEv, float highlights, float tempK, 
                                float saturation, float blackPoint, float whitePoint,
                                float shadows, float midtones, float contrast,
                                bool asShot, bool highlightReconstruction, bool keepVignetting,
-                               bool highlightRecovery,
+                               bool highlightRecovery, bool glitterSuppress,
                                float sharpness, float detail, int tonemap,
                                float lutStrength,
                                float noiseReduction, float chromaDenoise,
@@ -1669,6 +1669,7 @@ rawedit::Grade gradeFromKotlin(float exposureEv, float highlights, float tempK, 
     g.highlightReconstruction = highlightReconstruction;
     g.keepVignetting = keepVignetting;
     g.highlightRecovery = highlightRecovery;
+    g.glitterSuppress = glitterSuppress;
     g.sharpness = sharpness;
     g.detail = detail;
     g.tonemap = tonemap;
@@ -2432,6 +2433,17 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeRegisterNodeLut(JNIEnv* env, 
     return handle;
 }
 
+// Glitter suppression's encode shader text (GlesShaderSources.GLITTER_ENCODE): registered once from the companion
+// init; the GPU pipelines compile it lazily on the first glitter frame.
+JNIEXPORT void JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativeRegisterGlitterShader(
+        JNIEnv* env, jclass, jstring encode) {
+    const char* c = env->GetStringUTFChars(encode, nullptr);
+    const std::string text = c != nullptr ? c : "";
+    if (c != nullptr) env->ReleaseStringUTFChars(encode, c);
+    gles::setGlitterShaderSource(text);
+}
+
 // Export sub-stage timing toggle (commit (d)): same companion-init pattern
 // as nativeSetStabDebugLog — the gate flips on only in debug builds, and a
 // release build reads it once per boundary as a relaxed load.
@@ -2575,7 +2587,7 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewRender(
         jfloat saturation, jfloat blackPoint, jfloat whitePoint,
         jfloat shadows, jfloat midtones, jfloat contrast,
         jboolean asShot, jboolean highlightReconstruction, jboolean keepVignetting,
-        jboolean highlightRecovery,
+        jboolean highlightRecovery, jboolean glitterSuppress,
         jfloat sharpness, jfloat detail, jint tonemap,
         jstring lutPath, jfloat lutStrength,
         jfloat noiseReduction, jfloat chromaDenoise,
@@ -2650,7 +2662,7 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewRender(
                                              saturation, blackPoint, whitePoint,
                                              shadows, midtones, contrast,
                                              asShot, highlightReconstruction,
-                                             keepVignetting, highlightRecovery == JNI_TRUE,
+                                             keepVignetting, highlightRecovery == JNI_TRUE, glitterSuppress == JNI_TRUE,
                                              sharpness, detail,
                                              tonemap, lutStrength,
                                              noiseReduction, chromaDenoise,
@@ -2694,7 +2706,7 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderCached(
         jfloat saturation, jfloat blackPoint, jfloat whitePoint,
         jfloat shadows, jfloat midtones, jfloat contrast,
         jboolean asShot, jboolean highlightReconstruction, jboolean keepVignetting,
-        jboolean highlightRecovery,
+        jboolean highlightRecovery, jboolean glitterSuppress,
         jfloat sharpness, jfloat detail, jint tonemap,
         jstring lutPath, jfloat lutStrength,
         jfloat noiseReduction, jfloat chromaDenoise,
@@ -2780,7 +2792,7 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionRenderCached(
                                              saturation, blackPoint, whitePoint,
                                              shadows, midtones, contrast,
                                              asShot, highlightReconstruction,
-                                             keepVignetting, highlightRecovery == JNI_TRUE,
+                                             keepVignetting, highlightRecovery == JNI_TRUE, glitterSuppress == JNI_TRUE,
                                              sharpness, detail,
                                              tonemap, lutStrength,
                                              noiseReduction, chromaDenoise,
@@ -7326,7 +7338,7 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeEncodedDevelop(
         jfloat saturation, jfloat blackPoint, jfloat whitePoint,
         jfloat shadows, jfloat midtones, jfloat contrast,
         jboolean asShot, jboolean highlightReconstruction, jboolean keepVignetting,
-        jboolean highlightRecovery,
+        jboolean highlightRecovery, jboolean glitterSuppress,
         jfloat sharpness, jfloat detail, jint tonemap,
         jstring lutPath, jfloat lutStrength,
         jfloat noiseReduction, jfloat chromaDenoise,
@@ -7455,7 +7467,7 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeEncodedDevelop(
                             saturation, blackPoint, whitePoint,
                             shadows, midtones, contrast,
                             asShot, highlightReconstruction, keepVignetting,
-                            highlightRecovery == JNI_TRUE,
+                            highlightRecovery == JNI_TRUE, glitterSuppress == JNI_TRUE,
                             sharpness, detail, tonemap, lutStrength,
                             noiseReduction, chromaDenoise,
                             temporalNr == JNI_TRUE, temporalStrength,
@@ -7573,7 +7585,7 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeEncodedDevelopStriped(
         jfloat saturation, jfloat blackPoint, jfloat whitePoint,
         jfloat shadows, jfloat midtones, jfloat contrast,
         jboolean asShot, jboolean highlightReconstruction, jboolean keepVignetting,
-        jboolean highlightRecovery,
+        jboolean highlightRecovery, jboolean glitterSuppress,
         jfloat sharpness, jfloat detail, jint tonemap,
         jstring lutPath, jfloat lutStrength,
         jfloat noiseReduction, jfloat chromaDenoise,
@@ -7601,7 +7613,7 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeEncodedDevelopStriped(
         saturation, blackPoint, whitePoint,
         shadows, midtones, contrast,
         asShot, highlightReconstruction, keepVignetting,
-        highlightRecovery == JNI_TRUE,
+        highlightRecovery == JNI_TRUE, glitterSuppress == JNI_TRUE,
         sharpness, detail, tonemap, lutStrength,
         noiseReduction, chromaDenoise,
         temporalNr == JNI_TRUE, temporalStrength,

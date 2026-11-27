@@ -103,6 +103,7 @@ SCHEMA = [
     ("rawLevelsClipG", "float", "-1.0"),
     ("rawLevelsClipB", "float", "-1.0"),
     ("highlightKneeRef", "float", "0.0"),
+    ("glitterSuppress", "bool", "false"),
 ]
 
 # Trailing // comments the committed struct members carry (added by hand in
@@ -110,6 +111,7 @@ SCHEMA = [
 # reproduce the committed mirrors exactly). Keyed by schema name.
 CPP_MEMBER_COMMENTS = {
     "highlightRecovery": "highlight recovery (replaces stage 3 with a real re-estimate)",
+    "glitterSuppress": "glitter suppression (opt-in 3x3 chroma median, stage 8b)",
 }
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -162,11 +164,11 @@ def cpp_default(kind, default):
 # The Kotlin mirror
 # ---------------------------------------------------------------------------
 
-# PROSE COUNTS: the "30 SCALAR" (the Kotlin doc below) and "ALL 30 schema
+# PROSE COUNTS: the "31 SCALAR" (the Kotlin doc below) and "ALL 31 schema
 # fields" (the C++ rawedit-fold doc) are plain wording (comments, not runtime
 # code) and must equal len(SCHEMA). They were 29 until 2026-11-26, when
 # `--check` was found failing on main after a comment-only housekeeping commit
-# had corrected the Kotlin mirror to 30; this file now states the same number.
+# had corrected the Kotlin mirror to 30; 31 since glitterSuppress (appended).
 # Bump them together with SCHEMA.
 
 def gen_kotlin():
@@ -229,7 +231,7 @@ import com.ritim.ritimcraw.data.GradeK
 // offsets.
 
 /**
- * The grade parcel: the 30 SCALAR grade fields as ONE flat FloatArray
+ * The grade parcel: the 31 SCALAR grade fields as ONE flat FloatArray
  * crossing the JNI seam (the per-frame parameter collapse). One source of
  * truth - the schema in tools/gen-grade-parcel.py - generates BOTH this
  * object and the C++ mirror (gles/GradeParcel.h, the gles::DevelopGrade
@@ -504,7 +506,7 @@ inline void applyGradeToRequest(const DevelopGrade& grade, RequestT* req) {
 }
 
 // Folds the decoded grade onto a rawedit::Grade (the CPU export path's
-// developCpu input). ALL 30 schema fields copy by name - the temporal pair
+// developCpu input). ALL 31 schema fields copy by name - the temporal pair
 // included (rawedit::Grade carries them so the whole grade pipeline
 // transports the controls; the bridge consumes the temporal stage on the
 // CFA before developCpu, exactly as the flat path's gradeFromKotlin always

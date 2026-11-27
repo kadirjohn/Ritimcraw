@@ -10,7 +10,7 @@ import com.ritim.ritimcraw.data.GradeK
 // offsets.
 
 /**
- * The grade parcel: the 30 SCALAR grade fields as ONE flat FloatArray
+ * The grade parcel: the 31 SCALAR grade fields as ONE flat FloatArray
  * crossing the JNI seam (the per-frame parameter collapse). One source of
  * truth - the schema in tools/gen-grade-parcel.py - generates BOTH this
  * object and the C++ mirror (gles/GradeParcel.h, the gles::DevelopGrade
@@ -51,7 +51,7 @@ import com.ritim.ritimcraw.data.GradeK
 object GradeParcel {
 
     /** The one length the decode accepts; any other length is a refusal. */
-    const val SLOT_COUNT = 39
+    const val SLOT_COUNT = 40
 
     const val SLOT_CHROMA_DENOISE = 0
     const val SLOT_NOISE_REDUCTION = 1
@@ -92,6 +92,7 @@ object GradeParcel {
     const val SLOT_RAW_LEVELS_CLIP_G = 36
     const val SLOT_RAW_LEVELS_CLIP_B = 37
     const val SLOT_HIGHLIGHT_KNEE_REF = 38
+    const val SLOT_GLITTER_SUPPRESS = 39
 
     /** Slot names, index-aligned, for honest refusal messages. */
     private val SLOT_NAMES = arrayOf(
@@ -134,6 +135,7 @@ object GradeParcel {
             "rawLevelsClipG",
             "rawLevelsClipB",
             "highlightKneeRef",
+            "glitterSuppress",
     )
 
     /** The typed decode target: every scalar field, booleans as Boolean. */
@@ -177,6 +179,7 @@ object GradeParcel {
         val rawLevelsClipG: Float,
         val rawLevelsClipB: Float,
         val highlightKneeRef: Float,
+        val glitterSuppress: Boolean,
     )
 
     /**
@@ -226,6 +229,7 @@ object GradeParcel {
         grade.rawLevelsClipG,
         grade.rawLevelsClipB,
         grade.highlightKneeRef,
+        if (grade.glitterSuppress) 1.0f else 0.0f,
     )
 
     /**
@@ -284,6 +288,13 @@ object GradeParcel {
                 ") (recovery: booleans cross the parcel as 0.0f/1.0f)",
             )
         }
+        if (parcel[SLOT_GLITTER_SUPPRESS] != 0.0f && parcel[SLOT_GLITTER_SUPPRESS] != 1.0f) {
+            refuse(
+                "grade parcel: glitterSuppress must be 0.0 or 1.0 (got " +
+                    parcel[SLOT_GLITTER_SUPPRESS] +
+                ") (recovery: booleans cross the parcel as 0.0f/1.0f)",
+            )
+        }
         return DecodedGrade(
             chromaDenoise = parcel[SLOT_CHROMA_DENOISE],
             noiseReduction = parcel[SLOT_NOISE_REDUCTION],
@@ -324,6 +335,7 @@ object GradeParcel {
             rawLevelsClipG = parcel[SLOT_RAW_LEVELS_CLIP_G],
             rawLevelsClipB = parcel[SLOT_RAW_LEVELS_CLIP_B],
             highlightKneeRef = parcel[SLOT_HIGHLIGHT_KNEE_REF],
+            glitterSuppress = parcel[SLOT_GLITTER_SUPPRESS] != 0.0f,
         )
     }
 

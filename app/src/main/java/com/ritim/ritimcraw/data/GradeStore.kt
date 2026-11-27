@@ -118,6 +118,8 @@ data class GradeK(
     val keepVignetting: Boolean = true,
     /** Highlight RECOVERY (CPU oracle recoverClippedHighlights): re-estimates clipped channels instead of capping them. MCRAW only. Default off; written only when true. */
     val highlightRecovery: Boolean = false,
+    /** Glitter suppression (opt-in 3x3 chroma median after the denoise stages, stage 8b). Default off; written only when true; absent reads as off. */
+    val glitterSuppress: Boolean = false,
     val sharpness: Float = 0f,
     val detail: Float = 0f,
     val tonemap: Int = 0,
@@ -625,6 +627,7 @@ class GradeStore(private val file: File) {
                 .append("\"keepVignetting\":").append(g.keepVignetting).append(',')
                 .append(if (g.highlightRecovery) "\"highlightRecovery\":true," else "")
                 .append(if (g.highlightKneeRef > 0f) "\"highlightKneeRef\":" + num(g.highlightKneeRef) + "," else "")
+                .append(if (g.glitterSuppress) "\"glitterSuppress\":true," else "")
                 .append("\"sharpness\":").append(num(g.sharpness)).append(',')
                 .append("\"detail\":").append(num(g.detail)).append(',')
                 .append("\"tonemap\":").append(g.tonemap).append(',')
@@ -906,6 +909,7 @@ class GradeStore(private val file: File) {
                     highlightRecovery = m["highlightRecovery"] as? Boolean ?: false,
                     highlightKneeRef = ((m["highlightKneeRef"] as? Double)?.toFloat() ?: 0f)
                         .let { if (it.isFinite() && it > 0f) it else 0f },
+                    glitterSuppress = m["glitterSuppress"] as? Boolean ?: false,
                     // Detail/tonemap fields (COL-15/COL-16) postdate older
                     // schema-1 files: fall back to neutral (0), which the
                     // native pipeline treats as a no-op — the old look is

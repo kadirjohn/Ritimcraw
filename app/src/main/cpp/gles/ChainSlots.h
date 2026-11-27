@@ -24,6 +24,11 @@ inline int chainSlotAfterNr(bool runChroma, bool runLuma) {
     return runChroma ? kSlotC : kSlotA;
 }
 
+// The slot neither read nor written by a pass that goes `in` -> `out` (the two
+// are always distinct): glitter suppression parks its per-pixel encoded chroma
+// there for the POST pass, so it needs no texture of its own.
+inline int chainFreeSlot(int in, int out) { return kSlotA + kSlotB + kSlotC - in - out; }
+
 enum ChainPassKind : int {
     kPassPost = 0, kPassSharpH, kPassSharpV, kPassDetailH, kPassDetailV, kPassWarp,
     // Color model v2 (F1-5, plan §5.2): the grade NODE chain — one pass, the

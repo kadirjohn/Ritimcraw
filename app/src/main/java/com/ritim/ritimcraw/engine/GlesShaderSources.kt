@@ -1273,6 +1273,125 @@ precision highp int;
 }
 """
 
+    /**
+     * The glitter-suppression outlier threshold (Rec.709-encoded chroma units),
+     * shared with the CPU oracle: rawedit::kGlitterThreshold /
+     * RAWEDIT_GLITTER_THRESHOLD in core/include/rawedit/Develop.h. A unit test
+     * reads that header line and asserts equality; the validator pins the GLSL
+     * constant built from this value. Measured on the sparkle panel and on
+     * real-colour regions (see the commit message of the CPU commit).
+     */
+    const val GLITTER_THRESHOLD: Float = 0.09f
+
+    /**
+     * Glitter suppression (stage 8b, Grade.glitterSuppress), the GLSL twin of
+     * rawedit::suppressGlitter (core/src/Develop.cpp), in TWO passes so the
+     * Rec.709 OETF runs ONCE per pixel instead of once per neighbour tap:
+     *
+     *  1. GLITTER_ENCODE (a one-time lazy program, drawn only when the grade
+     *     asks for glitter suppression) reads the chain's intermediate and
+     *     writes, per pixel, (eR - eG, eB - eG, eG) - the encoded chroma pair
+     *     and the encoded green - into the chain's third (free) RGBA32F slot.
+     *  2. The POST pass (uGlitter == 1) reads those values with plain
+     *     texelFetch (no pow), and runs the 19-exchange median network only
+     *     for a channel failing the exact pre-test: if at least 5 of the 9
+     *     chroma values are within the threshold of the centre, the median
+     *     is too, so the channel is not an outlier. An outlier channel is
+     *     replaced by decode(eG + median); everything else keeps its linear
+     *     value bit for bit. G is never written.
+     */
+    private const val kGlitterConstDecl: String = "const float kGlitterThreshold = ${GLITTER_THRESHOLD};   // rawedit::kGlitterThreshold\n"
+
+    private const val kGlitterOetfHelper: String = """// Glitter suppression: Rec.709 OETF (rawedit glitterOetf, core/src/Develop.cpp).
+float glitterOetf(float lin) {
+    lin = max(lin, 0.0);
+    if (lin < 0.018) return 4.5 * lin;
+    return 1.099 * pow(lin, 0.45) - 0.099;
+}
+"""
+
+    /** POST-only: the uniforms (the mode flag + the encoded chroma texture). */
+    private const val kDevelopGlitterDecl: String =
+        "uniform int uGlitter;           // 1 = glitter suppression on (stage 8b); 0 = the CPU's own skip\n" +
+            "uniform highp sampler2D uGlitterChroma; // GLITTER_ENCODE's output: (eR-eG, eB-eG, eG, 1), unit 6\n"
+
+    private const val kDevelopGlitterHelpers: String = """// Glitter suppression helpers (rawedit::suppressGlitter, core/src/Develop.cpp).
+float glitterInvOetf(float v) {
+    if (v < 0.081) return v / 4.5;
+    return pow((v + 0.099) / 1.099, 1.0 / 0.45);
+}
+void glitterSort(inout float a, inout float b) {
+    float lo = min(a, b);
+    b = max(a, b);
+    a = lo;
+}
+float glitterMedian9(float v[9]) {
+    glitterSort(v[1], v[2]); glitterSort(v[4], v[5]); glitterSort(v[7], v[8]);
+    glitterSort(v[0], v[1]); glitterSort(v[3], v[4]); glitterSort(v[6], v[7]);
+    glitterSort(v[1], v[2]); glitterSort(v[4], v[5]); glitterSort(v[7], v[8]);
+    glitterSort(v[0], v[3]); glitterSort(v[5], v[8]); glitterSort(v[4], v[7]);
+    glitterSort(v[3], v[6]); glitterSort(v[1], v[4]); glitterSort(v[2], v[5]);
+    glitterSort(v[4], v[7]); glitterSort(v[4], v[2]); glitterSort(v[6], v[4]);
+    glitterSort(v[4], v[2]);
+    return v[4];
+}
+// rawedit::glitterOutlier9: true (and the median) when the centre v[4] deviates
+// from the 3x3 median by more than the threshold. The count pre-test is exact.
+bool glitterOutlier9(float v[9], out float m) {
+    float own = v[4];
+    int nearCount = 0;
+    for (int i = 0; i < 9; ++i) nearCount += (abs(v[i] - own) <= kGlitterThreshold) ? 1 : 0;
+    m = own;
+    if (nearCount >= 5) return false;
+    m = glitterMedian9(v);
+    return abs(own - m) > kGlitterThreshold;
+}
+"""
+
+    /** POST-only stage 8b body: runs on the fetched intermediate texel, before stage 9. */
+    private const val kDevelopGlitterBody: String = """    // Stage 8b: glitter suppression - the CPU suppressGlitter, verbatim maths.
+    if (uGlitter == 1) {
+        float cr[9];
+        float cb[9];
+        int k = 0;
+        for (int dy = -1; dy <= 1; ++dy) {
+            for (int dx = -1; dx <= 1; ++dx) {
+                ivec2 q = ivec2(min(max(g.x + dx, 0), uSize.x - 1),
+                                min(max(g.y + dy, 0), uSize.y - 1));
+                vec2 ch = texelFetch(uGlitterChroma, q, 0).rg;
+                cr[k] = ch.x;
+                cb[k] = ch.y;
+                ++k;
+            }
+        }
+        float m1;
+        float m2;
+        if (glitterOutlier9(cr, m1)) c.r = glitterInvOetf(max(texelFetch(uGlitterChroma, g, 0).b + m1, 0.0));
+        if (glitterOutlier9(cb, m2)) c.b = glitterInvOetf(max(texelFetch(uGlitterChroma, g, 0).b + m2, 0.0));
+    }
+"""
+
+    /**
+     * The glitter encode pass (GLITTER_ENCODE): one draw per frame, only when
+     * Grade.glitterSuppress is on. Registered with the native side once
+     * (nativeRegisterGlitterShader) and compiled lazily on the first glitter
+     * frame, like highlight recovery's passes. Input: uSrc, the chain
+     * intermediate POST reads; output: (eR - eG, eB - eG, eG, 1) per pixel.
+     */
+    const val GLITTER_ENCODE: String =
+        "#version 300 es\n\n// Glitter suppression encode pass - one Rec.709 OETF per channel per pixel.\n\n" +
+            "precision highp float;\nprecision highp int;\n\n" +
+            "uniform highp sampler2D uSrc;  // the chain intermediate (the POST pass's own input)\n" +
+            "uniform ivec2 uSize;            // width/height in pixels\n\n" +
+            kDevelopOutDecl + "\n" + kGlitterOetfHelper + "\n" + kDevelopMainHead +
+            """    vec3 t = texelFetch(uSrc, g, 0).rgb;
+    float eR = glitterOetf(t.r);
+    float eG = glitterOetf(t.g);
+    float eB = glitterOetf(t.b);
+    oCol = vec4(eR - eG, eB - eG, eG, 1.0);
+}
+"""
+
     /** POST's own input read: the chain's RGBA32F intermediate, 1:1 texel. */
     private const val kDevelopPostFetch: String = "    vec3 c = texelFetch(uSrc, g, 0).rgb;\n"
 
@@ -1665,9 +1784,9 @@ void main() {
         "#version 300 es\n\n" + kDevelopPostBanner + "\n" +
             "uniform highp sampler2D uSrc;  // the chain's RGBA32F intermediate: the pre pass's or the NR passes' output\n" +
             "uniform ivec2 uSize;            // width/height in pixels (the intermediate; same dims as the CFA)\n" +
-            kDevelopPointwiseUniforms + "\n" + kDevelopOutDecl + "\n" +
-            kDevelopPointwiseHelpers + "\n" + kDevelopMainHead +
-            kDevelopPostFetch + kDevelopPointwiseBody + kDevelopWriteOut
+            kDevelopPointwiseUniforms + kDevelopGlitterDecl + "\n" + kGlitterConstDecl + kDevelopOutDecl + "\n" +
+            kDevelopPointwiseHelpers + "\n" + kDevelopGlitterHelpers + "\n" + kDevelopMainHead +
+            kDevelopPostFetch + kDevelopGlitterBody + kDevelopPointwiseBody + kDevelopWriteOut
 
     /**
      * The develop chain's TAIL pass (the sharpness/detail port's 20/23

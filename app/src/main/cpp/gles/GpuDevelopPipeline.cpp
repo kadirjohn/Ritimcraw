@@ -107,6 +107,9 @@ struct RecoverySources {
 };
 std::mutex gRecoveryMutex;
 RecoverySources gRecoverySources;
+// Glitter suppression's encode pass text (registered once per process like the recovery sources).
+std::mutex gGlitterMutex;
+std::string gGlitterEncodeSource;
 
 // ---- Documented copies (each verbatim from its source, which stays the
 // ---- owner of the text; see the per-copy notes). -------------------------
@@ -522,6 +525,11 @@ struct GpuDevelopPipeline::Impl {
     int recLvlW[5] = {0, 0, 0, 0, 0}, recLvlH[5] = {0, 0, 0, 0, 0};
     uint32_t recW = 0, recH = 0;
     bool ensureRecovery(uint32_t w, uint32_t h, std::string* detail);
+    // Glitter suppression's encode pass (stage 8b pass 1 of 2): compiled lazily from the registered source on
+    // the first glitter frame; (eR-eG, eB-eG, eG) per pixel into the chain's free slot, read by POST on unit 6.
+    GLuint glitterProgram = 0;
+    GLint glitterSrcLoc = -1, glitterSizeLoc = -1;
+    bool ensureGlitter(std::string* detail);
     bool recoveryDraw(const DevelopFrameRequest& req, const rawedit::RecoveryClipLevels& levels, uint32_t w, uint32_t h, const float* black,
                       const float* range, const float* invNeutral, const int* cell, bool applyShading,
                       const float* cam2rgb, bool hasProfile, std::string* detail);
@@ -550,7 +558,8 @@ struct GpuDevelopPipeline::Impl {
           tintLoc = -1, wheelShadowXLoc = -1, wheelShadowYLoc = -1,
           wheelMidXLoc = -1, wheelMidYLoc = -1, wheelHighXLoc = -1,
           wheelHighYLoc = -1, splitActiveLoc = -1, splitShadowHueLoc = -1,
-          splitHighlightHueLoc = -1, splitBalanceLoc = -1, saturationLoc = -1;
+          splitHighlightHueLoc = -1, splitBalanceLoc = -1, saturationLoc = -1,
+          glitterLoc = -1, glitterChromaLoc = -1;
     // The tail's tonemap/OETF pair + the stage-24 LUT set (the LUT port)
     // — all on tailProgram, all resolved at init with the same >= 0
     // contract check as the rest. uLutStrength/uLutSize/uLutDomainMin/
@@ -958,6 +967,8 @@ bool GpuDevelopPipeline::Impl::init(
     splitHighlightHueLoc = glGetUniformLocation(postProgram, "uSplitHighlightHue");
     splitBalanceLoc = glGetUniformLocation(postProgram, "uSplitBalance");
     saturationLoc = glGetUniformLocation(postProgram, "uSaturation");
+    glitterLoc = glGetUniformLocation(postProgram, "uGlitter");
+    glitterChromaLoc = glGetUniformLocation(postProgram, "uGlitterChroma");
     if (postSrcLoc < 0 || postSizeLoc < 0 || exposureLoc < 0 ||
         highlightsLoc < 0 ||
         blackPointLoc < 0 || whitePointLoc < 0 || shadowsLoc < 0 ||
@@ -966,7 +977,8 @@ bool GpuDevelopPipeline::Impl::init(
         wheelShadowYLoc < 0 || wheelMidXLoc < 0 || wheelMidYLoc < 0 ||
         wheelHighXLoc < 0 || wheelHighYLoc < 0 || splitActiveLoc < 0 ||
         splitShadowHueLoc < 0 || splitHighlightHueLoc < 0 ||
-        splitBalanceLoc < 0 || saturationLoc < 0) {
+        splitBalanceLoc < 0 || saturationLoc < 0 || glitterLoc < 0 ||
+        glitterChromaLoc < 0) {
         *detail = "shader-contract: missing a develop-post uniform";
         return false;
     }
@@ -1094,6 +1106,8 @@ bool GpuDevelopPipeline::Impl::init(
     glUseProgram(postProgram);
     glUniform1i(postSrcLoc, 1); // post source: GL_TEXTURE1 (the chain's
                                 // intermediate, rebound per frame)
+    glUniform1i(glitterChromaLoc, 6);  // glitter's encoded chroma: GL_TEXTURE6 (pinned at init: an
+                                       // unset sampler would default to unit 0 = the integer CFA)
     glUseProgram(tailProgram);
     glUniform1i(tailSrcLoc, 1); // tail source: GL_TEXTURE1 (the chain's
                                 // final intermediate, rebound per frame)
@@ -2078,6 +2092,24 @@ GpuDevelopPipeline::DrawResult GpuDevelopPipeline::Impl::draw(
     const ChainPass& postPlan = plan.passes[0];
     GLuint postSrc = slotTex[postPlan.in];
     GLuint postDst = slotTex[postPlan.out];
+    if (req.glitterSuppress) {
+        // Stage 8b pass 1: the encoded chroma (eR-eG, eB-eG, eG) of POST's own input, one OETF per channel per
+        // pixel, into the chain's third slot (neither POST's input nor its output; the unsharp passes only
+        // overwrite it after POST has run). POST then reads it with plain loads on unit 6.
+        if (!ensureGlitter(&r.detail)) return r;
+        const int freeSlot = chainFreeSlot(postPlan.in, postPlan.out);
+        glUseProgram(glitterProgram);
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, postSrc);
+        glBindFramebuffer(GL_FRAMEBUFFER, slotFbo[freeSlot]);
+        glViewport(0, 0, static_cast<GLsizei>(w), static_cast<GLsizei>(h));
+        glUniform2i(glitterSizeLoc, static_cast<GLint>(w), static_cast<GLint>(h));
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        if (glErrorAfter("glDrawArrays(glitter-encode)", &r.detail) != GL_NO_ERROR) return r;
+        probePass("glitter-encode", slotTex[freeSlot]);
+        glActiveTexture(GL_TEXTURE6);
+        glBindTexture(GL_TEXTURE_2D, slotTex[freeSlot]);
+    }
     glUseProgram(postProgram);
     glActiveTexture(GL_TEXTURE1);
     glBindTexture(GL_TEXTURE_2D, postSrc);
@@ -2109,6 +2141,7 @@ GpuDevelopPipeline::DrawResult GpuDevelopPipeline::Impl::draw(
     glUniform1f(splitHighlightHueLoc, req.splitHighlightHue);
     glUniform1f(splitBalanceLoc, req.splitBalance);
     glUniform1f(saturationLoc, req.saturation);
+    glUniform1i(glitterLoc, req.glitterSuppress ? 1 : 0);  // stage 8b, the POST pass's own median block
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     if (glErrorAfter("glDrawArrays(post)", &r.detail) != GL_NO_ERROR) return r;
     probePass("post", postDst);
@@ -2542,6 +2575,38 @@ void GpuDevelopPipeline::Impl::recoveryRelease() {
     recoveryReady = false;
 }
 
+bool GpuDevelopPipeline::Impl::ensureGlitter(std::string* detail) {
+    if (glitterProgram != 0) return true;
+    std::string src;
+    {
+        std::lock_guard<std::mutex> lock(gGlitterMutex);
+        src = gGlitterEncodeSource;
+    }
+    if (src.empty()) {
+        *detail = "glitter: encode shader source not registered";
+        return false;
+    }
+    GlShader vert;
+    vert.id = compileShader(GL_VERTEX_SHADER, vertexSourceKept, "vertex", detail);
+    if (vert.id == 0) return false;
+    GlShader frag;
+    frag.id = compileShader(GL_FRAGMENT_SHADER, src, "glitter-encode", detail);
+    if (frag.id == 0) return false;
+    glitterProgram = linkProgram(vert.id, frag.id, "glitter-encode", detail);
+    if (glitterProgram == 0) return false;
+    glitterSrcLoc = glGetUniformLocation(glitterProgram, "uSrc");
+    glitterSizeLoc = glGetUniformLocation(glitterProgram, "uSize");
+    if (glitterSrcLoc < 0 || glitterSizeLoc < 0) {
+        *detail = "shader-contract: missing a glitter-encode uniform";
+        glDeleteProgram(glitterProgram);
+        glitterProgram = 0;
+        return false;
+    }
+    glUseProgram(glitterProgram);
+    glUniform1i(glitterSrcLoc, 1);  // the chain intermediate: GL_TEXTURE1 (rebound per draw)
+    return true;
+}
+
 bool GpuDevelopPipeline::Impl::ensureRecovery(uint32_t w, uint32_t h, std::string* detail) {
     if (!recoveryReady) {
         RecoverySources src;
@@ -2768,6 +2833,11 @@ bool GpuDevelopPipeline::Impl::recoveryDraw(const DevelopFrameRequest& req, cons
     return true;
 }
 
+void setGlitterShaderSource(const std::string& encode) {
+    std::lock_guard<std::mutex> lock(gGlitterMutex);
+    gGlitterEncodeSource = encode;
+}
+
 void setRecoveryShaderSources(const std::string& pre, const std::string& block0, const std::string& blockUp,
                               const std::string& composite) {
     std::lock_guard<std::mutex> lock(gRecoveryMutex);
@@ -2814,6 +2884,7 @@ void GpuDevelopPipeline::Impl::teardown() {
     if (nrChromaHProgram != 0) { glDeleteProgram(nrChromaHProgram); nrChromaHProgram = 0; }
     if (nrChromaVProgram != 0) { glDeleteProgram(nrChromaVProgram); nrChromaVProgram = 0; }
     if (nrLumaProgram != 0) { glDeleteProgram(nrLumaProgram); nrLumaProgram = 0; }
+    if (glitterProgram != 0) { glDeleteProgram(glitterProgram); glitterProgram = 0; }
     if (storeProgram != 0) { glDeleteProgram(storeProgram); storeProgram = 0; }
     recoveryRelease();
     // The F1-5 additions (initNodes' own objects; guarded no-ops on a
@@ -2979,6 +3050,7 @@ uint64_t gradeProbeHash(const DevelopFrameRequest& r) {
         r.asShot ? 1.0f : 0.0f, r.sharpness, r.detail, r.chromaDenoise,
         r.noiseReduction, static_cast<float>(r.tonemap),
         r.highlightRecovery ? 1.0f : 0.0f,
+        r.glitterSuppress ? 1.0f : 0.0f,
         r.wheelShadowX, r.wheelShadowY, r.wheelMidX, r.wheelMidY,
         r.wheelHighX, r.wheelHighY, r.splitShadowHue, r.splitHighlightHue,
         r.splitBalance, r.highlightKneeRef,
