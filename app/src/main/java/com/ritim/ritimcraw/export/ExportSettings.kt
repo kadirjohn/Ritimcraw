@@ -128,9 +128,35 @@ data class ExportSettings(
     val resolutionW: Int? = null,
     /** [resolutionW]'s pair; both null or both set, never half a pair. */
     val resolutionH: Int? = null,
+    /**
+     * (E5-B, night G1) The OUTPUT audio sample rate in Hz — the clip's
+     * PCM is resampled (core/src/Resample.cpp, the E5-B linear
+     * interpolator) before the AAC blocks are cut. NULL (the default) =
+     * SOURCE: the clip's own rate carries through unchanged and the
+     * resampler NEVER runs (bit-identical to every export before this
+     * field). The UI offers 44100 / 48000 beside Source. Only meaningful
+     * on a job with an audio track; a video-only export ignores it.
+     */
+    val audioSampleRateHz: Int? = null,
+    /**
+     * (E5-B, night G1) The OUTPUT channel count — the clip's PCM is
+     * remixed through the E5-B BS.775 core (stereo->mono [k, k] with
+     * k = 1/sqrt(2) ~ -3.01 dB; mono->stereo [1; 1] dual mono, the
+     * deliberate +3 dB) before the AAC blocks are cut. NULL (the
+     * default) = SOURCE: the clip's own channel count carries through
+     * and the remix NEVER runs (bit-identical). The UI offers Mono /
+     * Stereo beside Source.
+     */
+    val audioChannels: Int? = null,
 ) {
     companion object {
         val AUDIO_KBPS = listOf(128, 192, 256, 320)
+
+        /** (E5-B, night G1) The sample-rate choices the sheet offers. */
+        val AUDIO_SAMPLE_RATES = listOf(44100, 48000)
+
+        /** (E5-B, night G1) The channel choices the sheet offers. */
+        val AUDIO_CHANNEL_COUNTS = listOf(1, 2)
     }
 }
 
@@ -185,6 +211,8 @@ enum class ExportPreset {
             truePeakDbtp = -1f,
             resolutionW = null,
             resolutionH = null,
+            audioSampleRateHz = null,
+            audioChannels = null,
         )
         return when (this) {
             COMPATIBLE -> base.copy(codec = ExportCodec.AVC, bitDepth = 8, bitrateLevel = BitrateLevel.STANDARD, audioKbps = 192)
@@ -225,22 +253,27 @@ enum class ExportPreset {
 
 /**
  * The persisted form of [ExportSettings] (ExportJob.settings), one nested
- * object `"settings":{"v":2,...}` written only when the job has settings.
+ * object `"settings":{"v":3,...}` written only when the job has settings.
  * Enums travel by NAME. A reader that meets a version or a value it does
  * not know reports [Parsed.Unsupported]: the caller must NOT fall back to
  * the legacy behavior silently (honest-about-the-device).
  *
- * VERSION 2 (E5, night D2) appends four optional fields —
- * `loudnessTargetLufs` (absent = null = OFF, exactly the v1 behavior),
- * `truePeakDbtp` (absent = −1), `resolutionW`/`resolutionH` (absent =
- * null = the sheet's own ladder decides, exactly the v1 behavior). A v1
- * row parses with those defaults, so every pre-v2 job keeps its exact
- * old settings and old behavior; a version NEWER than this build still
- * refuses (reported, never guessed).
+ * VERSION 2 (E5, night D2) appended `loudnessTargetLufs` (absent = null =
+ * OFF, exactly the v1 behavior), `truePeakDbtp` (absent = −1) and the
+ * `resolutionW`/`resolutionH` pair (absent = null = the sheet's own ladder
+ * decides, exactly the v1 behavior). A v1 row parses with those defaults,
+ * so every pre-v2 job keeps its exact old settings and old behavior.
+ *
+ * VERSION 3 (E5-B, night G1) appends two more optional fields —
+ * `audioSampleRateHz` and `audioChannels` (both absent = null = SOURCE:
+ * the clip's own rate and channels carry through and the resampler/remix
+ * NEVER runs, exactly the v1/v2 behavior). v1 and v2 rows keep parsing
+ * with those defaults; a version NEWER than this build still refuses
+ * (reported, never guessed).
  */
 object ExportSettingsWire {
-    const val VERSION = 2
-    private const val READS = 2
+    const val VERSION = 3
+    private const val READS = 3
 
     sealed class Parsed {
         data class Ok(val settings: ExportSettings) : Parsed()
@@ -273,6 +306,10 @@ object ExportSettingsWire {
         }
         if (s.resolutionW != null) sb.append(",\"resolutionW\":").append(s.resolutionW)
         if (s.resolutionH != null) sb.append(",\"resolutionH\":").append(s.resolutionH)
+        // v3 fields, omit-when-default (v1/v2 rows keep their exact bytes):
+        // a null rate or channel count = SOURCE, never a guessed number.
+        if (s.audioSampleRateHz != null) sb.append(",\"audioSampleRateHz\":").append(s.audioSampleRateHz)
+        if (s.audioChannels != null) sb.append(",\"audioChannels\":").append(s.audioChannels)
         sb.append('}')
         return sb.toString()
     }
@@ -302,6 +339,10 @@ object ExportSettingsWire {
         val tp = (m["truePeakDbtp"] as? Double)?.toFloat() ?: -1f
         val resW = (m["resolutionW"] as? Double)?.toInt()
         val resH = (m["resolutionH"] as? Double)?.toInt()
+        // v3's optional fields: absent (a v1/v2 row, or a v3 row with the
+        // defaults) parses as SOURCE — the v1/v2 behavior exactly.
+        val rate = (m["audioSampleRateHz"] as? Double)?.toInt()
+        val ch = (m["audioChannels"] as? Double)?.toInt()
         return Parsed.Ok(
             ExportSettings(
                 codec = codec,
@@ -318,6 +359,8 @@ object ExportSettingsWire {
                 truePeakDbtp = tp,
                 resolutionW = resW,
                 resolutionH = resH,
+                audioSampleRateHz = rate,
+                audioChannels = ch,
             )
         )
     }

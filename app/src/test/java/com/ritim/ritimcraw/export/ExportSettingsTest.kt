@@ -135,9 +135,10 @@ class ExportSettingsTest {
             rateMode = ExportRateMode.CBR, bitrateLevel = BitrateLevel.CUSTOM, customMbps = 62.5,
             uncapped = true, keyframe = KeyframeInterval.ALL_INTRA, profile = 2, audioKbps = 320,
             loudnessTargetLufs = -14f, truePeakDbtp = -1.5f, resolutionW = 1080, resolutionH = 1920,
+            audioSampleRateHz = 48000, audioChannels = 1,
         )
         val text = ExportSettingsWire.render(s)
-        assertTrue(text, text.startsWith("{\"v\":2,"))
+        assertTrue(text, text.startsWith("{\"v\":3,"))
         assertEquals(ExportSettingsWire.Parsed.Ok(s), parseWire(text))
         assertEquals(ExportSettingsWire.Parsed.Ok(ExportSettings()), parseWire(ExportSettingsWire.render(ExportSettings())))
     }
@@ -153,15 +154,19 @@ class ExportSettingsTest {
         assertFalse(text, text.contains("loudnessTargetLufs"))
         assertFalse(text, text.contains("truePeakDbtp"))
         assertFalse(text, text.contains("resolutionW"))
+        // v3's fields too: SOURCE rate and channels render nothing (a
+        // default row keeps its v1/v2 shape plus the version bump).
+        assertFalse(text, text.contains("audioSampleRateHz"))
+        assertFalse(text, text.contains("audioChannels"))
     }
 
     @Test
     fun wire_never_guesses_a_newer_or_unknown_value() {
         fun unsupported(text: String) = parseWire(text) is ExportSettingsWire.Parsed.Unsupported
         val ok = ExportSettingsWire.render(ExportSettings())
-        // A version this build cannot read refuses — v2 is now US, so the
-        // unknown-version case is v3.
-        assertTrue(unsupported(ok.replace("\"v\":2", "\"v\":3")))
+        // A version this build cannot read refuses — v3 is now US, so the
+        // unknown-version case is v4.
+        assertTrue(unsupported(ok.replace("\"v\":3", "\"v\":4")))
         assertTrue(unsupported(ok.replace("\"AVC\"", "\"AV1\"")))
         assertTrue(unsupported(ok.replace("\"VBR\"", "\"ABR\"")))
         assertTrue(unsupported("{\"codec\":\"AVC\"}")) // no version
@@ -212,5 +217,71 @@ class ExportSettingsTest {
             "\"bitrateLevel\":\"STANDARD\",\"uncapped\":false," +
             "\"keyframe\":\"AUTO\",\"audioKbps\":128}"
         assertEquals(ExportSettingsWire.Parsed.Ok(ExportSettings()), parseWire(v2))
+    }
+
+    // ---- wire v3 (E5-B, night G1: sample rate + channels) ----
+
+    @Test
+    fun wire_v3_round_trips_the_audio_shape_fields() {
+        val s = ExportSettings(audioSampleRateHz = 44100, audioChannels = 2)
+        assertEquals(ExportSettingsWire.Parsed.Ok(s), parseWire(ExportSettingsWire.render(s)))
+        // Each side travels on its own — a half choice is honest about
+        // what it holds (the resolution pair's rule).
+        val rateOnly = ExportSettings(audioSampleRateHz = 48000)
+        assertEquals(ExportSettingsWire.Parsed.Ok(rateOnly), parseWire(ExportSettingsWire.render(rateOnly)))
+        val chOnly = ExportSettings(audioChannels = 1)
+        assertEquals(ExportSettingsWire.Parsed.Ok(chOnly), parseWire(ExportSettingsWire.render(chOnly)))
+    }
+
+    @Test
+    fun wire_v2_rows_parse_with_the_v2_behavior() {
+        // A row this app's v2 build wrote (loudness fields, resolution
+        // pair, but NO audio shape keys): parses back with SOURCE rate
+        // and channels — the v2 behavior exactly (the resampler/remix
+        // never runs for it).
+        val v2 = "{\"v\":2,\"codec\":\"AVC\",\"bitDepth\":8," +
+            "\"dynamicRange\":\"SDR\",\"rateMode\":\"VBR\"," +
+            "\"bitrateLevel\":\"STANDARD\",\"uncapped\":false," +
+            "\"keyframe\":\"AUTO\",\"audioKbps\":192," +
+            "\"loudnessTargetLufs\":-16.0,\"truePeakDbtp\":-1.0," +
+            "\"resolutionW\":1080,\"resolutionH\":1920}"
+        val parsed = parseWire(v2)
+        assertTrue(parsed is ExportSettingsWire.Parsed.Ok)
+        val s = (parsed as ExportSettingsWire.Parsed.Ok).settings
+        assertEquals(-16f, s.loudnessTargetLufs)
+        assertEquals(-1f, s.truePeakDbtp)
+        assertEquals(1080, s.resolutionW)
+        assertEquals(1920, s.resolutionH)
+        assertNull(s.audioSampleRateHz)
+        assertNull(s.audioChannels)
+    }
+
+    @Test
+    fun wire_v1_rows_parse_with_source_audio_shape() {
+        // The v1 row test's row again, now asserting the G1 fields too:
+        // absent = SOURCE, never a guessed number.
+        val v1 = "{\"v\":1,\"codec\":\"AVC\",\"bitDepth\":8," +
+            "\"dynamicRange\":\"SDR\",\"rateMode\":\"VBR\"," +
+            "\"bitrateLevel\":\"STANDARD\",\"uncapped\":false," +
+            "\"keyframe\":\"AUTO\",\"audioKbps\":192}"
+        val parsed = parseWire(v1)
+        val s = (parsed as ExportSettingsWire.Parsed.Ok).settings
+        assertNull(s.audioSampleRateHz)
+        assertNull(s.audioChannels)
+    }
+
+    @Test
+    fun applying_any_preset_clears_the_audio_shape() {
+        // A preset never inherits a stale rate/channel choice: the base
+        // resets the E5-B fields, so COMPATIBLE after a 44.1 kHz mono
+        // pick is honestly SOURCE (and the preset row reads itself).
+        val shaped = ExportSettings(audioSampleRateHz = 44100, audioChannels = 1)
+        val compatible = ExportPreset.COMPATIBLE.apply(shaped)
+        assertNull(compatible.audioSampleRateHz)
+        assertNull(compatible.audioChannels)
+        assertEquals(ExportPreset.COMPATIBLE, ExportPreset.of(compatible))
+        // and changing one of the fields a preset owns still drops it
+        val social = ExportPreset.SOCIAL.apply(ExportSettings())
+        assertEquals(ExportPreset.CUSTOM, ExportPreset.of(social.copy(audioChannels = 2)))
     }
 }
