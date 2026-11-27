@@ -86,9 +86,10 @@ class ExportSettingsTest {
             codec = ExportCodec.HEVC, bitDepth = 10, dynamicRange = ExportDynamicRange.HLG,
             rateMode = ExportRateMode.CBR, bitrateLevel = BitrateLevel.CUSTOM, customMbps = 62.5,
             uncapped = true, keyframe = KeyframeInterval.ALL_INTRA, profile = 2, audioKbps = 320,
+            targetFps = TargetFps.FPS_29_97,
         )
         val text = ExportSettingsWire.render(s)
-        assertTrue(text, text.startsWith("{\"v\":1,"))
+        assertTrue(text, text.startsWith("{\"v\":2,"))
         assertEquals(ExportSettingsWire.Parsed.Ok(s), parseWire(text))
         assertEquals(ExportSettingsWire.Parsed.Ok(ExportSettings()), parseWire(ExportSettingsWire.render(ExportSettings())))
     }
@@ -98,16 +99,85 @@ class ExportSettingsTest {
         val text = ExportSettingsWire.render(ExportSettings())
         assertFalse(text, text.contains("customMbps"))
         assertFalse(text, text.contains("profile"))
+        // v2's field is omit-when-default too: SOURCE = no conversion
+        // renders nothing, so a default row keeps its v1 shape (plus the
+        // version bump).
+        assertFalse(text, text.contains("targetFps"))
     }
 
     @Test
     fun wire_never_guesses_a_newer_or_unknown_value() {
         fun unsupported(text: String) = parseWire(text) is ExportSettingsWire.Parsed.Unsupported
         val ok = ExportSettingsWire.render(ExportSettings())
-        assertTrue(unsupported(ok.replace("\"v\":1", "\"v\":2")))
+        // A version this build cannot read refuses — v2 is now US, so the
+        // unknown-version case is v3.
+        assertTrue(unsupported(ok.replace("\"v\":2", "\"v\":3")))
         assertTrue(unsupported(ok.replace("\"AVC\"", "\"AV1\"")))
         assertTrue(unsupported(ok.replace("\"VBR\"", "\"ABR\"")))
         assertTrue(unsupported("{\"codec\":\"AVC\"}")) // no version
         assertTrue(unsupported("\"not an object\""))
+        // An unknown target fps name is a refused VALUE, never a silent
+        // SOURCE fall (the honest rule, plan E1F §3.2).
+        assertTrue(unsupported(ok.replace("\"keyframe\":\"AUTO\"", "\"keyframe\":\"AUTO\",\"targetFps\":\"FPS_23_976\"")))
+    }
+
+    // ---- wire v1 <-> v2 (E1f-1, night D5) ----
+
+    @Test
+    fun wire_v1_rows_parse_with_the_v1_behavior() {
+        // A row this app's v1 build wrote (no targetFps key at all):
+        // parses back as EXACTLY the v1 settings — the fps conversion
+        // stays OFF, which is what that row always meant (plan §3.2: the
+        // v1 reader's behavior, not a silent fall).
+        val v1 = "{\"v\":1,\"codec\":\"AVC\",\"bitDepth\":8," +
+            "\"dynamicRange\":\"SDR\",\"rateMode\":\"VBR\"," +
+            "\"bitrateLevel\":\"STANDARD\",\"uncapped\":false," +
+            "\"keyframe\":\"AUTO\",\"audioKbps\":192}"
+        assertEquals(ExportSettingsWire.Parsed.Ok(ExportSettings(codec = ExportCodec.AVC, audioKbps = 192)), parseWire(v1))
+    }
+
+    @Test
+    fun wire_v2_round_trips_every_ladder_target() {
+        // Every ladder value travels by NAME and comes back exactly; the
+        // NTSC pair carries the exact rational, never the 29.97 decimal.
+        for (t in listOf(TargetFps.FPS_24, TargetFps.FPS_25, TargetFps.FPS_29_97, TargetFps.FPS_30, TargetFps.FPS_50, TargetFps.FPS_59_94, TargetFps.FPS_60)) {
+            val s = ExportSettings(targetFps = t)
+            assertEquals("targetFps=$t", ExportSettingsWire.Parsed.Ok(s), parseWire(ExportSettingsWire.render(s)))
+        }
+    }
+
+    // ---- TargetFps (E1f-1) ----
+
+    @Test
+    fun the_ntsc_targets_are_the_exact_rationals() {
+        // 29.97 is a LABEL: the rate is exactly 30000/1001 (and 59.94 =
+        // 60000/1001); the grid math uses num/den, never the decimal.
+        assertEquals(30000, TargetFps.FPS_29_97.num)
+        assertEquals(1001, TargetFps.FPS_29_97.den)
+        assertEquals(60000, TargetFps.FPS_59_94.num)
+        assertEquals(1001, TargetFps.FPS_59_94.den)
+        assertEquals("29.97", TargetFps.FPS_29_97.label)
+        assertEquals("59.94", TargetFps.FPS_59_94.label)
+        assertEquals("Source", TargetFps.SOURCE.label)
+    }
+
+    @Test
+    fun presets_never_touch_the_target_fps() {
+        // Plan §3.1: preset applications leave targetFps alone — a
+        // QUALITY export of a 30-target row keeps the target. Because
+        // apply() never resets the field, a target the user picked
+        // survives every preset application: the identity comparison
+        // treats the target as OUTSIDE the preset's meaning, exactly the
+        // plan's "presets do not touch this field" rule.
+        val s = ExportPreset.QUALITY.apply(ExportSettings(targetFps = TargetFps.FPS_24))
+        assertEquals(TargetFps.FPS_24, s.targetFps)
+        assertEquals(ExportPreset.QUALITY, ExportPreset.of(s))
+        // and the preset comparison is target-blind: the same target on
+        // the COMPATIBLE shape stays COMPATIBLE, and changing it changes
+        // no preset identity at all.
+        val base = ExportPreset.COMPATIBLE.apply(ExportSettings(targetFps = TargetFps.FPS_25))
+        assertEquals(TargetFps.FPS_25, base.targetFps)
+        assertEquals(ExportPreset.COMPATIBLE, ExportPreset.of(base))
+        assertEquals(ExportPreset.COMPATIBLE, ExportPreset.of(base.copy(targetFps = TargetFps.FPS_60)))
     }
 }

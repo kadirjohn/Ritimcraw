@@ -6,14 +6,15 @@ package com.ritim.ritimcraw.export
  * JVM-tested.
  *
  * What is NOT a setting here, on purpose (owner decisions 2026-11-23):
- *  - frame rate: single-clip exports keep the source's own pts, timeline
- *    exports use the project fps. The plan takes the fps as INPUT
- *    ([ExportInput.fps]); a picker plus frame drop/duplicate is a later
- *    package.
  *  - resolution: the job's resolutionW/H bound (ExportResolution) already
  *    carries it; the plan receives the resolved encode size.
  *  - audio sample rate and channel count: they stay "source" until the
  *    resampler/downmix of package E5.
+ *
+ * Frame rate IS a setting since E1f-1 ([targetFps]): SOURCE (the default)
+ * keeps the source's own pts exactly as every earlier export wrote them;
+ * a ladder value asks for a frame-nearest drop/duplicate conversion
+ * ([FrameRateMap] holds the pure mapping; the pipeline wires it in E1f-2).
  */
 enum class ExportCodec(val mime: String, val relativeBitrate: Double) {
     /** H.264. The reference for the bitrate table. */
@@ -81,6 +82,36 @@ enum class KeyframeInterval(val seconds: Float?) {
     ALL_INTRA(0f),
 }
 
+/**
+ * The OUTPUT frame rate of a single-clip export (E1f-1, plan 7.3/E1f §3.1).
+ * SOURCE (the default) is "no conversion": the source's own measured fps
+ * and its own pts reach the file exactly as every pre-E1f export wrote
+ * them — byte-identical behavior. A ladder value asks for a frame-nearest
+ * drop/duplicate conversion onto the target's constant grid; the NTSC
+ * entries are the EXACT rational (30000/1001, 60000/1001 — 29.97 the
+ * decimal is only a label; the grid math never uses the label).
+ *
+ * [label] is user-facing text ("29.97", never localized — proper names);
+ * [num]/[den] the exact rate as a rational (SOURCE carries 0/0: it is not
+ * a grid, the source decides). 23.976 (24000/1001) is deliberately NOT on
+ * the ladder (the brief's list); adding it later is additive — the enum is
+ * persisted by NAME, like every other setting.
+ */
+enum class TargetFps(val label: String, val num: Int, val den: Int) {
+    SOURCE("Source", 0, 0),
+    FPS_24("24", 24, 1),
+    FPS_25("25", 25, 1),
+
+    /** NTSC 30000/1001 = 29.97002997... fps, exactly. */
+    FPS_29_97("29.97", 30000, 1001),
+    FPS_30("30", 30, 1),
+    FPS_50("50", 50, 1),
+
+    /** NTSC 60000/1001 = 59.94005994... fps, exactly. */
+    FPS_59_94("59.94", 60000, 1001),
+    FPS_60("60", 60, 1),
+}
+
 data class ExportSettings(
     val codec: ExportCodec = ExportCodec.AVC,
     /** 8 or 10. 10 needs the encoder AND a 10-bit render path ([ExportContext.tenBitPathAvailable]). */
@@ -97,6 +128,15 @@ data class ExportSettings(
     val profile: Int? = null,
     /** AAC bitrate: 128, 192, 256 or 320. */
     val audioKbps: Int = 128,
+    /**
+     * The OUTPUT frame rate (E1f-1): SOURCE = no conversion (the source's
+     * own pts and measured fps, exactly the pre-E1f behavior); a ladder
+     * value = frame-nearest drop/duplicate onto that constant grid
+     * ([FrameRateMap] is the pure mapping; the pipeline wires it in E1f-2).
+     * Presets never touch this field ([ExportPreset.apply]'s copy list is
+     * fixed), so a preset application keeps the user's target.
+     */
+    val targetFps: TargetFps = TargetFps.SOURCE,
 ) {
     companion object {
         val AUDIO_KBPS = listOf(128, 192, 256, 320)
@@ -165,13 +205,25 @@ enum class ExportPreset {
 
 /**
  * The persisted form of [ExportSettings] (ExportJob.settings), one nested
- * object `"settings":{"v":1,...}` written only when the job has settings.
+ * object `"settings":{"v":2,...}` written only when the job has settings.
  * Enums travel by NAME. A reader that meets a version or a value it does
  * not know reports [Parsed.Unsupported]: the caller must NOT fall back to
  * the legacy behavior silently (honest-about-the-device).
+ *
+ * VERSION 2 (E1f-1, night D5) appends one optional field — `targetFps`
+ * (absent = SOURCE = no conversion, exactly the v1 behavior). A v1 row
+ * parses as EXACTLY the v1 settings: the fps conversion stays off and
+ * every pre-v2 job keeps its exact old behavior; a version NEWER than this
+ * build still refuses (reported, never guessed). v1 rows do NOT silently
+ * fall to SOURCE — they parse through the same explicit reader that knows
+ * v1 never had the field, so "SOURCE" here is the v1 row's own meaning,
+ * not a guess (plan E1F §3.2).
  */
 object ExportSettingsWire {
-    const val VERSION = 1
+    const val VERSION = 2
+
+    /** The newest version this build READS (older ones parse with their own meaning). */
+    private const val READS = 2
 
     sealed class Parsed {
         data class Ok(val settings: ExportSettings) : Parsed()
@@ -190,7 +242,13 @@ object ExportSettingsWire {
         sb.append(",\"uncapped\":").append(s.uncapped)
             .append(",\"keyframe\":\"").append(s.keyframe.name).append('"')
         if (s.profile != null) sb.append(",\"profile\":").append(s.profile)
-        sb.append(",\"audioKbps\":").append(s.audioKbps).append('}')
+        sb.append(",\"audioKbps\":").append(s.audioKbps)
+        // v2 field, omit-when-default (v1 rows keep their exact bytes):
+        // SOURCE = no conversion, exactly what a v1 row always meant.
+        if (s.targetFps != TargetFps.SOURCE) {
+            sb.append(",\"targetFps\":\"").append(s.targetFps.name).append('"')
+        }
+        sb.append('}')
         return sb.toString()
     }
 
@@ -198,7 +256,7 @@ object ExportSettingsWire {
     fun parse(raw: Any?): Parsed {
         val m = raw as? Map<*, *> ?: return Parsed.Unsupported("settings is not an object")
         val v = (m["v"] as? Double)?.toInt() ?: return Parsed.Unsupported("settings has no version")
-        if (v != VERSION) return Parsed.Unsupported("settings version $v (this app reads $VERSION)")
+        if (v > READS) return Parsed.Unsupported("settings version $v (this app reads $READS)")
         fun <E : Enum<E>> enumOf(key: String, all: List<E>): E? =
             (m[key] as? String)?.let { w -> all.firstOrNull { it.name == w } }
         val codec = enumOf("codec", ExportCodec.entries) ?: return Parsed.Unsupported("unknown codec ${m["codec"]}")
@@ -212,6 +270,14 @@ object ExportSettingsWire {
             ?: return Parsed.Unsupported("unknown keyframe interval ${m["keyframe"]}")
         val depth = (m["bitDepth"] as? Double)?.toInt() ?: return Parsed.Unsupported("no bit depth")
         val audio = (m["audioKbps"] as? Double)?.toInt() ?: return Parsed.Unsupported("no audio bitrate")
+        // v2's optional field: absent (a v1 row, or a v2 row with the
+        // default) parses as SOURCE — the v1 behavior, exactly.
+        val target = enumOf("targetFps", TargetFps.entries)
+            ?: if (m.containsKey("targetFps")) {
+                return Parsed.Unsupported("unknown target fps ${m["targetFps"]}")
+            } else {
+                TargetFps.SOURCE
+            }
         return Parsed.Ok(
             ExportSettings(
                 codec = codec,
@@ -224,6 +290,7 @@ object ExportSettingsWire {
                 keyframe = key,
                 profile = (m["profile"] as? Double)?.toInt(),
                 audioKbps = audio,
+                targetFps = target,
             )
         )
     }
