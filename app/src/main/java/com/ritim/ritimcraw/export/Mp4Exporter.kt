@@ -2038,10 +2038,13 @@ class ExportPipeline(
                         false
                     }
                 if (wantsTen) {
-                    run.note(
-                        "ten-bit path: gpu=${renderBackend == RenderBackend.GPU_EXPERIMENTAL} " +
-                            "encoderSurface=$encoderDrawEligible available=$tenBitPath"
-                    )
+                    val tenBitNote = "ten-bit path: gpu=${renderBackend == RenderBackend.GPU_EXPERIMENTAL} " +
+                        "encoderSurface=$encoderDrawEligible developBackend=$developBackend available=$tenBitPath " +
+                        "deg=$effectiveDeg cropFull=${CropState.isFull(cropRect)} straighten=${grade.straightenDeg} " +
+                        "encode=${encodeDims.width}x${encodeDims.height} out=${outDims.width}x${outDims.height}"
+                    run.note(tenBitNote)
+                    // The report note is not readable after a failed job; the trace line is.
+                    runCatching { android.util.Log.i("ritim-trace", "export $tenBitNote") }
                 }
                 // G4 (E2 wiring): the HLG gate's probed facts, built HERE
                 // where the encode size and fps are finally known (the
