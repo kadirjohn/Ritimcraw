@@ -1731,6 +1731,14 @@ inline uint8_t toByte(float rec709) {
     return static_cast<uint8_t>(v * 255.0f + 0.5f);
 }
 
+// An unrecognised MotionCam orientation code is never a silent "no rotation": say so (owner decision 2026-11-27).
+static void logOrientationWarning(const rawedit::Source& src) {
+    const std::string warn = src.orientationWarning();
+    if (!warn.empty()) {
+        __android_log_print(ANDROID_LOG_WARN, "ritim-orient", "%s", warn.c_str());
+    }
+}
+
 // ---- color model v2 F1-6: the CPU legs' shared pieces ----------------------
 // (Outside the extern "C" block: these are C++ statics. The chain-wire
 // decode, the applyNodes/applyOpenDrt consume the four CPU doors ride
@@ -2529,6 +2537,7 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewOpen(
         return nullptr;
     }
     const rawedit::FrameInfo first = src->frameInfo(0);
+    logOrientationWarning(*src);
     // Read before insertSource takes ownership (owner request 2026-11-11
     // section 2/3): the container RAW white level feeds the clip info sheet
     // ("RAW white level: 1023"). It is the fallback calibration — the
@@ -3105,6 +3114,7 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeGyroSyncProbe(
     }
     std::unique_ptr<rawedit::Source> src = std::move(*opened.value);
     const rawedit::FrameInfo first = src->frameInfo(0);
+    logOrientationWarning(*src);
     const int64_t frame0WallMs = first.recvdMs;
     const int64_t frame0CaptureNs = first.ptsUs * 1000;
     const double focalMm = src->rawMeta().focalLengthMm;

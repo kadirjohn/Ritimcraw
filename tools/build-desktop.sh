@@ -153,6 +153,9 @@ echo "== building tests =="
 # re-derivation, P85 helpers, bit-identity of the unset/clamped knee. Pure logic, no cwd needs.
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_highlight_knee.cpp" \
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_highlight_knee"
+# test_screen_orientation: MotionCam orientation code -> degrees + Source use (real clips when present; run from the repo root).
+"$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_screen_orientation.cpp" \
+  "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_screen_orientation"
 # test_gyro runs from the repo root so it finds the STEPS/media/test fixture.
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_gyro.cpp" \
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_gyro"
@@ -198,6 +201,9 @@ echo "== building tests =="
 # change of the brightest 5% / 0.5% (old fixed knee vs the measured one). Run by hand, not a test.
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/hk_measure.cpp" \
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/hk_measure"
+# orient_dump <clip.mcraw> [out.ppm] — orientation inventory: per-frame orientation values + an un-rotated neutral middle frame.
+"$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/orient_dump.cpp" \
+  "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/orient_dump"
 # hr_levels <clip.mcraw> [step] — recoveryClipLevels over a frame sweep (per-camera verification).
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/hr_levels.cpp" \
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/hr_levels"
@@ -430,6 +436,8 @@ echo "== running test_raw_levels =="
 "$BUILD/test_raw_levels"
 echo "== running test_highlight_knee =="
 "$BUILD/test_highlight_knee"
+echo "== running test_screen_orientation =="
+(cd "$ROOT" && "$BUILD/test_screen_orientation")
 echo "== running test_gyro =="
 (cd "$ROOT" && "$BUILD/test_gyro")
 echo "== running test_orientation =="

@@ -45,7 +45,7 @@ struct FrameInfo {
     uint16_t bitDepth = 16;  // MCRAW stores 16-bit samples
     CfaPattern cfa = CfaPattern::RGGB;
     Rect activeArea;         // full frame today; see Source.cpp (QA-02 pending)
-    int orientationDeg = 0;  // sensor orientation, degrees CW to upright
+    int orientationDeg = 0;  // degrees CW the RAW frame needs to stand upright (0/90/180/270), see ScreenOrientation.h
     // Per-frame RAW levels (owner request 2026-11-11 section 3): Android
     // Camera2 defines dynamic black/white levels as per-frame RAW
     // calibration. -1 = "this frame did not carry a level" — the develop
@@ -169,6 +169,12 @@ public:
     // Metadata for frame i. i < frameCount(); an out-of-range i returns a
     // zeroed FrameInfo rather than throwing.
     FrameInfo frameInfo(size_t i) const;
+
+    // Non-empty when a frame's MotionCam "orientation" code was not one of the known screen-orientation codes
+    // (ScreenOrientation.h): the first such frame's code, for the caller to log. Empty otherwise. Set by
+    // frameInfo(); the rotation used for such a frame is the container's sensorOrientation (the same fallback
+    // as a frame without the key), never a silent "no rotation".
+    std::string orientationWarning() const;
 
     // Decodes frame i into a w*h uint16 CFA buffer (row-major, 2x2 repeating
     // pattern per FrameInfo.cfa). May take seconds on large frames.
