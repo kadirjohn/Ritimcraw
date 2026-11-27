@@ -182,6 +182,16 @@ echo "== building tests =="
 # histogram, and the Neutral-vs-Recovery M1 tables. Run by hand, not a test.
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/hr_joint_estimate.cpp" \
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/hr_joint_estimate"
+# test_recovery_glsl_twin: I7 (research-recovery-glsl-twin branch, 2026-11-27) — the
+# RECOVERY_COMPOSITE GLSL block's C++ twin (recovery_glsl_twin.hpp, the shader text
+# translated line-by-line into float32) vs the CPU oracle recoverClippedHighlights on
+# identical inputs (the M1 scene + the hr_equivalence direct patterns), under the shipped
+# Recovery parity thresholds (maxDiffLsb <= 1, mismatch <= 0.01%; NO LOOSENING).
+# -ffp-contract=off: the twin models the GLSL source's plain float32 op chain — no
+# desktop FMA contraction (Yuv.cpp/Loudness.cpp precedent; the device GPU's own
+# contraction is the owner's on-device parity sweep's to measure).
+"$CXX" "${FLAGS[@]}" -ffp-contract=off "${INCLUDES[@]}" "$ROOT/core/tests/test_recovery_glsl_twin.cpp" \
+  "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_recovery_glsl_twin"
 # p5_compare <clip.mcraw> <frame> <maxDim> <outPrefix> — P5 old-vs-binned preview reduction on a real frame
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/p5_compare.cpp" \
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/p5_compare"
@@ -418,6 +428,8 @@ echo "== running test_develop_stripes =="
 "$BUILD/test_develop_stripes"
 echo "== running test_resample =="
 "$BUILD/test_resample"
+echo "== running test_recovery_glsl_twin =="
+"$BUILD/test_recovery_glsl_twin"
 echo "== running bench_develop (real-clip case needs RAWEDIT_REALCLIP=1) =="
 (cd "$ROOT" && "$BUILD/bench_develop")
 
