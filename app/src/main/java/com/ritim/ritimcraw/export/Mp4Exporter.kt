@@ -15,6 +15,7 @@ import com.ritim.ritimcraw.engine.GlesShaderSources
 import com.ritim.ritimcraw.engine.GpuParityRules
 import com.ritim.ritimcraw.engine.GradeParcel
 import com.ritim.ritimcraw.engine.NativeSource
+import com.ritim.ritimcraw.engine.NodeChainWire
 import com.ritim.ritimcraw.engine.RenderBackend
 import com.ritim.ritimcraw.export.hevc.HevcTrialCache
 import com.ritim.ritimcraw.export.hevc.HevcTrialEncode
@@ -564,8 +565,32 @@ interface GpuDevelop {
         maxDim: Int,
     ): FloatArray? = null
 
-    /** The bridge's thread-local last-error detail (same thread as the failed call). */
+    /**
+     * The bridge's thread-local last-error detail (same thread as the failed call).
+     */
     fun lastDetail(): String?
+
+    /**
+     * (G4/E2) The develop session's NODES/DRT compile door
+     * (E0b-4b's jniDevelopSessionInitNodes): compiles the NODES +
+     * TAIL-DRT programs on the session's GL thread. Default null keeps
+     * every fake honest — a fake that does not override it never claims
+     * a chain-capable session; the pipeline then takes the CPU path.
+     */
+    fun initNodes(sessionHandle: Long): IntArray? = null
+
+    /**
+     * (G4/E2) The develop session's chain door
+     * (jniDevelopSessionSetColorModelChain): hands the session the
+     * grade's node chain (the wire) plus, for the OpenDRT output, the
+     * pre-resolved 77-float uniform pack ([OpenDrtPacks.resolve]).
+     * Default false (the same honest-fake rule as [initNodes]).
+     */
+    fun setColorModelChain(
+        sessionHandle: Long,
+        chainWire: FloatArray,
+        drtUniforms: FloatArray?,
+    ): Boolean = false
 }
 
 /** The real boundary: the NativeSource wrappers with the validated single-source-of-truth shader texts. */
@@ -716,6 +741,26 @@ internal object NativeGpuDevelop : GpuDevelop {
         NativeSource.jniDevelopSessionClose(sessionHandle)
 
     override fun lastDetail(): String? = NativeSource.previewLastError()
+
+    // (G4/E2) The develop session's NODES/DRT doors, the same JNI pair
+    // EncodedSource's NativeEncodedGpuDeveloper rides (the E0b-4b
+    // follow-up): initNodes compiles the NODES + TAIL-DRT programs, the
+    // chain door carries the wire + the resolved OpenDrtPacks block.
+    override fun initNodes(sessionHandle: Long): IntArray? =
+        NativeSource.jniDevelopSessionInitNodes(
+            sessionHandle,
+            GlesShaderSources.NODES,
+            GlesShaderSources.FULLSCREEN_VERTEX,
+            GlesShaderSources.DEVELOP_FRAGMENT_TAIL_DRT,
+        )
+
+    override fun setColorModelChain(
+        sessionHandle: Long,
+        chainWire: FloatArray,
+        drtUniforms: FloatArray?,
+    ): Boolean = NativeSource.jniDevelopSessionSetColorModelChain(
+        sessionHandle, chainWire, drtUniforms,
+    )
 }
 
 /**
@@ -1842,6 +1887,11 @@ class ExportPipeline(
         if (sessionDrawEligible) {
             writer.requestSessionEncoderSurface()
         }
+        // (G4/E2-b) The chain the renders consume: the constructor's wire
+        // until the plan resolves, then the plan's OWN fold (HLG retargets
+        // the DRT display; SDR keeps the SAME instance). The renders read
+        // this — never the raw constructor field.
+        var effectiveChainWire: FloatArray? = chainWire
         // E1d: true when the resolved plan is a 10-bit one (GPU encoder-surface only).
         var tenBit = false
         try {
@@ -1889,6 +1939,15 @@ class ExportPipeline(
                 run.durationSec = (videoPts.last() / 1_000_000.0) + 1.0 / fps
                 tenBit = verified.bitDepth == 10
                 if (!verified.ok) throw IllegalStateException(verified.errorMessage())
+                // (G4/E2-b) The chain fold: when the verified plan IS HLG,
+                // the develop session's DRT must run at HLG 1000 (the
+                // export's output transform — the wire's display slot is
+                // the EDITOR's preview target, an SDR display). The fold
+                // is PURE and copy-on-write; an SDR plan's chain is the
+                // SAME instance (byte-identical, today's behavior).
+                effectiveChainWire = ExportChainFold.forHlg(
+                    chainWire, forceHlg = verified.effective.dynamicRange == ExportDynamicRange.HLG,
+                )
                 writer.expectVideoConfig()
                 writer.configureVideo(verified)
             }
@@ -1936,6 +1995,58 @@ class ExportPipeline(
                     gpuDevelopActive = false
                     stageLog?.invoke(
                         developFallbackLine(gpuDevelop.lastDetail() ?: "develop session open failed")
+                    )
+                }
+            }
+            // (G4/E2-b) The v2 chain door on the GPU develop session: a
+            // NODES/DRT snapshot's chain now rides the GPU (the E0b-4b
+            // doors exist — initNodes + setColorModelChain), the SAME
+            // wire the CPU door reads, with the EXPORT's own output
+            // transform already folded ([effectiveChainWire] went
+            // through ExportChainFold when the plan resolved HLG). A
+            // refusal (programs not compiled, a refused wire) falls to
+            // the CPU develop with ONE honest line — the export never
+            // dies on this seam, and an SDR export's chain is
+            // byte-identical.
+            if (gpuDevelopActive && effectiveChainWire != null) {
+                val chainApplied = try {
+                    val limits = gpuDevelop.initNodes(gpuSessionHandle)
+                    val compiled = limits != null && limits.isNotEmpty() && limits[0] == 1
+                    if (!compiled) {
+                        stageLog?.invoke(
+                            "chain fallback: requested=gpu effective=cpu reason=nodes-programs-not-compiled"
+                        )
+                        false
+                    } else {
+                        val drtPack = if (effectiveChainWire!!.size >= NodeChainWire.OUTPUT && effectiveChainWire!![1] == 1.0f) {
+                            val o = effectiveChainWire!!.size - NodeChainWire.OUTPUT
+                            runCatching {
+                                com.ritim.ritimcraw.engine.OpenDrtPacks.resolve(
+                                    com.ritim.ritimcraw.engine.OpenDrtPacks.Spec(
+                                        look = effectiveChainWire!![o + NodeChainWire.SLOT_OUT_LOOK].toInt(),
+                                        tonescale = effectiveChainWire!![o + NodeChainWire.SLOT_OUT_TONESCALE].toInt(),
+                                        cwp = effectiveChainWire!![o + NodeChainWire.SLOT_OUT_CWP].toInt(),
+                                        cwpLimit = effectiveChainWire!![o + NodeChainWire.SLOT_OUT_CWP_LIMIT],
+                                        grey = effectiveChainWire!![o + NodeChainWire.SLOT_OUT_GREY],
+                                        display = effectiveChainWire!![o + NodeChainWire.SLOT_OUT_DISPLAY].toInt(),
+                                    ),
+                                )
+                            }.getOrNull()
+                        } else {
+                            null
+                        }
+                        gpuDevelop.setColorModelChain(gpuSessionHandle, effectiveChainWire, drtPack)
+                    }
+                } catch (e: IllegalStateException) {
+                    // No .so: the honest CPU continue (the seam's guard).
+                    false
+                }
+                if (!chainApplied) {
+                    gpuDevelopActive = false
+                    stageLog?.invoke(
+                        developFallbackLine(
+                            gpuDevelop.lastDetail() ?: "the GPU develop session refused the v2 chain"
+                        )
                     )
                 }
             }
@@ -2156,7 +2267,7 @@ class ExportPipeline(
                         if (sessionSurfaceAttached) {
                             val drewSession = try {
                                 session.renderFrameToEncoder(
-                                    info.handle, s.frameIndex, s.ptsUs, grade, lutPath, chainWire, effectiveDeg,
+                                    info.handle, s.frameIndex, s.ptsUs, grade, lutPath, effectiveChainWire, effectiveDeg,
                                 )
                             } catch (e: IllegalStateException) {
                                 false
@@ -2270,7 +2381,7 @@ class ExportPipeline(
                                         gpuDevelop.lastDetail() ?: "gpu develop render failed"
                                     )
                                 )
-                                rgb = session.renderFrame(info.handle, s.frameIndex, grade, lutPath, gyroPath, chainWire)
+                                rgb = session.renderFrame(info.handle, s.frameIndex, grade, lutPath, gyroPath, effectiveChainWire)
                                     ?: throw IllegalStateException(
                                         Mp4ExportErrors.message(
                                             session.code(), session.stage(), session.detail()
@@ -2280,7 +2391,7 @@ class ExportPipeline(
                                 rgb = gpu
                             }
                         } else {
-                            rgb = session.renderFrame(info.handle, s.frameIndex, grade, lutPath, gyroPath, chainWire)
+                            rgb = session.renderFrame(info.handle, s.frameIndex, grade, lutPath, gyroPath, effectiveChainWire)
                                 ?: throw IllegalStateException(
                                     Mp4ExportErrors.message(
                                         session.code(), session.stage(), session.detail()
@@ -2801,22 +2912,18 @@ class Mp4Exporter(
                 engine.execute {
                     val res = try {
                         var backend = if (encoded) RenderBackend.CPU else job.renderBackend
-                        // F1-6 (color model v2): a NODES/DRT snapshot rides
-                        // the CPU door (the develop session has no nodes
-                        // doors yet) - the honest gradeOnGpu fold: request
-                        // the CPU path UP FRONT with the reason on the stage
-                        // log (the plan's "nodes via GPU path when
-                        // gradeOnGpu, else honest failure" shorthand; the
-                        // CPU path DOES render the chain, so the export
-                        // succeeds with its own look).
-                        if (job.snapshotChainWire != null && backend == RenderBackend.GPU_EXPERIMENTAL) {
-                            stageLog?.invoke(
-                                "render backend fallback: requested=GPU_EXPERIMENTAL " +
-                                    "effective=CPU reason=v2-node-chain"
-                            )
-                            run?.note("gpu->cpu: v2-node-chain")
-                            backend = RenderBackend.CPU
-                        }
+                        // F1-6 (color model v2) — G4/E2-b UPDATE: a
+                        // NODES/DRT snapshot no longer forces the CPU
+                        // door. The develop session's own nodes doors
+                        // (E0b-4b: initNodes + setColorModelChain) are
+                        // wired into the pipeline now, so a GPU-requested
+                        // chain export rides the GPU develop session —
+                        // the HLG export's output transform (display =
+                        // Hlg1000 through ExportChainFold) NEEDS the GPU
+                        // DRT-TAIL bake. The pipeline's chain door folds
+                        // honestly back to the CPU develop with ONE line
+                        // when the session refuses the chain (the same
+                        // one-line rule every GPU seam rides).
                         // E0b-5: an encoded source tries its own GPU -> encoder-surface door first; the
                         // first Surface bring-up failure restarts once without it (clean, from frame 0).
                         var sessionSurface = true
