@@ -74,15 +74,18 @@ std::vector<Grade> synthGrades() {
 }
 
 // Frozen on `main` (see the header comment): seed 1..3 x grade 0..3.
+// Re-baselined 2026-11-27: grades 0 and 1 (highlight reconstruction ON) changed on main by the
+// owner-approved stage-3 'cap the cell to the clipped ceiling' fix (29422794, Formula X).
+// New values = pristine main fe87e77f output; grades 2 and 3 are unchanged. Not a loosening.
 const uint64_t kSynthOff[3][4] = {
-    {0x282707e045aa6af7ULL, 0xb0a916fb9f64058bULL, 0x0f95238b45ac3c63ULL, 0x6fb225fe7f86acccULL},
-    {0x0521871b1beeb75aULL, 0xfa6963e90c207263ULL, 0x553ecfbd21fb1b78ULL, 0xd750b49a2f0eae22ULL},
-    {0xdb7b87a8a1242445ULL, 0x5ea04fa037105440ULL, 0xfaa3a0e254d758e2ULL, 0xfc36421df47b7742ULL},
+    {0x4b1a286eb9d68bc8ULL, 0x06d6b138197ceaf0ULL, 0x0f95238b45ac3c63ULL, 0x6fb225fe7f86acccULL},
+    {0xb4c5034f429bb54cULL, 0xd534e2b3c04d2c76ULL, 0x553ecfbd21fb1b78ULL, 0xd750b49a2f0eae22ULL},
+    {0xb7ca524ff51815c0ULL, 0x35fb520b6645df68ULL, 0xfaa3a0e254d758e2ULL, 0xfc36421df47b7742ULL},
 };
 // Real clip frames 1 and 2, grades {default, chroma 40 + luma 30 + sat 15}.
 const uint64_t kRealOff[2][2] = {
-    {0x7bdc541a6c2bac94ULL, 0x61f9cbb81998fbbcULL},
-    {0x3ef51193538b2918ULL, 0x6e8602fa8edb6d0fULL},
+    {0xabe12c0d02f77b9fULL, 0x6d51cb77816feaacULL},
+    {0xd33064742656c49eULL, 0x5d9bf8fa56f9ef78ULL},
 };
 
 ImageF flat(uint32_t w, uint32_t h, float r, float g, float b) {
