@@ -637,11 +637,15 @@ class StaticA11yAuditTest {
         // (M8, 2026-11-27) the dialog additions moved the rows again
         // (635/637 → 781/783, 761/763 → 907/909, 1100 → 1246): the same
         // reviewed shapes, renumbered to the live file.
-        "ExportsScreen.kt:781" to "DONE export card, select-mode toggle branch: the card's filename headline Text (content lambda) labels the merged row focus",
-        "ExportsScreen.kt:783" to "DONE export card, open branch: the card's filename headline Text (content lambda) labels the merged row focus",
-        "ExportsScreen.kt:907" to "DONE export card (thumbnail shape), select-mode toggle branch: the card's filename headline Text labels the merged row focus",
-        "ExportsScreen.kt:909" to "DONE export card (thumbnail shape), open branch: the card's filename headline Text labels the merged row focus",
-        "ExportsScreen.kt:1246" to "FAILED export card, select-mode toggle branch: the card's filename headline Text labels the merged row focus (same reviewed pattern)",
+        // (M10, 2026-11-27) the remembered-checkbox state notes moved the
+        // rows once more (781/783 → 825/827, 907/909 → 951/953,
+        // 1246 → 1290): the same reviewed shapes, renumbered to the live
+        // file.
+        "ExportsScreen.kt:825" to "DONE export card, select-mode toggle branch: the card's filename headline Text (content lambda) labels the merged row focus",
+        "ExportsScreen.kt:827" to "DONE export card, open branch: the card's filename headline Text (content lambda) labels the merged row focus",
+        "ExportsScreen.kt:951" to "DONE export card (thumbnail shape), select-mode toggle branch: the card's filename headline Text labels the merged row focus",
+        "ExportsScreen.kt:953" to "DONE export card (thumbnail shape), open branch: the card's filename headline Text labels the merged row focus",
+        "ExportsScreen.kt:1290" to "FAILED export card, select-mode toggle branch: the card's filename headline Text labels the merged row focus (same reviewed pattern)",
     )
 
     @Test
