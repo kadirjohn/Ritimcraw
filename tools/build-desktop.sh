@@ -242,6 +242,12 @@ echo "== building tests =="
 # `temporal_measure ghost [strength]`; not a test.
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/temporal_measure.cpp" \
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/temporal_measure"
+# temporal_bench: D4 (night-e6b) frame-cost bench for temporalMergeCfa —
+# real clip + binned 1080p twin, serial vs parallel, median/p90 over N
+# runs, with the serial/parallel checksum bit-identity tripwire. Run by
+# hand: `temporal_bench <clip.mcraw> [center] [runs]`; not a test.
+"$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/temporal_bench.cpp" \
+  "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/temporal_bench"
 # test_focus_fit: the focal-fit layer's recovery proofs (closed form recovers
 # a known k, 1.0 passes through, noise widens the honest window, prediction
 # scaling is exactly linear, Lost/outside pairs are gated out).

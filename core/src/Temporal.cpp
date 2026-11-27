@@ -92,6 +92,55 @@ inline float sigmaDiff(const NoiseProfile* a, const NoiseProfile* b,
     return std::sqrt(varOf(a, signal, slot) + varOf(b, signal, slot));
 }
 
+// D4 (night-e6b) merge-loop speed path: the same variance arithmetic
+// with the profile's POINTER LOADS and the valid-FLAG loads folded out
+// of the per-pixel loop. A NoiseProfile is immutable for the duration of
+// the merge (the caller owns it; the merge never writes), so reading
+// s[slot]/o[slot]/valid once per merge and keeping them in a small
+// per-slot table changes WHERE the loads happen, never the values:
+// varOfPrepared performs exactly varOf's expression order —
+//   valid slot:  v = s*signal + o; v > 1e-9 ? v : fallback^2
+//   invalid:     fallback^2 (varOf's fall-through, constant)
+// — the same fmadd, the same compare, the same result bits. Bit-identity
+// is pinned by merge_rows_ab_bit_identical against the frozen reference
+// (which keeps the per-pixel varOf over the raw pointers).
+struct PreparedVarProfile {
+    float s[4];
+    float o[4];
+    bool valid[4];
+};
+
+inline PreparedVarProfile prepareVarProfile(const NoiseProfile* np) {
+    PreparedVarProfile p{};
+    for (int slot = 0; slot < 4; ++slot) {
+        p.valid[slot] = np && np->valid;
+        if (p.valid[slot]) {
+            p.s[slot] = np->s[slot];
+            p.o[slot] = np->o[slot];
+        }
+    }
+    return p;
+}
+
+inline float varOfPrepared(const PreparedVarProfile& p, float signal,
+                           int slot) {
+    if (p.valid[slot]) {
+        const float v = p.s[slot] * signal + p.o[slot];
+        if (v > 1e-9f)
+            return v;
+    }
+    const float f = temporalFallbackSigma();
+    return f * f;
+}
+
+// sqrt(va + vn) on the prepared tables — sigmaDiff's exact op order.
+inline float sigmaDiffPrepared(const PreparedVarProfile& a,
+                               const PreparedVarProfile& b,
+                               float signal, int slot) {
+    return std::sqrt(varOfPrepared(a, signal, slot)
+                     + varOfPrepared(b, signal, slot));
+}
+
 // Weight taper on the block residual (in units of sigma): full at/below
 // kResidualTaperFull, zero at/above kResidualTaperZero, linear between.
 inline float residualTaper(float r) {
@@ -157,6 +206,38 @@ inline int axisCandidates(uint32_t u, bool hasLeft, bool hasRight,
     offs[0] = 0;
     wts[0] = 1.0f;
     return 1;
+}
+
+// Per-column feather/ramp cache for the merge loop (D4 night-e6b, idea 2
+// "blok esleme/kuvvet tablolarinin onhesabi" applied to the OBMC axis):
+// axisCandidates(uX, hasLeft, hasRight) is a pure function of the
+// pixel's position within its 128-px block column, and the whole 128-px
+// run of a block computes the SAME candidate pair (offs fixed, weights a
+// linear ramp of uX). The old loop recomputed both float divisions for
+// every pixel of every row; the merge loop now fills this cache once per
+// row (w entries: the frame edge blocks clamp, so the last block's ramp
+// covers the tail) and reads plain floats inside the x loop. The values
+// are EXACTLY the values axisCandidates returned before — the same
+// expressions, evaluated once per column instead of once per pixel-row —
+// so the merge output is bit-identical (pinned by
+// merge_rows_ab_bit_identical against temporalMergeRowsReference, which
+// keeps the per-pixel recompute).
+struct ColumnCandidates {
+    int offs[2];
+    float wts[2];
+    int count = 1;
+};
+
+inline void fillColumnCandidates(std::vector<ColumnCandidates>& cols,
+                                 uint32_t w, uint32_t maxBx) {
+    cols.resize(w);
+    for (uint32_t x = 0; x < w; ++x) {
+        const uint32_t bx = std::min(x >> kBlockCfaShift, maxBx);
+        const uint32_t uX = x & (kBlockCfa - 1);
+        ColumnCandidates& c = cols[x];
+        c.count = axisCandidates(uX, bx > 0, bx + 1 < maxBx + 1,
+                                 c.offs, c.wts);
+    }
 }
 
 // One neighbor's full evaluation, shared by prev/next.
@@ -362,7 +443,16 @@ void matchProxyBlocks(const LumaProxy& center, const LumaProxy& neighbor,
     if (neighbor.w != center.w || neighbor.h != center.h || outW == 0 || outH == 0)
         return;
 
-    for (uint32_t by = 0; by < outH; ++by) {
+    // D4 idea 1 (row parallelism): each output block is an INDEPENDENT
+    // argmin over its own 81 candidates (no cross-block state), so the
+    // block rows go through parallelForRows. Bit-exactness: the merge
+    // output is a pure function of the field, and the field is a pure
+    // function of the inputs — the row split only changes WHICH thread
+    // computes which block, never the arithmetic (same expressions, same
+    // order per block). Pinned by the golden checksums and the A/B test
+    // (the serial fallback path is the same code).
+    parallelForRows(outH, [&](size_t rowBegin, size_t rowEnd) {
+    for (uint32_t by = static_cast<uint32_t>(rowBegin); by < static_cast<uint32_t>(rowEnd); ++by) {
         for (uint32_t bx = 0; bx < outW; ++bx) {
             const uint32_t ox = bx * kBlockSize;
             const uint32_t oy = by * kBlockSize;
@@ -388,6 +478,7 @@ void matchProxyBlocks(const LumaProxy& center, const LumaProxy& neighbor,
             out[static_cast<size_t>(by) * outW + bx] = mv;
         }
     }
+    });
 }
 
 void matchProxyBlocksSeeded(const LumaProxy& center, const LumaProxy& neighbor,
@@ -414,7 +505,12 @@ void matchProxyBlocksSeeded(const LumaProxy& center, const LumaProxy& neighbor,
         1.0f / static_cast<float>((kBlockSize / 2) * (kBlockSize / 2));
     const float thresh = accept > 0.0f ? accept : std::numeric_limits<float>::max();
 
-    for (uint32_t by = 0; by < outH; ++by) {
+    // D4 idea 1 (row parallelism): same independence argument as
+    // matchProxyBlocks — the seed is READ-ONLY and each block's
+    // early-accept/scan decision touches only its own inputs. Row split
+    // changes the executing thread, never the arithmetic.
+    parallelForRows(outH, [&](size_t rowBegin, size_t rowEnd) {
+    for (uint32_t by = static_cast<uint32_t>(rowBegin); by < static_cast<uint32_t>(rowEnd); ++by) {
         for (uint32_t bx = 0; bx < outW; ++bx) {
             const uint32_t ox = bx * kBlockSize;
             const uint32_t oy = by * kBlockSize;
@@ -464,6 +560,7 @@ void matchProxyBlocksSeeded(const LumaProxy& center, const LumaProxy& neighbor,
             out[bi] = mv;
         }
     }
+    });
 }
 
 namespace {
@@ -555,6 +652,303 @@ void refineForward(const LumaProxy& c, const LumaProxy& n, float floor,
 }
 
 } // namespace
+
+void temporalMergeRows(const uint16_t* center, const uint16_t* prev,
+                       const uint16_t* next, const FrameInfo& info,
+                       const RawMeta& meta, const TemporalSettings& settings,
+                       const TemporalSideField& prevField,
+                       const TemporalSideField& nextField,
+                       uint16_t* out, double* rowWPrev, double* rowWNext) {
+    const uint32_t w = info.width;
+    const uint32_t h = info.height;
+    const bool anyPrev = prevField.on;
+    const bool anyNext = nextField.on;
+    if (!center || !out)
+        return;
+    if (anyPrev && (!prev || !prevField.blockWeight || !prevField.fwd))
+        return; // inconsistent inputs: nothing safe to write
+    if (anyNext && (!next || !nextField.blockWeight || !nextField.fwd))
+        return;
+    if (!anyPrev && !anyNext) {
+        const size_t n = static_cast<size_t>(w) * h;
+        std::memcpy(out, center, n * sizeof(uint16_t));
+        return;
+    }
+    // Full-res merge with overlap feathering (source-comparison item:
+    // non-overlapping blocks leave visible weight steps at boundaries —
+    // FFmpeg obmc_tab / ginzburg cosine feather). The per-block weight
+    // field is spread over the outer quarter of each block edge with
+    // linear ramps (50/50 at a boundary, continuous into the plateau),
+    // applied as an outer product of per-axis ramps: a pixel blends its
+    // containing block's warped sample with its band neighbors' samples.
+    // CONSERVATIVE VARIANT, deliberately different from both references:
+    // candidate weights renormalize at the pixel over ACCEPTED blocks
+    // only — a rejected (occluded / moved) block contributes neither a
+    // sample nor a weight, so its side of a boundary keeps the center
+    // pixel intact instead of being dragged by a neighbor's vector. The
+    // block grid is floor(proxy/16), so tail pixels clamp to the edge
+    // block (both neighbors share the center-derived grid).
+    const uint32_t maxBy = std::max(prevField.on ? prevField.bh - 1 : 0,
+                                    nextField.on ? nextField.bh - 1 : 0);
+    const uint32_t maxBx = std::max(prevField.on ? prevField.bw - 1 : 0,
+                                    nextField.on ? nextField.bw - 1 : 0);
+    // The rows are independent (each writes only its own output row and reads the immutable inputs),
+    // so they run through parallelForRows (the merge loop was ~90% of the stage, one thread). The only
+    // cross-row state were the two diagnostic weight sums and the pixel count: each row now keeps its
+    // own partial sums, combined in ROW ORDER below, so serial and parallel runs report identical
+    // numbers and the output pixels are bit-identical to the old single-loop code (pinned by
+    // merge_output_is_identical_serial_and_parallel_and_pinned).
+    // D4 idea 2: the per-column OBMC candidates are position-pure, so one
+    // cache is built once per call and SHARED read-only by every row (the
+    // row loop only reads it). This removes the per-pixel
+    // axisCandidates recompute (2 float divisions + branches per pixel)
+    // from the innermost loop without touching any arithmetic order.
+    std::vector<ColumnCandidates> cols;
+    fillColumnCandidates(cols, w, maxBx);
+    // D4 idea 2 (precompute) on the noise profiles: fold the per-pixel
+    // pointer loads + valid-flag loads of sigmaDiff's varOf into per-slot
+    // tables filled once per merge (see PreparedVarProfile). Same values,
+    // same expression order — bit-identity pinned by the A/B test.
+    const PreparedVarProfile varCenter =
+        prepareVarProfile(settings.centerNoise);
+    const PreparedVarProfile varPrev = prepareVarProfile(settings.prevNoise);
+    const PreparedVarProfile varNext = prepareVarProfile(settings.nextNoise);
+    parallelForRows(h, [&](size_t rowBegin, size_t rowEnd) {
+    for (uint32_t y = static_cast<uint32_t>(rowBegin); y < static_cast<uint32_t>(rowEnd); ++y) {
+        double wSumPrev = 0.0;
+        double wSumNext = 0.0;
+        const size_t row = static_cast<size_t>(y) * w;
+        const uint32_t by = std::min(y >> kBlockCfaShift, maxBy);
+        const uint32_t uY = y & (kBlockCfa - 1);
+        int offY[2];
+        float wY[2];
+        const int ncy = axisCandidates(uY, by > 0, by + 1 < maxBy + 1, offY, wY);
+        for (uint32_t x = 0; x < w; ++x) {
+            const uint32_t bx = std::min(x >> kBlockCfaShift, maxBx);
+            const ColumnCandidates& cc = cols[x];
+            const int ncx = cc.count;
+            const int* offX = cc.offs;
+            const float* wX = cc.wts;
+            const int slot = cellSlot(x, y);
+            const float cSignal = normSignal(center[row + x], meta, slot);
+            // Per-pixel guard sigma (same for every candidate block of
+            // this pixel: it depends only on the center sample).
+            const float sigP = sigmaDiffPrepared(varCenter, varPrev,
+                                                 cSignal, slot);
+            const float sigN = sigmaDiffPrepared(varCenter, varNext,
+                                                 cSignal, slot);
+            float acc = cSignal; // weight 1.0 center, always
+            float wsum = 1.0f;
+            if (anyPrev) {
+                for (int iy = 0; iy < ncy; ++iy) {
+                    const uint32_t byi =
+                        static_cast<uint32_t>(static_cast<int>(by) + offY[iy]);
+                    for (int ix = 0; ix < ncx; ++ix) {
+                        const uint32_t bxi =
+                            static_cast<uint32_t>(static_cast<int>(bx) + offX[ix]);
+                        const size_t bi = static_cast<size_t>(byi) * prevField.bw + bxi;
+                        const float bw_ = prevField.blockWeight[bi];
+                        if (bw_ <= 0.0f)
+                            continue; // rejected block: no sample, no weight
+                        const float wgt = wX[ix] * wY[iy];
+                        const MotionVector& mv = prevField.fwd[bi];
+                        const int nx = static_cast<int>(x) + proxyToCfa(mv.dx);
+                        const int ny = static_cast<int>(y) + proxyToCfa(mv.dy);
+                        if (nx < 0 || nx >= static_cast<int>(w)
+                            || ny < 0 || ny >= static_cast<int>(h))
+                            continue;
+                        const float nSignal =
+                            normSignal(prev[static_cast<size_t>(ny) * w + nx],
+                                       meta, slot);
+                        // Per-pixel occlusion guard: a residual beyond
+                        // 6 sigma zeroes THIS pixel's weight only.
+                        const float d = std::fabs(nSignal - cSignal);
+                        if (sigP > 1e-9f && d <= kPixelGuardSigma * sigP) {
+                            acc += bw_ * wgt * nSignal;
+                            wsum += bw_ * wgt;
+                            wSumPrev += bw_ * wgt;
+                        }
+                    }
+                }
+            }
+            if (anyNext) {
+                for (int iy = 0; iy < ncy; ++iy) {
+                    const uint32_t byi =
+                        static_cast<uint32_t>(static_cast<int>(by) + offY[iy]);
+                    for (int ix = 0; ix < ncx; ++ix) {
+                        const uint32_t bxi =
+                            static_cast<uint32_t>(static_cast<int>(bx) + offX[ix]);
+                        const size_t bi = static_cast<size_t>(byi) * nextField.bw + bxi;
+                        const float bw_ = nextField.blockWeight[bi];
+                        if (bw_ <= 0.0f)
+                            continue;
+                        const float wgt = wX[ix] * wY[iy];
+                        const MotionVector& mv = nextField.fwd[bi];
+                        const int nx = static_cast<int>(x) + proxyToCfa(mv.dx);
+                        const int ny = static_cast<int>(y) + proxyToCfa(mv.dy);
+                        if (nx < 0 || nx >= static_cast<int>(w)
+                            || ny < 0 || ny >= static_cast<int>(h))
+                            continue;
+                        const float nSignal =
+                            normSignal(next[static_cast<size_t>(ny) * w + nx],
+                                       meta, slot);
+                        const float d = std::fabs(nSignal - cSignal);
+                        if (sigN > 1e-9f && d <= kPixelGuardSigma * sigN) {
+                            acc += bw_ * wgt * nSignal;
+                            wsum += bw_ * wgt;
+                            wSumNext += bw_ * wgt;
+                        }
+                    }
+                }
+            }
+
+            // Back to raw DN with this frame's normalization (the inverse
+            // of stage 1; the develop pipeline re-normalizes identically).
+            const float black = static_cast<float>(meta.black[slot]);
+            const float white = static_cast<float>(meta.white);
+            const float range = white > black ? white - black : 1.0f;
+            const float dn = acc / wsum * range + black;
+            const long v = std::lround(dn);
+            out[row + x] = static_cast<uint16_t>(
+                std::min(std::max(v, 0L), static_cast<long>(65535)));
+        }
+        rowWPrev[y] = wSumPrev;
+        rowWNext[y] = wSumNext;
+    }
+    });
+}
+
+// FROZEN REFERENCE twin (D4 night-e6b): the verbatim pre-D4 merge loop.
+// Production NEVER calls this (only the A/B test does). Its value is
+// being old: every optimization inside temporalMergeRows is pinned
+// bit-identical against THIS copy by merge_rows_ab_bit_identical. The
+// two loops must stay textually equivalent math (same expressions, same
+// evaluation order) — do not modernize, do not share helpers beyond the
+// frozen axisCandidates/cellSlot/normSignal trio the old code used.
+void temporalMergeRowsReference(const uint16_t* center, const uint16_t* prev,
+                                const uint16_t* next, const FrameInfo& info,
+                                const RawMeta& meta,
+                                const TemporalSettings& settings,
+                                const TemporalSideField& prevField,
+                                const TemporalSideField& nextField,
+                                uint16_t* out, double* rowWPrev,
+                                double* rowWNext) {
+    const uint32_t w = info.width;
+    const uint32_t h = info.height;
+    const bool anyPrev = prevField.on;
+    const bool anyNext = nextField.on;
+    if (!center || !out)
+        return;
+    if (anyPrev && (!prev || !prevField.blockWeight || !prevField.fwd))
+        return;
+    if (anyNext && (!next || !nextField.blockWeight || !nextField.fwd))
+        return;
+    if (!anyPrev && !anyNext) {
+        const size_t n = static_cast<size_t>(w) * h;
+        std::memcpy(out, center, n * sizeof(uint16_t));
+        return;
+    }
+    const uint32_t maxBy = std::max(prevField.on ? prevField.bh - 1 : 0,
+                                    nextField.on ? nextField.bh - 1 : 0);
+    const uint32_t maxBx = std::max(prevField.on ? prevField.bw - 1 : 0,
+                                    nextField.on ? nextField.bw - 1 : 0);
+    parallelForRows(h, [&](size_t rowBegin, size_t rowEnd) {
+    for (uint32_t y = static_cast<uint32_t>(rowBegin); y < static_cast<uint32_t>(rowEnd); ++y) {
+        double wSumPrev = 0.0;
+        double wSumNext = 0.0;
+        const size_t row = static_cast<size_t>(y) * w;
+        const uint32_t by = std::min(y >> kBlockCfaShift, maxBy);
+        const uint32_t uY = y & (kBlockCfa - 1);
+        int offY[2];
+        float wY[2];
+        const int ncy = axisCandidates(uY, by > 0, by + 1 < maxBy + 1, offY, wY);
+        for (uint32_t x = 0; x < w; ++x) {
+            const uint32_t bx = std::min(x >> kBlockCfaShift, maxBx);
+            const uint32_t uX = x & (kBlockCfa - 1);
+            int offX[2];
+            float wX[2];
+            const int ncx = axisCandidates(uX, bx > 0, bx + 1 < maxBx + 1, offX, wX);
+            const int slot = cellSlot(x, y);
+            const float cSignal = normSignal(center[row + x], meta, slot);
+            const float sigP = sigmaDiff(settings.centerNoise, settings.prevNoise,
+                                         cSignal, slot);
+            const float sigN = sigmaDiff(settings.centerNoise, settings.nextNoise,
+                                         cSignal, slot);
+            float acc = cSignal;
+            float wsum = 1.0f;
+            if (anyPrev) {
+                for (int iy = 0; iy < ncy; ++iy) {
+                    const uint32_t byi =
+                        static_cast<uint32_t>(static_cast<int>(by) + offY[iy]);
+                    for (int ix = 0; ix < ncx; ++ix) {
+                        const uint32_t bxi =
+                            static_cast<uint32_t>(static_cast<int>(bx) + offX[ix]);
+                        const size_t bi = static_cast<size_t>(byi) * prevField.bw + bxi;
+                        const float bw_ = prevField.blockWeight[bi];
+                        if (bw_ <= 0.0f)
+                            continue;
+                        const float wgt = wX[ix] * wY[iy];
+                        const MotionVector& mv = prevField.fwd[bi];
+                        const int nx = static_cast<int>(x) + proxyToCfa(mv.dx);
+                        const int ny = static_cast<int>(y) + proxyToCfa(mv.dy);
+                        if (nx < 0 || nx >= static_cast<int>(w)
+                            || ny < 0 || ny >= static_cast<int>(h))
+                            continue;
+                        const float nSignal =
+                            normSignal(prev[static_cast<size_t>(ny) * w + nx],
+                                       meta, slot);
+                        const float d = std::fabs(nSignal - cSignal);
+                        if (sigP > 1e-9f && d <= kPixelGuardSigma * sigP) {
+                            acc += bw_ * wgt * nSignal;
+                            wsum += bw_ * wgt;
+                            wSumPrev += bw_ * wgt;
+                        }
+                    }
+                }
+            }
+            if (anyNext) {
+                for (int iy = 0; iy < ncy; ++iy) {
+                    const uint32_t byi =
+                        static_cast<uint32_t>(static_cast<int>(by) + offY[iy]);
+                    for (int ix = 0; ix < ncx; ++ix) {
+                        const uint32_t bxi =
+                            static_cast<uint32_t>(static_cast<int>(bx) + offX[ix]);
+                        const size_t bi = static_cast<size_t>(byi) * nextField.bw + bxi;
+                        const float bw_ = nextField.blockWeight[bi];
+                        if (bw_ <= 0.0f)
+                            continue;
+                        const float wgt = wX[ix] * wY[iy];
+                        const MotionVector& mv = nextField.fwd[bi];
+                        const int nx = static_cast<int>(x) + proxyToCfa(mv.dx);
+                        const int ny = static_cast<int>(y) + proxyToCfa(mv.dy);
+                        if (nx < 0 || nx >= static_cast<int>(w)
+                            || ny < 0 || ny >= static_cast<int>(h))
+                            continue;
+                        const float nSignal =
+                            normSignal(next[static_cast<size_t>(ny) * w + nx],
+                                       meta, slot);
+                        const float d = std::fabs(nSignal - cSignal);
+                        if (sigN > 1e-9f && d <= kPixelGuardSigma * sigN) {
+                            acc += bw_ * wgt * nSignal;
+                            wsum += bw_ * wgt;
+                            wSumNext += bw_ * wgt;
+                        }
+                    }
+                }
+            }
+            const float black = static_cast<float>(meta.black[slot]);
+            const float white = static_cast<float>(meta.white);
+            const float range = white > black ? white - black : 1.0f;
+            const float dn = acc / wsum * range + black;
+            const long v = std::lround(dn);
+            out[row + x] = static_cast<uint16_t>(
+                std::min(std::max(v, 0L), static_cast<long>(65535)));
+        }
+        rowWPrev[y] = wSumPrev;
+        rowWNext[y] = wSumNext;
+    }
+    });
+}
 
 void temporalMergeCfa(const uint16_t* center, const FrameInfo& info,
                       const uint16_t* prev, const uint16_t* next,
@@ -825,135 +1219,27 @@ void temporalMergeCfa(const uint16_t* center, const FrameInfo& info,
 
     const uint32_t w = info.width;
     const uint32_t h = info.height;
-    // Full-res merge with overlap feathering (source-comparison item:
-    // non-overlapping blocks leave visible weight steps at boundaries —
-    // FFmpeg obmc_tab / ginzburg cosine feather). The per-block weight
-    // field is spread over the outer quarter of each block edge with
-    // linear ramps (50/50 at a boundary, continuous into the plateau),
-    // applied as an outer product of per-axis ramps: a pixel blends its
-    // containing block's warped sample with its band neighbors' samples.
-    // CONSERVATIVE VARIANT, deliberately different from both references:
-    // candidate weights renormalize at the pixel over ACCEPTED blocks
-    // only — a rejected (occluded / moved) block contributes neither a
-    // sample nor a weight, so its side of a boundary keeps the center
-    // pixel intact instead of being dragged by a neighbor's vector. The
-    // block grid is floor(proxy/16), so tail pixels clamp to the edge
-    // block (both neighbors share the center-derived grid).
-    const uint32_t maxBy = std::max(ev.eligible ? ev.bh - 1 : 0,
-                                    en.eligible ? en.bh - 1 : 0);
-    const uint32_t maxBx = std::max(ev.eligible ? ev.bw - 1 : 0,
-                                    en.eligible ? en.bw - 1 : 0);
-    // The rows are independent (each writes only its own output row and reads the immutable inputs),
-    // so they run through parallelForRows (the merge loop was ~90% of the stage, one thread). The only
-    // cross-row state were the two diagnostic weight sums and the pixel count: each row now keeps its
-    // own partial sums, combined in ROW ORDER below, so serial and parallel runs report identical
-    // numbers and the output pixels are bit-identical to the old single-loop code (pinned by
-    // merge_output_is_identical_serial_and_parallel_and_pinned).
+    // Full-res merge loop (D4 night-e6b): split out verbatim into
+    // temporalMergeRows (Temporal.h) so the A/B bit-identity test can
+    // drive the loop and its frozen pre-D4 reference twin
+    // (temporalMergeRowsReference) on identical inputs. Fields describe
+    // the eligible sides; rejected sides are simply off.
     std::vector<double> rowWPrev(h, 0.0);
     std::vector<double> rowWNext(h, 0.0);
-    parallelForRows(h, [&](size_t rowBegin, size_t rowEnd) {
-    for (uint32_t y = static_cast<uint32_t>(rowBegin); y < static_cast<uint32_t>(rowEnd); ++y) {
-        double wSumPrev = 0.0;
-        double wSumNext = 0.0;
-        const size_t row = static_cast<size_t>(y) * w;
-        const uint32_t by = std::min(y >> kBlockCfaShift, maxBy);
-        const uint32_t uY = y & (kBlockCfa - 1);
-        int offY[2];
-        float wY[2];
-        const int ncy = axisCandidates(uY, by > 0, by + 1 < maxBy + 1, offY, wY);
-        for (uint32_t x = 0; x < w; ++x) {
-            const uint32_t bx = std::min(x >> kBlockCfaShift, maxBx);
-            const uint32_t uX = x & (kBlockCfa - 1);
-            int offX[2];
-            float wX[2];
-            const int ncx = axisCandidates(uX, bx > 0, bx + 1 < maxBx + 1, offX, wX);
-            const int slot = cellSlot(x, y);
-            const float cSignal = normSignal(center[row + x], meta, slot);
-            // Per-pixel guard sigma (same for every candidate block of
-            // this pixel: it depends only on the center sample).
-            const float sigP = sigmaDiff(settings.centerNoise, settings.prevNoise,
-                                         cSignal, slot);
-            const float sigN = sigmaDiff(settings.centerNoise, settings.nextNoise,
-                                         cSignal, slot);
-            float acc = cSignal; // weight 1.0 center, always
-            float wsum = 1.0f;
-            if (anyPrev) {
-                for (int iy = 0; iy < ncy; ++iy) {
-                    const uint32_t byi =
-                        static_cast<uint32_t>(static_cast<int>(by) + offY[iy]);
-                    for (int ix = 0; ix < ncx; ++ix) {
-                        const uint32_t bxi =
-                            static_cast<uint32_t>(static_cast<int>(bx) + offX[ix]);
-                        const size_t bi = static_cast<size_t>(byi) * ev.bw + bxi;
-                        const float bw_ = ev.blockWeight[bi];
-                        if (bw_ <= 0.0f)
-                            continue; // rejected block: no sample, no weight
-                        const float wgt = wX[ix] * wY[iy];
-                        const MotionVector& mv = ev.fwd[bi];
-                        const int nx = static_cast<int>(x) + proxyToCfa(mv.dx);
-                        const int ny = static_cast<int>(y) + proxyToCfa(mv.dy);
-                        if (nx < 0 || nx >= static_cast<int>(w)
-                            || ny < 0 || ny >= static_cast<int>(h))
-                            continue;
-                        const float nSignal =
-                            normSignal(prev[static_cast<size_t>(ny) * w + nx],
-                                       meta, slot);
-                        // Per-pixel occlusion guard: a residual beyond
-                        // 6 sigma zeroes THIS pixel's weight only.
-                        const float d = std::fabs(nSignal - cSignal);
-                        if (sigP > 1e-9f && d <= kPixelGuardSigma * sigP) {
-                            acc += bw_ * wgt * nSignal;
-                            wsum += bw_ * wgt;
-                            wSumPrev += bw_ * wgt;
-                        }
-                    }
-                }
-            }
-            if (anyNext) {
-                for (int iy = 0; iy < ncy; ++iy) {
-                    const uint32_t byi =
-                        static_cast<uint32_t>(static_cast<int>(by) + offY[iy]);
-                    for (int ix = 0; ix < ncx; ++ix) {
-                        const uint32_t bxi =
-                            static_cast<uint32_t>(static_cast<int>(bx) + offX[ix]);
-                        const size_t bi = static_cast<size_t>(byi) * en.bw + bxi;
-                        const float bw_ = en.blockWeight[bi];
-                        if (bw_ <= 0.0f)
-                            continue;
-                        const float wgt = wX[ix] * wY[iy];
-                        const MotionVector& mv = en.fwd[bi];
-                        const int nx = static_cast<int>(x) + proxyToCfa(mv.dx);
-                        const int ny = static_cast<int>(y) + proxyToCfa(mv.dy);
-                        if (nx < 0 || nx >= static_cast<int>(w)
-                            || ny < 0 || ny >= static_cast<int>(h))
-                            continue;
-                        const float nSignal =
-                            normSignal(next[static_cast<size_t>(ny) * w + nx],
-                                       meta, slot);
-                        const float d = std::fabs(nSignal - cSignal);
-                        if (sigN > 1e-9f && d <= kPixelGuardSigma * sigN) {
-                            acc += bw_ * wgt * nSignal;
-                            wsum += bw_ * wgt;
-                            wSumNext += bw_ * wgt;
-                        }
-                    }
-                }
-            }
-
-            // Back to raw DN with this frame's normalization (the inverse
-            // of stage 1; the develop pipeline re-normalizes identically).
-            const float black = static_cast<float>(meta.black[slot]);
-            const float white = static_cast<float>(meta.white);
-            const float range = white > black ? white - black : 1.0f;
-            const float dn = acc / wsum * range + black;
-            const long v = std::lround(dn);
-            out[row + x] = static_cast<uint16_t>(
-                std::min(std::max(v, 0L), static_cast<long>(65535)));
-        }
-        rowWPrev[y] = wSumPrev;
-        rowWNext[y] = wSumNext;
-    }
-    });
+    TemporalSideField prevField, nextField;
+    prevField.on = anyPrev;
+    prevField.blockWeight = anyPrev ? ev.blockWeight.data() : nullptr;
+    prevField.fwd = anyPrev ? ev.fwd.data() : nullptr;
+    prevField.bw = ev.bw;
+    prevField.bh = ev.bh;
+    nextField.on = anyNext;
+    nextField.blockWeight = anyNext ? en.blockWeight.data() : nullptr;
+    nextField.fwd = anyNext ? en.fwd.data() : nullptr;
+    nextField.bw = en.bw;
+    nextField.bh = en.bh;
+    temporalMergeRows(center, prev, next, info, meta, settings,
+                      prevField, nextField, out,
+                      rowWPrev.data(), rowWNext.data());
     double wSumPrev = 0.0;
     double wSumNext = 0.0;
     for (uint32_t y = 0; y < h; ++y) {
