@@ -363,6 +363,50 @@ TEST_CASE("normalize: quiet clip is capped at +12 dB and says so") {
     }
 }
 
+TEST_CASE("normalize: quiet clip with sparse peaks still gets the full +12 dB") {
+    // Owner's soup clip shape: ~-30 LUFS programme, sparse spikes at about
+    // -5 dBFS. Peak headroom must NOT cap the gain (only the +12 dB cap and
+    // the limiter's -1 dBTP ceiling apply): the mean rises ~12 dB, the
+    // spikes are squashed by the limiter.
+    const std::size_t frames = static_cast<std::size_t>(20.0 * kSr);
+    Rng rng(5);
+    const double a = std::pow(10.0, -33.0 / 20.0);
+    std::vector<int16_t> pcm(frames * 2);
+    for (std::size_t i = 0; i < frames; ++i) {
+        const double x = a * std::sin(2.0 * kPi * 997.0 * static_cast<double>(i) / kSr) +
+                         a * 0.3 * rng.uniform();
+        const int16_t v = static_cast<int16_t>(std::lround(x * 32768.0));
+        pcm[2 * i] = v;
+        pcm[2 * i + 1] = v;
+    }
+    const double pk = std::pow(10.0, -5.0 / 20.0) * 32767.0;
+    for (std::size_t k = 0; (k + 1) * 36000 < frames; ++k) {
+        const std::size_t b = k * 36000 + 1000;
+        for (std::size_t j = 0; j < 5; ++j) {
+            const int16_t v = static_cast<int16_t>(std::lround(pk * (1.0 - 0.15 * static_cast<double>(j))));
+            pcm[2 * (b + j)] = v;
+            pcm[2 * (b + j) + 1] = v;
+        }
+    }
+    NormalizeResult r = normalizePcm(pcm, 48000, 2, -14.0, -1.0);
+    INFO("I " << r.report.measured_lufs << " TP " << r.report.measured_dbtp << " -> "
+         << r.report.final_lufs << " / " << r.report.final_dbtp << " gain "
+         << r.report.applied_gain_db << " it " << r.report.iterations);
+    CHECK(r.report.skipped == NormalizeSkipped::None);
+    CHECK(r.report.measured_lufs < -28.0);
+    CHECK(r.report.measured_dbtp > -6.0);
+    CHECK(r.report.applied_gain_db == doctest::Approx(12.0));
+    // The limiter squashes the sparse spikes (they were part of the measured
+    // loudness), so the mean rises 12 dB minus a small spike-energy loss
+    // (~0.9 dB here), never the ~4 dB a peak-headroom cap would give.
+    const double rise = r.report.final_lufs - r.report.measured_lufs;
+    CHECK(rise >= 12.0 - 1.5);
+    CHECK(rise <= 12.0 + 0.1);
+    CHECK(r.report.final_dbtp <= -1.0 + 0.05);
+    CHECK(r.report.shortfall == rawedit::NormalizeShortfall::GainCapped);
+    CHECK(r.report.iterations <= 2);
+}
+
 TEST_CASE("normalize: little headroom reaches the target through the limiter") {
     // Sine at -18 dBFS with brief peaks at -1.8 dBFS: +4 dB wanted, a
     // hard clamp would give well under that.
