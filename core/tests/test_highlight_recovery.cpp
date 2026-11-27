@@ -185,16 +185,18 @@ TEST_CASE("recovery_vs_neutral_vs_off_against_ground_truth") {
 }
 
 
-// KNOWN GAP (owner decision 2026-11-26): "Recovery >= Neutral" on the hue R/G of the 2-CHANNELS-clipped band.
-// Neutral stage 3 improved with Formula X (ceiling = lowest post-WB level among the CLIPPED channels, which
-// brings the pair to one level): its hue R/G error fell to 0.0174 while Recovery estimates the two clipped
-// channels independently from the reference and sits at 0.0293 (measured here: neutral 0.0174, recovery 0.0293;
-// hue B/G neutral 0.0174, recovery 0.0170 still holds, linear error neutral 0.3747 vs recovery 0.0228).
-// Waiting for Recovery's joint two-channel estimate (see docs/HIGHLIGHT_RECOVERY_PLAN.md "Queue" item 2 and
-// docs/recovery-joint-estimate-experiment.patch). The assertion below is the ORIGINAL check, unchanged; the
-// doctest `should_fail` marker makes this test pass while it fails and FAIL once Recovery catches up, so the
-// marker gets removed then.
-TEST_CASE("recovery_two_channel_hue_rg_not_worse_than_neutral_KNOWN_GAP" * doctest::should_fail()) {
+// CLOSED (research-recovery-joint-estimate, D8 2026-11-27): "Recovery >= Neutral" on the hue R/G
+// of the 2-CHANNELS-clipped band. Neutral stage 3's Formula X sat at hue R/G 0.0174 (B/G 0.0174,
+// linear 0.3747) while the independent Recovery estimate was 0.0293. Recovery now estimates the
+// two clipped channels TOGETHER: the two independent ratios and the pair's own ratio c1/c2 are
+// reconciled by a weighted least-squares fit in log space, weighted by the fineness of the scale
+// that supplied each ratio (developCpu, commit "weight the joint estimate by ratio scale
+// fineness"). Measured: hue R/G 0.0105, B/G 0.0099, linear 0.0153 — BOTH hues now below Neutral.
+// Stress drift 0.25 remains above Neutral (R/G 0.0633 vs 0.0525): the coarse-block ratio bias
+// does not vanish under strong tint drift; recorded in docs/HIGHLIGHT_RECOVERY_PLAN.md.
+// The `should_fail` marker is removed (test change: the known gap it stood for is closed by the
+// measured numbers above, so the check now runs as a normal assertion).
+TEST_CASE("recovery_two_channel_hue_rg_not_worse_than_neutral") {
     const float K = 4.0f;
     const ImageF truth = develop(false, K, false, false);
     const ImageF neutral = develop(true, 1, true, false);
