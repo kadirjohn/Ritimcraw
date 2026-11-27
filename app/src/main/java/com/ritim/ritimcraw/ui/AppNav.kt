@@ -493,6 +493,39 @@ fun AppNav(
             // internal copy stays the source of truth, the publish is
             // best-effort, and a publish failure never fails the job.
             publisher = MediaStorePublisher(context),
+            // CinemaDNG sequence export (night E-F): the sequence arm —
+            // writes into the user's SAF folder (the job's cinemaDng
+            // snapshot carries the tree URI). The FOLDER is per-job, so
+            // this is a FACTORY: the queue resolves the exporter from the
+            // job's settings at dispatch, never at construction. A
+            // revoked/unwritable grant fails the job honestly at the
+            // first frame, never a guessed fallback.
+            cinemaDng = { settings ->
+                val folder = com.ritim.ritimcraw.export.CinemaDngFolder(
+                    context = context,
+                    treeUri = settings.folderUri,
+                )
+                // One export, one subfolder inside the picked tree (two
+                // sequences never mix their frame numbers): the folder name
+                // carries the job's prefix and a timestamp fragment — the
+                // display name's resolver is not reachable here, and a
+                // guessed "pretty" name is worse than an honest unique one.
+                val subName = "${settings.prefix}_${
+                    java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.ROOT)
+                        .format(java.util.Date())
+                }"
+                val subId = folder.ensureSubfolder(subName)
+                if (subId != null) {
+                    folder.subfolderDocId = subId
+                }
+                // A failed subfolder creation is NOT a dispatch failure:
+                // the frames then write into the tree root (the honest
+                // fallback — the first frame's own failure will fail the
+                // job if the folder itself is unusable).
+                com.ritim.ritimcraw.export.CinemaDngExporter(
+                    io = com.ritim.ritimcraw.export.NativeCinemaDngIo(folder),
+                )
+            },
         )
     }
     // Queue bookkeeping: a monotonically increasing kick counter — every
@@ -1695,8 +1728,7 @@ fun AppNav(
                         // (E1c) the export sheet's time estimate: this device's
                         // last measured MP4 export speed (null until one ran).
                         exportRate = ExportSheetModel.latestRate(exportJobs),
-                        onExport = { target, resolutionW, resolutionH, exportSettings ->
-                            // Snapshot the CURRENT grade at queue time (the
+                        onExport = { target, resolutionW, resolutionH, exportSettings ->                            // Snapshot the CURRENT grade at queue time (the
                             // spec: a later edit must not change an in-flight
                             // export) and enqueue; the runner picks it up.
                             // The output name is captured from the clip's
@@ -1769,6 +1801,33 @@ fun AppNav(
                                     // in-flight export, and Retry keeps them.
                                     // Only MP4 jobs carry settings.
                                     settings = if (target == Target.MP4) exportSettings else null,
+                                )
+                            )
+                            exportJobs = stores.exports.all()
+                            queueKick += 1
+                            enqueueFeedback()
+                        },
+                        // ---- CinemaDNG sequence (night E-F) ----
+                        // The sheet's CINEMA_DNG tap queues a MARKER job
+                        // (cinemaDng != null routes to the sequence
+                        // exporter; Target stays the persisted format's
+                        // DNG). The snapshot is the sheet's own settings
+                        // (folder + range + timecode + the clip facts) —
+                        // the same grade-snapshot rule: a later sheet
+                        // change must not alter an in-flight export.
+                        onExportCinemaDng = { cinemaSettings ->
+                            stores.exports.add(
+                                ExportJob(
+                                    id = "job-" + System.nanoTime(),
+                                    sourceId = r.sourceId,
+                                    snapshot = stores.grades.get(r.sourceId),
+                                    // The persisted-format convention (the
+                                    // timeline precedent): the marker owns
+                                    // the routing, the target names the
+                                    // family the row shows.
+                                    target = Target.DNG,
+                                    state = State.QUEUED,
+                                    cinemaDng = cinemaSettings,
                                 )
                             )
                             exportJobs = stores.exports.all()

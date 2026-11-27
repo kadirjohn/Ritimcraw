@@ -104,16 +104,19 @@ class ExportQueue(
      */
     private val foreground: ExportForeground = ExportForeground.processDefault(),
     /**
-     * (CinemaDNG sequence export, night E-F) the sequence exporter, when
-     * the app wires one — null keeps every legacy construction compiling
-     * and makes a sequence job (a job whose [ExportJob.cinemaDng]
-     * snapshot is set) fail HONESTLY at dispatch (the timeline-marker
-     * rule): "CinemaDNG export unavailable" with a recovery, never a
-     * silent skip or a wrong per-clip export of the row. The dispatch
-     * checks the marker BEFORE the target `when`, so a sequence job
-     * never falls into the per-clip exporters whatever its target is.
+     * (CinemaDNG sequence export, night E-F) the sequence exporter
+     * factory, when the app wires one — the FOLDER is per-job (the job's
+     * cinemaDng snapshot carries the SAF tree URI), so the queue resolves
+     * the exporter from the settings at dispatch, never at construction.
+     * Null keeps every legacy construction compiling and makes a sequence
+     * job (a job whose [ExportJob.cinemaDng] snapshot is set) fail
+     * HONESTLY at dispatch (the timeline-marker rule): "CinemaDNG export
+     * unavailable" with a recovery, never a silent skip or a wrong
+     * per-clip export of the row. The dispatch checks the marker BEFORE
+     * the target `when`, so a sequence job never falls into the per-clip
+     * exporters whatever its target is.
      */
-    private val cinemaDng: CinemaDngExporter? = null,
+    private val cinemaDng: ((CinemaDngSettings) -> CinemaDngExporter)? = null,
 ) {
 
     /**
@@ -414,13 +417,13 @@ class ExportQueue(
                 // CinemaDNG sequence dispatch (night E-F): the marker
                 // owns the routing BEFORE the target `when` (the
                 // timeline rule) — a sequence job renders THE SEQUENCE,
-                // never the per-clip exporters. The exporter writes
-                // into the user's SAF folder, NOT [out] (the io.outputFile
-                // above is an app-cache file the sequence simply never
-                // touches — harmless, kept for the uniform
+                // never the per-clip exporters. The exporter is resolved
+                // FROM THE JOB'S SETTINGS (the folder is per-job: the
+                // snapshot's SAF tree URI); the app-cache [out] file is
+                // simply never written (harmless, kept for the uniform
                 // acquire-then-finally fd shape).
                 val settings = job.cinemaDng
-                val exporter = cinemaDng
+                val exporter = cinemaDng?.invoke(settings)
                 if (exporter == null) {
                     job.copy(
                         state = State.FAILED,

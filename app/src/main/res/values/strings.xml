@@ -385,6 +385,18 @@
     <string name="export_tab_dng">DNG</string>
     <string name="export_tab_linear">Linear DNG</string>
     <string name="export_tab_photo">Photo</string>
+    <!-- CinemaDNG sequence export (night E-F; Türkçe sahibin gözden geçirmesine açık, işaretli) -->
+    <string name="export_tab_cinema_dng">CinemaDNG</string>
+    <string name="cinema_dng_title">CinemaDNG sequence (RAW)</string>
+    <string name="cinema_dng_raw_note">Colors and effects are not applied; the frames are the raw CFA. For DaVinci Resolve.</string>
+    <string name="cinema_dng_folder">Output folder</string>
+    <string name="cinema_dng_folder_not_set">No folder picked</string>
+    <string name="cinema_dng_pick_folder">Pick folder</string>
+    <string name="cinema_dng_change_folder">Change folder</string>
+    <string name="cinema_dng_estimate">Estimate: %1$s</string>
+    <string name="cinema_dng_time_unknown">Time estimate unknown (no per-frame write measured yet)</string>
+    <string name="cinema_dng_action">Export CinemaDNG sequence</string>
+    <string name="exports_format_cinema_dng">CinemaDNG sequence (RAW)</string>
     <string name="export_resolution_field">Resolution</string>
     <string name="export_custom_dialog_title">Custom resolution</string>
     <string name="export_custom_ok">Use</string>

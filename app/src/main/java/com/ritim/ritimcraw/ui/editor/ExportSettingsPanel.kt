@@ -521,6 +521,10 @@ private fun SubPage(
                     ExportSheetState.Tab.LINEAR -> stringResource(R.string.editor_export_choice_dng_linear) to
                         (stringResource(R.string.exports_format_dng_linear) + " · " + stringResource(R.string.exports_format_dng_linear_detail))
                     ExportSheetState.Tab.PHOTO -> stringResource(R.string.exports_format_photo) to stringResource(R.string.export_photo_detail)
+                    // (Night E-F) the sequence's tab: the raw-data note is
+                    // the one-line hint (the same wording the section shows).
+                    ExportSheetState.Tab.CINEMA_DNG -> stringResource(R.string.export_tab_cinema_dng) to
+                        stringResource(R.string.cinema_dng_raw_note)
                 }
                 OptionRow(title, hint, selected = t == tab, enabled = true) { onTab(t) }
             }
@@ -770,6 +774,8 @@ private fun tabName(t: ExportSheetState.Tab): Int = when (t) {
     ExportSheetState.Tab.DNG -> R.string.export_tab_dng
     ExportSheetState.Tab.LINEAR -> R.string.export_tab_linear
     ExportSheetState.Tab.PHOTO -> R.string.export_tab_photo
+    // (Night E-F) the CinemaDNG sequence's own tab name.
+    ExportSheetState.Tab.CINEMA_DNG -> R.string.export_tab_cinema_dng
 }
 
 private fun presetName(p: ExportPreset): Int = when (p) {

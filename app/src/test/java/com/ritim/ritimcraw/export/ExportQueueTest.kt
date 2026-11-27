@@ -1545,12 +1545,19 @@ class ExportQueueTest {
         )
         val log = mutableListOf<String>()
         val io = FakeCinemaDngIo()
+        // The queue resolves the exporter FROM THE JOB'S SETTINGS (the
+        // folder is per-job): the factory receives the snapshot and the
+        // settings reach the io's folder decision.
+        var seenFolder: String? = null
         val queue = ExportQueue(
             store, DngExporter(FakeDngRender(log), freshEngine()),
             Mp4Exporter(FakeMp4Session(log), { FakeWriter() }, freshEngine()),
             PhotoExporter(FakeMp4Session(log), FakePngWriter(log), freshEngine()),
             RecordingIo(tmp),
-            cinemaDng = CinemaDngExporter(io, freshEngine()),
+            cinemaDng = { settings ->
+                seenFolder = settings.folderUri
+                CinemaDngExporter(io, freshEngine())
+            },
         )
         assertEquals(1, queue.runAll())
         val row = store.all().single()
@@ -1559,6 +1566,7 @@ class ExportQueueTest {
         // The sequence ran (2 frames) and the per-clip DNG arm never did.
         assertEquals(2, io.log.count { it.startsWith("frame:") })
         assertTrue(log.isEmpty())
+        assertEquals("content://tree/x", seenFolder)
     }
 
     @Test

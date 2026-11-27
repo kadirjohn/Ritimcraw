@@ -382,6 +382,18 @@
     <string name="export_tab_dng">DNG</string>
     <string name="export_tab_linear">Lineer DNG</string>
     <string name="export_tab_photo">Fotoğraf</string>
+    <!-- CinemaDNG sıra dışa aktarımı (F gecesi; sahibin gözden geçirmesine açık) -->
+    <string name="export_tab_cinema_dng">CinemaDNG</string>
+    <string name="cinema_dng_title">CinemaDNG dizisi (RAW)</string>
+    <string name="cinema_dng_raw_note">Renk ve efektler uygulanmaz; kareler ham CFA verisidir. DaVinci Resolve için.</string>
+    <string name="cinema_dng_folder">Çıktı klasörü</string>
+    <string name="cinema_dng_folder_not_set">Klasör seçilmedi</string>
+    <string name="cinema_dng_pick_folder">Klasör seç</string>
+    <string name="cinema_dng_change_folder">Klasörü değiştir</string>
+    <string name="cinema_dng_estimate">Tahmin: %1$s</string>
+    <string name="cinema_dng_time_unknown">Süre tahmini bilinmiyor (henüz kare başı yazım ölçülmedi)</string>
+    <string name="cinema_dng_action">CinemaDNG dizisini dışa aktar</string>
+    <string name="exports_format_cinema_dng">CinemaDNG dizisi (RAW)</string>
     <string name="export_resolution_field">Çözünürlük</string>
     <string name="export_custom_dialog_title">Özel çözünürlük</string>
     <string name="export_custom_ok">Kullan</string>
