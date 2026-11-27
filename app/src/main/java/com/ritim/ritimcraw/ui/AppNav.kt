@@ -12,7 +12,9 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutLinearInEasing
 import androidx.compose.animation.core.FiniteAnimationSpec
+import androidx.compose.animation.core.LinearOutSlowInEasing
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
@@ -65,6 +67,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
@@ -2345,30 +2350,145 @@ fun AppNav(
                 // slide + fade toward the target's display order), so
                 // the release's spring and the slide run TOGETHER: the
                 // page keeps moving through the whole transition.
+                //
+                // SMOOTHNESS v2 (owner request 2026-11-27 second round,
+                // "biraz daha smooth olabilir") — three residual root
+                // causes, verified against Compose animation-core 1.7.6
+                // sources (the jars this app compiles against):
+                // (a) the settle spring NEVER inherited the finger's
+                // velocity — every live delta goes through
+                // Animatable.snapTo, whose endAnimation() resets the
+                // stored velocityVector, so the release always started
+                // from a standstill and the page PARKED before easing
+                // (the residual "duruyor" feel; the v1 comment claimed
+                // the opposite). The gesture's onRelease now carries the
+                // measured release velocity, and the settle takes it as
+                // animateTo's initialVelocity
+                // (TabSwipe.settleInitialVelocityDpPerS pins the
+                // pass-through): a fast fling release settles
+                // proportionally faster — the finger's momentum
+                // survives the hand-off.
+                // (b) the settle always targeted 0f — on a flip the page
+                // had been dragged one way and the spring yanked it BACK
+                // (a visible reversal into the slide: the
+                // jerk-then-transition). On a flip the settle now flies
+                // the page TOWARD the side it was dragged
+                // (TabSwipe.settleTargetFraction: ±60% of the width,
+                // past the 15% follow cap, inside the slide's travel,
+                // clipped by AnimatedContent's own clipToBounds), so the
+                // nudged page departs in the direction it was already
+                // moving and the slide's fade-out carries it away; a
+                // no-flip release still returns home to 0.
+                // (c) the nudge layer lived INSIDE the AnimatedContent
+                // content, so the settle moved BOTH pages — the ENTERING
+                // page got yanked backward too as the spring collapsed.
+                // The drag-follow now runs on a layer OUTSIDE the
+                // AnimatedContent (it applies to the current page, which
+                // is the page the finger is on), and the depart settle
+                // runs on a layer INSIDE the content that only the
+                // EXITING page composes (the old page's copy is the one
+                // whose state is not the container's destination).
                 val tabFollowDp = remember { Animatable(0f) }
+                // The departing page's settle offset — SEPARATE from the
+                // live drag so the two animations never fight over one
+                // value: the release hands the drag's value to the
+                // depart (snapped once) and settles it while the drag
+                // Animatable resets for the next gesture.
+                val tabDepartDp = remember { Animatable(0f) }
+                // The container's width in dp, captured at layout — the
+                // settle target needs an absolute dp value while the
+                // pure rule is a fraction of the width.
+                var tabWidthDp by remember { mutableStateOf(0f) }
+                val screenDensity = LocalDensity.current
                 val scope = rememberCoroutineScope()
                 Box(
                     Modifier
                         .fillMaxSize()
+                        .onSizeChanged { tabWidthDp = it.width / screenDensity.density }
+                        // The DRAG-follow layer: OUTSIDE the
+                        // AnimatedContent, so only the composed page the
+                        // finger is dragging (the current target) moves
+                        // — the entering page is born still (root cause
+                        // (c)).
+                        .graphicsLayer {
+                            translationX =
+                                TabSwipe.followOffsetFraction(
+                                    tabFollowDp.value,
+                                    size.width / density,
+                                ) * size.width
+                        }
                         .tabSwipeGesture(
                             currentTab = { destination },
                             onFlip = { destination = it },
                             onDragDeltaDp = { delta ->
                                 if (TabSwipe.isReleaseReset(delta)) {
-                                    // The gesture's end signal: settle
-                                    // back with the spring (canceled by
-                                    // the next gesture's snap — the
+                                    // The gesture's end signal on a
+                                    // CANCELED gesture (a finger LIFT
+                                    // fires onRelease first): settle
+                                    // home from a standstill (canceled
+                                    // by the next gesture's snap — the
                                     // Animatable's own mutation rule).
                                     scope.launch {
-                                        tabFollowDp.animateTo(
-                                            0f,
-                                            tabSwipeSettleSpec(),
-                                        )
+                                        tabFollowDp.animateTo(0f, tabSwipeSettleSpec())
                                     }
                                 } else {
                                     // A live finger delta: the finger
                                     // owns the frame — snap, no easing.
-                                    scope.launch { tabFollowDp.snapTo(delta) }
+                                    // The same snap re-arms the DEPART
+                                    // layer at rest for this gesture's
+                                    // eventual release (the previous
+                                    // gesture's depart may still be
+                                    // travelling; the finger owns the
+                                    // frame now).
+                                    scope.launch {
+                                        tabFollowDp.snapTo(delta)
+                                        tabDepartDp.snapTo(0f)
+                                    }
+                                }
+                            },
+                            onRelease = { velocityX, willFlip ->
+                                // The finger's LIFT (v2): the settle
+                                // inherits the finger's velocity (a)
+                                // and, on a flip, departs toward the
+                                // drag's side instead of reversing
+                                // (b). The pure halves are pinned in
+                                // TabSwipeTest; the drag sign comes from
+                                // the live Animatable (the finger's last
+                                // position, snapped frame-by-frame).
+                                val dxDp = tabFollowDp.value
+                                val settleVelocity =
+                                    TabSwipe.settleInitialVelocityDpPerS(velocityX, dxDp)
+                                if (willFlip) {
+                                    // Hand the nudge to the DEPART
+                                    // Animatable (the exiting page's
+                                    // layer) and aim it past the follow
+                                    // cap toward the side it leaves.
+                                    val targetDp =
+                                        TabSwipe.settleTargetFraction(true, dxDp) *
+                                            tabWidthDp
+                                    scope.launch {
+                                        tabDepartDp.snapTo(dxDp)
+                                        tabDepartDp.animateTo(
+                                            targetDp,
+                                            tabSwipeSettleSpec(),
+                                            settleVelocity,
+                                        )
+                                    }
+                                    // The live drag resets immediately
+                                    // (the next page starts still); the
+                                    // settle home is a no-velocity
+                                    // snap-then-done for the NEXT page.
+                                    scope.launch { tabFollowDp.snapTo(0f) }
+                                } else {
+                                    // No flip: the same page returns
+                                    // home, momentum carried over.
+                                    scope.launch {
+                                        tabFollowDp.animateTo(
+                                            0f,
+                                            tabSwipeSettleSpec(),
+                                            settleVelocity,
+                                        )
+                                    }
                                 }
                             },
                         ),
@@ -2387,34 +2507,74 @@ fun AppNav(
                             // (the ExportSettingsPanel page-slide
                             // precedent, it / 3) — a full-width slide
                             // would drag both pages across the nav bar.
+                            // v2: pinned tween specs, not the spring
+                            // defaults. Two reasons: (1) DESIGN.md
+                            // Motion asks for "M3 standard easing and
+                            // durations" — the shared-axis-X standard
+                            // curve is LinearOutSlowInEasing on the
+                            // ENTER (decelerating, no slow-in start: the
+                            // page is already moving when it appears,
+                            // which kills the "arrives late" feel a
+                            // spring's open-ended tail produces) and
+                            // FastOutLinearInEasing on the EXIT (the
+                            // leaving page accelerates away — shared
+                            // axis fades the exit fast); (2) a fixed
+                            // 240ms duration keeps the settle spring and
+                            // the slide in a known race: the settle's
+                            // critically-damped 1500-stiffness spring
+                            // from ±15% with real finger velocity
+                            // finishes well inside 240ms, so the page
+                            // departs WHILE the slide still carries it,
+                            // never after.
                             if (forward) {
-                                (slideInHorizontally { it / 3 } + fadeIn()) togetherWith
-                                    (slideOutHorizontally { -it / 3 } + fadeOut())
+                                (slideInHorizontally(
+                                    animationSpec = tabSwipeSlideInSpec(),
+                                ) { it / 3 } + fadeIn(tabSwipeFadeInSpec())) togetherWith
+                                    (slideOutHorizontally(
+                                        animationSpec = tabSwipeSlideOutSpec(),
+                                    ) { -it / 3 } + fadeOut(tabSwipeFadeOutSpec()))
                             } else {
-                                (slideInHorizontally { -it / 3 } + fadeIn()) togetherWith
-                                    (slideOutHorizontally { it / 3 } + fadeOut())
+                                (slideInHorizontally(
+                                    animationSpec = tabSwipeSlideInSpec(),
+                                ) { -it / 3 } + fadeIn(tabSwipeFadeInSpec())) togetherWith
+                                    (slideOutHorizontally(
+                                        animationSpec = tabSwipeSlideOutSpec(),
+                                    ) { it / 3 } + fadeOut(tabSwipeFadeOutSpec()))
                             }
                         },
                         label = "browse",
                     ) { d ->
-                        // The nudge layer is INSIDE the AnimatedContent
-                        // so it applies to the transitioning page only,
-                        // never to the outer Box's other children. The
-                        // Animatable carries the LIVE dp delta; this
-                        // layer converts it through the same pure
-                        // fraction rule the old wiring used (the 15% cap
-                        // included), with the layer's own density.
-                        Box(
-                            Modifier
-                                .fillMaxSize()
-                                .graphicsLayer {
-                                    translationX =
-                                        TabSwipe.followOffsetFraction(
-                                            tabFollowDp.value,
-                                            size.width / density,
-                                        ) * size.width
-                                }
-                        ) {
+                        // The DEPART layer: INSIDE the AnimatedContent
+                        // content, composed only by the page whose state
+                        // is NOT the container's current destination —
+                        // during a flip that is exactly the EXITING page
+                        // (the entering and resting page's d == the
+                        // destination, so their copy composes no depart
+                        // layer; the finger's live drag already runs on
+                        // the outer layer). The departing page settles
+                        // toward its depart target while the slide sends
+                        // it out — both animations now push the SAME
+                        // direction, the settle never yanks it back.
+                        if (d != destination) {
+                            // NOTE: the depart offset draws RAW (dp→px),
+                            // NOT through followOffsetFraction — the 15%
+                            // follow cap is the LIVE drag's affordance
+                            // limit (pinned in TabSwipeTest); the depart
+                            // is a fly-through toward ±60% of the width
+                            // (TabSwipe.FOLLOW_DEPART_FRACTION) that must
+                            // NOT clamp mid-flight, or the leaving page
+                            // would visibly stick at 15% while the slide
+                            // un-clipped it — a twitch, not a departure.
+                            // AnimatedContent's clipToBounds keeps the
+                            // overshoot inside the container.
+                            Box(
+                                Modifier
+                                    .fillMaxSize()
+                                    .graphicsLayer {
+                                        translationX = tabDepartDp.value * density
+                                    }
+                            )
+                        }
                         when (d) {
                         Destination.LIBRARY -> LibraryScreen(
                             sources = sources,
@@ -2976,7 +3136,6 @@ fun AppNav(
                         )
                     }
                     }
-                    }
                 }
             }
             // The ambiguity picker (G1): two or more .gcsv logs in the
@@ -3063,18 +3222,56 @@ fun AppNav(
 private const val WIDE_NAV_MIN_WIDTH_DP = 600
 
 /**
- * The tab-swipe drag-follow's release settle (owner request 2026-11-27,
- * "animasyon duruyor, sonra geçiliyor" — the release must not hard-stop):
- * a critically damped spring (no overshoot — the PanelSheet settle
+ * The tab-swipe release settle (owner request 2026-11-27, "animasyon
+ * duruyor, sonra geçiliyor" — the release must not hard-stop): a
+ * critically damped spring (no overshoot — the PanelSheet settle
  * precedent, dampingRatio 1f) at MEDIUM stiffness, so the page's 15%
- * nudge returns through a short visible ease while the flip's slide is
- * still running. A spring, not a tween: the gesture may end mid-motion,
- * and the spring inherits the Animatable's velocity — a release during
- * a fast drag settles proportionally faster instead of ignoring the
- * hand.
+ * nudge eases out while the flip's slide is still running. A spring,
+ * not a tween: the gesture may end mid-motion, and the spring takes the
+ * finger's real release velocity as initialVelocity (v2 —
+ * [TabSwipe.settleInitialVelocityDpPerS]; the v1 wiring relied on the
+ * Animatable's OWN velocity, which every snapTo delta had just reset,
+ * so a fast release settled no faster than a slow one — the page
+ * parked). StiffnessMedium (1500, critically damped) rather than
+ * MediumLow: the settle must FINISH inside the slide's 240ms — a
+ * slower spring would still be visibly travelling when the slide cut,
+ * which reads as a stutter — while 15% width at 1500/stiffness still
+ * shows ~8-10 frames of ease, enough to feel continuous, not instant.
  */
 private fun tabSwipeSettleSpec(): FiniteAnimationSpec<Float> =
     spring(dampingRatio = 1f, stiffness = Spring.StiffnessMedium)
+
+/**
+ * The flip slide's ENTER spec (v2): a 240ms tween with
+ * LinearOutSlowInEasing — the shared-axis-X standard curve. Why these
+ * values: LinearOutSlowInEasing starts at FULL velocity (the page is
+ * already moving the moment it appears — the "arrives late" feel of a
+ * spring's ease-in tail was the owner's "page duruyor" complaint) and
+ * decelerates into place; 240ms is M3's standard duration band for
+ * medium transitions, and paired with the settle's ~120ms spring the
+ * page departs while the slide still carries it. Type is IntOffset:
+ * slideInHorizontally animates pixel offsets.
+ */
+private fun tabSwipeSlideInSpec(): FiniteAnimationSpec<IntOffset> =
+    tween(240, easing = LinearOutSlowInEasing)
+
+/**
+ * The flip slide's EXIT spec (v2): 180ms with FastOutLinearInEasing —
+ * the leaving page accelerates away and the shared-axis fade takes it
+ * out fast. Shorter than the enter (180 < 240) so the old page is GONE
+ * before the new one finishes arriving: no two-page pile-up at the
+ * settle's clip edge, the exit never outlives the enter.
+ */
+private fun tabSwipeSlideOutSpec(): FiniteAnimationSpec<IntOffset> =
+    tween(180, easing = FastOutLinearInEasing)
+
+/** The entering page's fade: matched to the slide-in (240ms, same curve family, 0→1 alpha). */
+private fun tabSwipeFadeInSpec(): FiniteAnimationSpec<Float> =
+    tween(240, easing = LinearOutSlowInEasing)
+
+/** The exiting page's fade: matched to the slide-out (180ms, 1→0 alpha). */
+private fun tabSwipeFadeOutSpec(): FiniteAnimationSpec<Float> =
+    tween(180, easing = FastOutLinearInEasing)
 
 private class Stores(
     val sources: SourceRepository,
