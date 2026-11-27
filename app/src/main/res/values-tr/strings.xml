@@ -424,6 +424,7 @@
     <string name="export_issue_ten_bit_unsupported">Burada hiçbir kodlayıcı 10-bit almıyor. Dosya 8-bit olacak.</string>
     <string name="export_issue_ten_bit_unavailable">10-bit için özgün boyut, kırpma ve düzeltme olmaması, GPU yolunun desteklediği bir ayar ve 10-bit kodlayıcı gerekir. Burada kullanılamıyor, dosya 8-bit olacak.</string>
     <string name="export_issue_range_unavailable">%1$s henüz kullanılamıyor. Dosya SDR olacak.</string>
+    <string name="export_issue_hlg_trial">HLG bu telefonun yedek denetimini geçti (%1$s), tam denetimi değil. Dışa aktarmadan önce kısa bir deneme kodlaması çalışacak.</string>
     <string name="export_issue_rate_mode">Kodlayıcı %1$s sunmuyor. Dışa aktarma %2$s kullanacak.</string>
     <string name="export_issue_above_ceiling">%1$s Mbps, kodlayıcının bildirdiği üst sınırın üstünde. %2$s Mbps\'ye düşürülür.</string>
     <string name="export_issue_uncapped">%1$s Mbps, kodlayıcının bildirdiği %2$s Mbps üst sınırının üstünde. Kodlayıcı reddedebilir veya düşürebilir.</string>

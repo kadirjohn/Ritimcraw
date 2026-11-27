@@ -257,4 +257,55 @@ class HevcProfileTest {
         assertTrue(HevcProfile.HLG.label.contains("HLG"))
         assertTrue(HevcProfile.HDR10.label.contains("HDR10"))
     }
+
+    // ---- HLG's six-key MediaFormat contract (E2-a, plan 4.1) ----
+
+    @Test
+    fun hlg_media_format_entries_are_the_full_six_key_contract_in_the_writers_order() {
+        // Plan 4.1's table, as the profile's own entries: KEY_MIME, KEY_PROFILE,
+        // KEY_LEVEL, KEY_COLOR_STANDARD, KEY_COLOR_RANGE, KEY_COLOR_TRANSFER —
+        // in the same order the writer's format uses, so the device leg can
+        // map them onto ExportFormats.video's HLG branch one for one.
+        val hlg = HevcProfile.HLG
+        val entries = hlg.mediaFormatEntries()
+        assertEquals(listOf("mime", "profile", "level", "color-standard", "color-range", "color-transfer"), entries.map { it.key })
+        val byKey = entries.associate { it.key to it.value }
+        assertEquals("video/hevc", byKey["mime"])       // ExportCodec.HEVC.mime
+        assertEquals("2", byKey["profile"])              // Main10 (KEY_PROFILE + KEY_LEVEL together)
+        assertEquals("16384", byKey["level"])            // MainTier L5 (4K30)
+        assertEquals("6", byKey["color-standard"])      // BT2020 (today's writer writes 1 = BT709)
+        assertEquals("2", byKey["color-range"])          // limited (unchanged)
+        assertEquals("7", byKey["color-transfer"])       // HLG (today's writer writes 3 = SDR)
+        // The seventh key of plan 4.1's table is the ABSENT one: HLG is
+        // scene-referred, no HDR static-info blob (KEY_HDR_STATIC_INFO
+        // is not part of the contract).
+        assertFalse(hlg.requiresHdrStaticInfo)
+        assertEquals(6, entries.size)
+    }
+
+    @Test
+    fun hlg_differs_from_the_sdr_profiles_in_color_only_and_from_hdr10_in_profile_transfer() {
+        // The six keys are the contract's IDENTITY: HLG vs HEVC10_SDR
+        // differ exactly in the color keys; HLG vs HDR10 in profile +
+        // transfer. Field by field, never aliases.
+        val hlg = HevcProfile.HLG.mediaFormatEntries().associate { it.key to it.value }
+        val sdr10 = HevcProfile.HEVC10_SDR.mediaFormatEntries().associate { it.key to it.value }
+        val avc = HevcProfile.AVC_SDR.mediaFormatEntries().associate { it.key to it.value }
+        val hdr10 = HevcProfile.HDR10.mediaFormatEntries().associate { it.key to it.value }
+        // Same profile (Main10), level and range as HEVC10_SDR.
+        assertEquals(hlg["profile"], sdr10["profile"])
+        assertEquals(hlg["level"], sdr10["level"])
+        assertEquals(hlg["color-range"], sdr10["color-range"])
+        // The HDR keys differ: BT2020 + HLG vs BT709 + SDR video.
+        assertNotEquals(hlg["color-standard"], sdr10["color-standard"])
+        assertNotEquals(hlg["color-transfer"], sdr10["color-transfer"])
+        assertNotEquals(hlg["color-standard"], avc["color-standard"])
+        assertNotEquals(hlg["color-transfer"], avc["color-transfer"])
+        // HLG vs HDR10: same BT2020 gamut and range, different profile
+        // (Main10 vs Main10HDR10) and different transfer (HLG vs PQ).
+        assertEquals(hlg["color-standard"], hdr10["color-standard"])
+        assertEquals(hlg["color-range"], hdr10["color-range"])
+        assertNotEquals(hlg["profile"], hdr10["profile"])
+        assertNotEquals(hlg["color-transfer"], hdr10["color-transfer"])
+    }
 }

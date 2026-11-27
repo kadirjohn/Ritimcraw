@@ -468,6 +468,7 @@ private fun issueText(i: ExportIssue): String {
         ExportIssue.Kind.TEN_BIT_UNSUPPORTED -> stringResource(R.string.export_issue_ten_bit_unsupported)
         ExportIssue.Kind.TEN_BIT_UNAVAILABLE -> stringResource(R.string.export_issue_ten_bit_unavailable)
         ExportIssue.Kind.DYNAMIC_RANGE_UNAVAILABLE -> stringResource(R.string.export_issue_range_unavailable, arg(0))
+        ExportIssue.Kind.HLG_TRIAL_REQUIRED -> stringResource(R.string.export_issue_hlg_trial, arg(0))
         ExportIssue.Kind.RATE_MODE_UNSUPPORTED -> stringResource(R.string.export_issue_rate_mode, arg(0), arg(1))
         ExportIssue.Kind.BITRATE_ABOVE_CEILING -> stringResource(R.string.export_issue_above_ceiling, arg(0), arg(1))
         ExportIssue.Kind.BITRATE_UNCAPPED_RISK -> stringResource(R.string.export_issue_uncapped, arg(0), arg(1))

@@ -427,6 +427,7 @@
     <string name="export_issue_ten_bit_unsupported">No encoder here takes 10-bit. The file will be 8-bit.</string>
     <string name="export_issue_ten_bit_unavailable">10-bit needs the original size, no crop or straighten, a grade the GPU path supports and a 10-bit encoder. Here it is not available, so the file will be 8-bit.</string>
     <string name="export_issue_range_unavailable">%1$s is not available yet. The file will be SDR.</string>
+    <string name="export_issue_hlg_trial">HLG passed this phone\'s fallback check (%1$s), not a full one. A short test encode will run before the export.</string>
     <string name="export_issue_rate_mode">The encoder does not offer %1$s. The export will use %2$s.</string>
     <string name="export_issue_above_ceiling">%1$s Mbps is above the encoder\'s listed maximum. It is lowered to %2$s Mbps.</string>
     <string name="export_issue_uncapped">%1$s Mbps is above the encoder\'s listed maximum of %2$s Mbps. The encoder may refuse or lower it.</string>

@@ -415,4 +415,116 @@ class HevcPreflightTest {
         )
         assertEquals(HevcRefusalStage.PROFILE_LEVEL, (verdict as HevcVerdict.Refused).stage)
     }
+
+    // ---- HLG decision table (E2-a, plan 6.1.2; the brief's four rows) ----
+
+    @Test
+    fun api37_hlg_editing_supports_hlg_with_no_trial_encode() {
+        // Row 1: an API 37 device carrying "hlg-editing" -> SUPPORTED
+        // straight through the standard feature query (the 15 Ultra's
+        // real shape, plan 13.13; the trial is only the API-34 path's).
+        val api37 = syntheticAllSupported(api = 37)
+        val verdict = decide(HevcProfile.HLG, api37)
+        assertTrue(verdict is HevcVerdict.Supported)
+        val supported = verdict as HevcVerdict.Supported
+        assertEquals(HevcProfile.HLG, supported.profile)
+        assertEquals("c2.qti.hevc.encoder", supported.codecName)
+        assertFalse(supported.trialEncodeRequired)
+        assertEquals(listOf(HevcInputPath.SURFACE, HevcInputPath.P010_BUFFERS), supported.paths)
+    }
+
+    @Test
+    fun api34_hdr_editing_supports_hlg_only_with_a_required_trial_encode() {
+        // Row 2: API 34 + "hdr-editing" -> SUPPORTED, but the verdict
+        // itself says the trial encode must run before HLG is trusted.
+        val verdict = decide(HevcProfile.HLG, syntheticApi34(hdrEditing = true))
+        assertTrue(verdict is HevcVerdict.Supported)
+        val supported = verdict as HevcVerdict.Supported
+        assertTrue(supported.trialEncodeRequired)
+        assertEquals(HevcProfile.HLG, supported.profile)
+    }
+
+    @Test
+    fun api34_with_no_hdr_feature_refuses_naming_the_fallback_query_not_the_api() {
+        // Row 3: no hdr-editing at API 34 -> REFUSED. The stage is
+        // FEATURE_QUERY, not FEATURE_API: the hdr-editing fallback IS
+        // API-reachable at 34 (it arrived at 33), so the gate is
+        // evaluated and the refusal names the probed feature — the
+        // model's pinned semantics (see the existing
+        // hlg_at_api34_without_hdr_editing_refuses_naming_the_fallback_feature
+        // and hlg_below_the_fallbacks_own_api_still_refuses_on_the_api_gate:
+        // FEATURE_API is the stage only below the fallback's own API).
+        val verdict = decide(HevcProfile.HLG, syntheticApi34(hdrEditing = false))
+        assertTrue(verdict is HevcVerdict.Refused)
+        val refused = verdict as HevcVerdict.Refused
+        assertEquals(HevcRefusalStage.FEATURE_QUERY, refused.stage)
+        assertEquals("c2.qti.hevc.encoder", refused.codecName)
+        assertTrue(refused.reason.contains("FEATURE_HdrEditing"))
+        // The refusal carries its DegradedOffer: an AVC encoder exists.
+        assertTrue(refused.degradedOffer != null)
+        assertEquals(HevcProfile.AVC_SDR, refused.degradedOffer!!.baseline)
+        // And on a device below the fallback's own API there is no path
+        // at all: THAT is the FEATURE_API refusal.
+        val below = decide(HevcProfile.HLG, syntheticApi34(hdrEditing = false).copy(deviceApiLevel = 32))
+        assertEquals(HevcRefusalStage.FEATURE_API, (below as HevcVerdict.Refused).stage)
+        assertTrue((below as HevcVerdict.Refused).degradedOffer != null)
+    }
+
+    @Test
+    fun no_main10_listed_refuses_hlg_at_the_profile_stage_with_the_offer() {
+        // Row 4: the HEVC encoder exists but does not list Main10 ->
+        // PROFILE_LEVEL refusal (HLG IS Main10), the offer carried.
+        val verdict = decide(HevcProfile.HLG, syntheticApi34(main10 = false, hdrEditing = true))
+        assertTrue(verdict is HevcVerdict.Refused)
+        val refused = verdict as HevcVerdict.Refused
+        assertEquals(HevcRefusalStage.PROFILE_LEVEL, refused.stage)
+        assertTrue(refused.reason.contains("2"))   // Main10's value
+        assertTrue(refused.degradedOffer != null)
+    }
+
+    @Test
+    fun every_hlg_refusal_carries_a_degraded_offer_or_names_no_avc() {
+        // The brief's blanket rule: EVERY refusal carries its
+        // DegradedOffer — or honestly has none because no AVC encoder
+        // exists (the offer is a probed fact, never an assumption).
+        for (probe in listOf(
+            syntheticApi34(hdrEditing = false),                        // feature-api
+            syntheticApi34(main10 = false, hdrEditing = true),        // profile-level
+            syntheticApi34(sizeRate = false, hdrEditing = true),      // size-rate
+            syntheticApi34(hevc = false, hdrEditing = true),          // codec-list
+            syntheticApi34(hdrEditing = false, avc = false),          // + no AVC at all
+        )) {
+            val refused = decide(HevcProfile.HLG, probe) as HevcVerdict.Refused
+            if (probe.avcEncoderName != null) {
+                assertTrue("no offer for ${refused.stage}", refused.degradedOffer != null)
+                assertTrue(refused.degradedOffer!!.offerText.contains("AVC 8-bit SDR"))
+            } else {
+                assertNull("offer without an AVC encoder", refused.degradedOffer)
+            }
+        }
+    }
+
+    @Test
+    fun the_full_hlg_decision_table_row_by_row() {
+        // The four rows the plan names, one table: API 37 with
+        // hlg-editing -> supported; API 34 with hdr-editing -> supported
+        // + trial; neither feature -> refused (feature-api); Main10
+        // missing -> refused (profile-level).
+        val rows = listOf(
+            Triple(syntheticAllSupported(api = 37), "supported", false),
+            Triple(syntheticApi34(hdrEditing = true), "supported", true),
+            Triple(syntheticApi34(hdrEditing = false), "refused:feature-query", false),
+            Triple(syntheticApi34(main10 = false, hdrEditing = true), "refused:profile-level", false),
+        )
+        for ((probe, wantKind, wantTrial) in rows) {
+            val verdict = decide(HevcProfile.HLG, probe)
+            when (verdict) {
+                is HevcVerdict.Supported -> {
+                    assertEquals("kind", wantKind, "supported")
+                    assertEquals("trial", wantTrial, verdict.trialEncodeRequired)
+                }
+                is HevcVerdict.Refused -> assertEquals("kind", wantKind, "refused:" + verdict.stage.token)
+            }
+        }
+    }
 }
