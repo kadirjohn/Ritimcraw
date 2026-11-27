@@ -188,6 +188,8 @@ object GradeV2Migration {
         // A stored "highlightsCurve" key (removed versioning) is deliberately NOT carried: dropped silently.
         // Only an enabled recovery is written; absent = off.
         if (g["highlightRecovery"] as? Boolean == true) develop["highlightRecovery"] = true
+        // Only an enabled glitter suppression is written; absent = off.
+        if (g["glitterSuppress"] as? Boolean == true) develop["glitterSuppress"] = true
         val legacy = linkedMapOf<String, Any?>(
             "highlights" to carry(g["highlights"], 0.0),
             "blackPoint" to carry(g["blackPoint"], 0.0),

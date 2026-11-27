@@ -125,6 +125,8 @@
     <string name="editor_as_shot">As Shot</string>
     <string name="editor_highlight_recovery">Recovery</string>
     <string name="editor_highlight_recovery_desc">Highlight recovery: rebuild clipped highlights from the unclipped channels</string>
+    <string name="editor_glitter_suppress">Glitter suppression</string>
+    <string name="editor_glitter_suppress_desc">Glitter suppression: calm speckled colour sparkles with a 3x3 chroma median</string>
     <string name="editor_highlight_reconstruction">Highlight Reconstruction</string>
     <string name="editor_keep_vignetting">Keep Vignetting</string>
     <string name="editor_slider_sharpness">Sharpness</string>

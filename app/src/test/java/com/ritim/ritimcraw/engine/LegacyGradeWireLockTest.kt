@@ -152,6 +152,8 @@ class LegacyGradeWireLockTest {
                 // [38] highlightKneeRef (D3, appended; 0 = unmeasured = the legacy knee 0.18 —
                 // golden change documented in the D3 commit: one new slot, default 0.0)
                 0.0f,
+                // [39] glitterSuppress (appended, off)
+                0.0f,
             ),
             parcel,
         )
@@ -186,6 +188,7 @@ class LegacyGradeWireLockTest {
                 // [38] highlightKneeRef (D3, appended; 0 = unmeasured = the legacy knee 0.18 —
                 // golden change documented in the D3 commit: one new slot, default 0.0)
                 0.0f,
+                0.0f, // [39] glitterSuppress: appended, off by default
             ),
             GradeParcel.encode(GradeK()),
         )

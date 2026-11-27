@@ -108,6 +108,8 @@ void encodedDenoiseStages(ImageF& img, const Grade& grade) {
         denoiseChroma(img, std::min(std::max(grade.chromaDenoise, 0.0f), 100.0f) / 100.0f);
     if (grade.noiseReduction != 0.0f)
         denoiseLuma(img, std::min(std::max(grade.noiseReduction, 0.0f), 100.0f) / 100.0f);
+    if (grade.glitterSuppress)
+        suppressGlitter(img);
 }
 
 void encodedDetailStages(ImageF& img, const Grade& grade) {

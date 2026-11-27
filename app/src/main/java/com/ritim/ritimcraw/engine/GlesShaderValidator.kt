@@ -78,6 +78,9 @@ object GlesShaderValidator {
         /** NR_LUMA — GLSL ES 3.00 fragment, the spatial luma bilateral (stage 8). */
         NR_LUMA("#version 300 es"),
 
+        /** GLITTER_ENCODE - GLSL ES 3.00 fragment, glitter suppression's one-OETF-per-pixel chroma encode (stage 8b, pass 1 of 2). */
+        GLITTER_ENCODE("#version 300 es"),
+
         /** STORE_FRAGMENT — GLSL ES 3.10 fragment (SSBO write), readback. */
         STORE_FRAGMENT("#version 310 es"),
 
@@ -175,6 +178,7 @@ object GlesShaderValidator {
             Kind.NR_CHROMA_H -> nrChromaHProblems(stripped, out)
             Kind.NR_CHROMA_V -> nrChromaVProblems(stripped, out)
             Kind.NR_LUMA -> nrLumaProblems(stripped, out)
+            Kind.GLITTER_ENCODE -> glitterEncodeProblems(stripped, out)
             Kind.STORE_FRAGMENT -> storeFragmentProblems(stripped, out)
             Kind.BLIT_FRAGMENT -> blitFragmentProblems(stripped, out)
             Kind.WINDOW_FRAGMENT -> windowFragmentProblems(stripped, out)
@@ -239,6 +243,7 @@ object GlesShaderValidator {
     }
 
     private fun developFragmentProblems(s: String, out: MutableList<String>) {
+        checkNoGlitter(s, "fused", out)
         // The uniforms the pipeline looks up and sets. Names double as the
         // C++ lookup contract. Honest split: the gles/GlesPipeline.cpp parity
         // harness binds the stage 1-6 + uExposure/uTonemap/uOetf entries
@@ -1279,6 +1284,7 @@ object GlesShaderValidator {
      * the PRE/POST fragments were cut at the wrong boundary).
      */
     private fun developFragmentPreProblems(s: String, out: MutableList<String>) {
+        checkNoGlitter(s, "PRE", out)
         for (u in kDevelopPreUniformDecls) {
             if (!s.contains(u)) {
                 out += "missing `$u` (the C++ session sets it)"
@@ -1345,6 +1351,7 @@ object GlesShaderValidator {
                 "the demosaic/WB/matrix work is the PRE pass's, already " +
                 "baked into the intermediate)"
         }
+        checkGlitterStageText(s, out)
         checkDevelopPointwiseStageText(s, out)
         // The boundary honesty: NO pre-stage uniform may appear in the
         // POST pass. A leaked declaration would mean the cut landed
@@ -1384,6 +1391,114 @@ object GlesShaderValidator {
     }
 
     /**
+     * Stage 8b (glitter suppression), POST-only: the uniforms, the threshold
+     * constant (the CPU's rawedit::kGlitterThreshold, pinned as a LITERAL so a
+     * drift on either side is loud), the helper maths pinned to the CPU's
+     * (the exact inverse OETF, the 19-exchange median-of-9 selection network,
+     * the exact count pre-test), the 3x3 clamped-edge gather of the ENCODED
+     * chroma texture, the write-back rule (only for an outlier channel; G
+     * never written), and the position: after the intermediate fetch, before
+     * stage 9. The forward OETF lives in the GLITTER_ENCODE pass, not here.
+     */
+    private fun checkGlitterStageText(s: String, out: MutableList<String>) {
+        val pins = listOf(
+            "uniform int uGlitter;",
+            "uniform highp sampler2D uGlitterChroma;",
+            "const float kGlitterThreshold = 0.09;",
+            "if (v < 0.081) return v / 4.5;",
+            "return pow((v + 0.099) / 1.099, 1.0 / 0.45);",
+            "glitterSort(v[1], v[2]); glitterSort(v[4], v[5]); glitterSort(v[7], v[8]);",
+            "glitterSort(v[0], v[1]); glitterSort(v[3], v[4]); glitterSort(v[6], v[7]);",
+            "glitterSort(v[1], v[2]); glitterSort(v[4], v[5]); glitterSort(v[7], v[8]);",
+            "glitterSort(v[0], v[3]); glitterSort(v[5], v[8]); glitterSort(v[4], v[7]);",
+            "glitterSort(v[3], v[6]); glitterSort(v[1], v[4]); glitterSort(v[2], v[5]);",
+            "glitterSort(v[4], v[7]); glitterSort(v[4], v[2]); glitterSort(v[6], v[4]);",
+            "glitterSort(v[4], v[2]);\n    return v[4];",
+            "float own = v[4];",
+            "nearCount += (abs(v[i] - own) <= kGlitterThreshold) ? 1 : 0;",
+            "if (nearCount >= 5) return false;",
+            "m = glitterMedian9(v);",
+            "return abs(own - m) > kGlitterThreshold;",
+            "if (uGlitter == 1) {",
+            "ivec2 q = ivec2(min(max(g.x + dx, 0), uSize.x - 1),",
+            "min(max(g.y + dy, 0), uSize.y - 1));",
+            "vec2 ch = texelFetch(uGlitterChroma, q, 0).rg;",
+            "cr[k] = ch.x;",
+            "cb[k] = ch.y;",
+            "if (glitterOutlier9(cr, m1)) c.r = glitterInvOetf(max(texelFetch(uGlitterChroma, g, 0).b + m1, 0.0));",
+            "if (glitterOutlier9(cb, m2)) c.b = glitterInvOetf(max(texelFetch(uGlitterChroma, g, 0).b + m2, 0.0));",
+        )
+        for (pin in pins) {
+            if (!s.contains(pin)) {
+                out += "missing the glitter-suppression pin `$pin` (stage 8b " +
+                    "must stay the CPU suppressGlitter's twin: encoded chroma " +
+                    "-> exact count pre-test -> 3x3 median -> outlier > " +
+                    "kGlitterThreshold -> eG + median -> exact decode, G " +
+                    "never written)"
+            }
+        }
+        if (s.contains("glitterOetf(")) {
+            out += "the glitter forward OETF leaked into the POST pass (it is " +
+                "the GLITTER_ENCODE pass's, run once per pixel - a POST copy " +
+                "would be the per-tap pow cost coming back)"
+        }
+        val blockStart = s.indexOf("if (uGlitter == 1) {")
+        val blockEnd = s.indexOf("if (uBlackPoint != 0.0) {")
+        if (blockStart in 0 until blockEnd &&
+            Regex("""c\.g\s*[-+*/]?=[^=]""").containsMatchIn(s.substring(blockStart, blockEnd))) {
+            out += "the glitter block writes c.g (stage 8b must never write G)"
+        }
+        val fetchIdx = s.indexOf("vec3 c = texelFetch(uSrc, g, 0).rgb;")
+        val glitterIdx = s.indexOf("if (uGlitter == 1) {")
+        val blackIdx = s.indexOf("if (uBlackPoint != 0.0) {")
+        if (fetchIdx < 0 || glitterIdx < 0 || blackIdx < 0 ||
+            !(fetchIdx < glitterIdx && glitterIdx < blackIdx)) {
+            out += "the glitter block is mispositioned (stage 8b runs on the " +
+                "fetched intermediate texel, after the fetch and before stage 9)"
+        }
+    }
+
+    /**
+     * GLITTER_ENCODE's contract: the C++ session sets uSrc (unit 1) / uSize,
+     * draws into the chain's free slot; the maths is the CPU glitterOetf
+     * (0 floor, NO upper clamp) evaluated once per channel per pixel, and the
+     * output layout (R-G, B-G, G) is what the POST block reads.
+     */
+    private fun glitterEncodeProblems(s: String, out: MutableList<String>) {
+        val pins = listOf(
+            "uniform highp sampler2D uSrc;",
+            "uniform ivec2 uSize;",
+            "out vec4 oCol;",
+            "lin = max(lin, 0.0);",
+            "if (lin < 0.018) return 4.5 * lin;",
+            "return 1.099 * pow(lin, 0.45) - 0.099;",
+            "float eR = glitterOetf(t.r);",
+            "float eG = glitterOetf(t.g);",
+            "float eB = glitterOetf(t.b);",
+            "oCol = vec4(eR - eG, eB - eG, eG, 1.0);",
+        )
+        for (pin in pins) {
+            if (!s.contains(pin)) {
+                out += "missing the glitter-encode pin `$pin` (the encode " +
+                    "pass is the CPU glitterOetf once per pixel, output " +
+                    "(eR-eG, eB-eG, eG) as the POST block reads it)"
+            }
+        }
+        if (s.contains("uGlitter") || s.contains("glitterMedian9")) {
+            out += "the encode pass carries POST's glitter block (it only encodes)"
+        }
+    }
+
+    private fun checkNoGlitter(s: String, pass: String, out: MutableList<String>) {
+        if (s.contains("uGlitter") || s.contains("glitterMedian9") ||
+            s.contains("glitterOutlier9") || s.contains("kGlitterThreshold")) {
+            out += "glitter suppression leaked into the $pass pass " +
+                "(stage 8b is the POST pass's alone; the fused parity pass, " +
+                "PRE and TAIL stay glitter-free)"
+        }
+    }
+
+    /**
      * DEVELOP_FRAGMENT_TAIL's contract: uSrc (the chain intermediate —
      * the pointwise pass's output, or the detail pass's when the grade
      * uses sharpness/detail) + the tail uniform set (stages 23+24+OETF)
@@ -1393,6 +1508,7 @@ object GlesShaderValidator {
      * draw whose ONLY input is the intermediate texel).
      */
     private fun developFragmentTailProblems(s: String, out: MutableList<String>) {
+        checkNoGlitter(s, "TAIL", out)
         if (!s.contains("uniform highp sampler2D uSrc;")) {
             out += "missing `uniform highp sampler2D uSrc;` (the session " +
                 "attaches the chain's RGBA32F intermediate — the pointwise " +

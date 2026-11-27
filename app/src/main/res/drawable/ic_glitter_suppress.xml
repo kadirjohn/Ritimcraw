@@ -1,0 +1,16 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="960"
+    android:viewportHeight="960">
+    <!-- Thin outlined "sparkle" glyph in the Material Symbols weight-300 style (drawn for this app, NOT a Google
+         glyph): one four-point star outline. Stroke 50 on the 960 grid matches the weight-300 outlines of the
+         sibling icons. Tinted by Compose's Icon. -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="@android:color/white"
+        android:strokeWidth="50"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M480,120C500,330 630,460 840,480C630,500 500,630 480,840C460,630 330,500 120,480C330,460 460,330 480,120Z" />
+</vector>

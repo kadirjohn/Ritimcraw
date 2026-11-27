@@ -378,6 +378,7 @@ data class DevelopV2(
     val highlightReconstruction: Boolean = true,
     val keepVignetting: Boolean = true,
     val highlightRecovery: Boolean = false,
+    val glitterSuppress: Boolean = false,
     val noiseReduction: Float = 0f,
     val chromaDenoise: Float = 0f,
     val temporalNr: Boolean = false,
@@ -411,6 +412,7 @@ data class DevelopV2(
                 highlightReconstruction = m["highlightReconstruction"] as? Boolean ?: true,
                 keepVignetting = m["keepVignetting"] as? Boolean ?: true,
                 highlightRecovery = m["highlightRecovery"] as? Boolean ?: false,
+                glitterSuppress = m["glitterSuppress"] as? Boolean ?: false,
                 noiseReduction = (m["noiseReduction"] as? Double)?.toFloat() ?: 0f,
                 chromaDenoise = (m["chromaDenoise"] as? Double)?.toFloat() ?: 0f,
                 temporalNr = m["temporalNr"] as? Boolean ?: false,
@@ -523,6 +525,7 @@ object GradeV2Fiber {
             .append(",\"keepVignetting\":").append(d.keepVignetting)
             .append(if (d.highlightRecovery) ",\"highlightRecovery\":true" else "")
             .append(if (d.highlightKneeRef > 0f) ",\"highlightKneeRef\":" + num(d.highlightKneeRef) else "")
+            .append(if (d.glitterSuppress) ",\"glitterSuppress\":true" else "")
             .append(",\"noiseReduction\":").append(num(d.noiseReduction))
             .append(",\"chromaDenoise\":").append(num(d.chromaDenoise))
             .append(",\"temporalNr\":").append(d.temporalNr)
@@ -721,6 +724,7 @@ fun ClipGradeV2.toGradeKLenient(): GradeK {
         highlightReconstruction = develop.highlightReconstruction,
         keepVignetting = develop.keepVignetting,
         highlightRecovery = develop.highlightRecovery,
+        glitterSuppress = develop.glitterSuppress,
         sharpness = develop.sharpness,
         detail = develop.detail,
         tonemap = output.legacy.tonemap,
@@ -783,6 +787,7 @@ fun GradeK.toClipGradeV2(): ClipGradeV2 = ClipGradeV2(
         highlightReconstruction = highlightReconstruction,
         keepVignetting = keepVignetting,
         highlightRecovery = highlightRecovery,
+        glitterSuppress = glitterSuppress,
         noiseReduction = noiseReduction,
         chromaDenoise = chromaDenoise,
         temporalNr = temporalNr,

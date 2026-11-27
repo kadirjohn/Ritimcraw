@@ -397,6 +397,11 @@ echo "== building tests =="
 # equality + peak-RSS numbers live in stripe_measure's hand-run record.
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_develop_stripes.cpp" \
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_develop_stripes"
+# test_glitter: opt-in glitter suppression (stage 8b) - OFF bit-identical to
+# main (frozen hashes, synthetic + real slice when the clip is on disk) and
+# the ON behaviour proofs.
+"$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_glitter.cpp" \
+  "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_glitter"
 # stripe_measure <whole|striped|equal> [w h]: the A7 hand-run driver —
 # synthetic 8K default, whole vs striped peak-RSS via /usr/bin/time -l,
 # `equal` proves the byte-exact full pipeline at 8K. Run by hand from the
@@ -498,6 +503,8 @@ echo "== running test_audio_reshape =="
 "$BUILD/test_audio_reshape"
 echo "== running test_develop_stripes =="
 "$BUILD/test_develop_stripes"
+echo "== running test_glitter =="
+"$BUILD/test_glitter"
 echo "== running test_resample =="
 "$BUILD/test_resample"
 echo "== running test_audio_normalize =="

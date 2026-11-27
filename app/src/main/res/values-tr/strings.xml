@@ -125,6 +125,8 @@
     <string name="editor_as_shot">Çekim WB\'si</string>
     <string name="editor_highlight_recovery">Kurtarma</string>
     <string name="editor_highlight_recovery_desc">Işık kurtarma: patlayan ışıkları kırpılmamış kanallardan yeniden oluştur</string>
+    <string name="editor_glitter_suppress">Parıltı bastırma</string>
+    <string name="editor_glitter_suppress_desc">Parıltı bastırma: benekli renk parıltılarını 3x3 renk medyanıyla yatıştır</string>
     <string name="editor_highlight_reconstruction">Işık kurtarma</string>
     <string name="editor_keep_vignetting">Vinyet koru</string>
     <string name="editor_slider_sharpness">Keskinlik</string>

@@ -126,10 +126,11 @@ ImageF developEncoded(const YuvFrame& frame, const Grade& grade, bool isBt709, c
 // and then measured, A7 night sweep, core/tests/test_develop_stripes.cpp):
 // the per-pixel grade loop is row-local; denoiseChroma's separable
 // Gaussian reaches 4 rows (step 2, taps at +-2*step); denoiseLuma's 3x3
-// reads post-chroma rows (+-1 -> reach 5); the sharpness unsharp mask
-// reads post-luma rows (+-2 -> reach 7); the detail unsharp mask reads
-// post-sharp rows (+-2 -> reach 9). The margin must cover the FULL chain:
-// >= 9 — and EVEN (chroma row r serves luma rows 2r and 2r+1, so an odd
+// reads post-chroma rows (+-1 -> reach 5); the opt-in glitter-suppression
+// 3x3 median reads post-luma rows (+-1 -> reach 6); the sharpness unsharp mask
+// reads post-glitter rows (+-2 -> reach 8); the detail unsharp mask reads
+// post-sharp rows (+-2 -> reach 10). The margin must cover the FULL chain:
+// >= 10 (9 without glitter suppression; the value 10 is unchanged) — and EVEN (chroma row r serves luma rows 2r and 2r+1, so an odd
 // view top y0 - M with y0 even shifts the chroma phase by one row: the
 // measured sweep fails at EVERY odd margin, all fixtures). 10 is the
 // smallest even value >= 9. Margins below 10 can pass on CONTENT LUCK (the
