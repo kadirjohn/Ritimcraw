@@ -177,11 +177,27 @@ class ExportPlanRun(
     fun fixToEightBit(reason: String): Boolean {
         note("ten-bit unavailable: $reason")
         if (fixUsed) { note("no second fix: the plan was already fixed once"); return false }
-        val eight = (relaxed ?: settings).copy(bitDepth = 8)
+        val current = relaxed ?: settings
+        // An HLG plan IS a 10-bit plan: the planner brings HLG back to Main10 whatever
+        // bitDepth the request carries, so an 8-bit HLG re-plan would just reach the
+        // same writer and fail a second time with the same reason. Without the 10-bit
+        // path HLG degrades to SDR 8-bit, both reasons on the report.
+        val dropsHlg = current.dynamicRange == ExportDynamicRange.HLG
+        val eight = if (dropsHlg) {
+            current.copy(bitDepth = 8, dynamicRange = ExportDynamicRange.SDR)
+        } else {
+            current.copy(bitDepth = 8)
+        }
         relaxed = eight
         fixUsed = true
         extraIssues += ExportIssue(ExportIssue.Kind.TEN_BIT_UNAVAILABLE, ExportIssue.Severity.WARNING, listOf(reason), eight)
-        note("fix: 10-bit -> 8-bit")
+        if (dropsHlg) {
+            extraIssues += ExportIssue(
+                ExportIssue.Kind.DYNAMIC_RANGE_UNAVAILABLE, ExportIssue.Severity.WARNING,
+                listOf("HLG", reason), eight,
+            )
+        }
+        note(if (dropsHlg) "fix: HLG 10-bit -> SDR 8-bit (no 10-bit render path)" else "fix: 10-bit -> 8-bit")
         return true
     }
 
