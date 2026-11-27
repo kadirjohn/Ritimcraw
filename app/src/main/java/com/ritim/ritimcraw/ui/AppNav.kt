@@ -1768,7 +1768,13 @@ fun AppNav(
                     // the rescue for clips imported before detection landed.
                     // A null mime (resolver failed / non-content URI) falls
                     // back to the stored kind — SourcePathDecision handles it.
-                    val sourceKind by remember(r.sourceId) {
+                    // VAR (not val): the first-open backfill below can heal
+                    // the kind (M9) — a pre-M1 record of an .mov (mime
+                    // video/quicktime, NOT the video/mp4 rescue) would
+                    // otherwise keep routing this session's opens through
+                    // the wrong engine path until re-entry. The healed value
+                    // is refreshed right after the backfill call.
+                    var sourceKind by remember(r.sourceId) {
                         mutableStateOf(stores.sources.get(r.sourceId)?.kind ?: SourceKind.MCRAW)
                     }
                     val sourceMime: String? by remember(r.sourceId) {
@@ -1853,10 +1859,22 @@ fun AppNav(
                             // First-open backfill (owner request §2b): a
                             // record imported before display names existed
                             // shows the id until the resolver can name it —
-                            // fill it in now and refresh the top bar.
+                            // fill it in now and refresh the top bar. The
+                            // same call self-heals the KIND (M9, owner
+                            // request 2026-11-27): records imported before
+                            // the M1 import fix carry the MCRAW default in
+                            // project.json and normal usage never
+                            // re-imports them, so the first open's resolved
+                            // name corrects the kind here too (an .mp4
+                            // record's Library badge flips to the honest
+                            // gray MP4 token once this clip is opened).
+                            // A RECORD change (name or kind) refreshes the
+                            // list; an unchanged record (the resolver
+                            // stayed silent) touches nothing.
                             val filled = stores.sources.backfillDisplayName(r.sourceId)
-                            if (filled != null && filled.displayName.isNotBlank()) {
+                            if (filled != null && filled != source) {
                                 sourceName = filled.displayOrId
+                                sourceKind = filled.kind
                                 sources = stores.sources.all()
                             }
                             try {
@@ -2570,10 +2588,15 @@ fun AppNav(
                             // Manual full sweep (spec IN-12): pull-to-refresh
                             // re-probes the WHOLE catalog — one cheap metadata
                             // query per record, never an open. The cursor
-                            // stays put (the sweep covers everything).
+                            // stays put (the sweep covers everything). The
+                            // sweep also runs the M9 kind heal over every
+                            // record: one pull-to-refresh corrects the whole
+                            // library's badges at once.
                             onRefresh = {
                                 libraryRefreshing = true
                                 sources = stores.sources.refreshStatus()
+                                stores.sources.backfillRecords()
+                                sources = stores.sources.all()
                                 libraryRefreshing = false
                             },
                             refreshing = libraryRefreshing,
@@ -2581,11 +2604,19 @@ fun AppNav(
                             // rows (few, cheap, recoverable — a re-granted or
                             // re-linked clip returns to OK on the next open)
                             // plus the rotating healthy slice. The cursor
-                            // advances by the slice actually taken.
+                            // advances by the slice actually taken. The same
+                            // slice carries the M9 kind heal (records
+                            // imported before the M1 import fix carry the
+                            // MCRAW default in project.json: the badge
+                            // corrects as the rotation covers the library,
+                            // one cheap metadata query per record — the
+                            // same class as the access probe, never an
+                            // open).
                             onOpenRefresh = {
                                 val batch = CollectionRefresh.batch(sources, refreshCursor)
                                 if (batch.isNotEmpty()) {
                                     stores.sources.refreshStatus(batch)
+                                    stores.sources.backfillRecords(batch)
                                     sources = stores.sources.all()
                                     refreshCursor = CollectionRefresh.nextCursor(
                                         sources, refreshCursor,

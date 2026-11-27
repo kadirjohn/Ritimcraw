@@ -298,26 +298,94 @@ class SourceRepository(
 
     /**
      * Backfills the display name of a record imported before §2b (owner
-     * request: old records show the id until the first open fills it in).
-     * Returns the updated source, or the unchanged one when the record is
-     * missing, already named, or the resolver still cannot name it.
+     * request: old records show the id until the first open fills it in),
+     * and self-heals the record's KIND the same way (owner request
+     * 2026-11-27, M9): records imported before the M1 import fix sit in
+     * project.json with the MCRAW default, and normal usage never
+     * re-imports them — the first open is the file's own honest moment
+     * to name itself, so the name's rule (the import path's own
+     * [VideoTree.kindFor] truth) heals the kind here too. See
+     * [heal] for the shared rule. Returns the updated source, or the
+     * unchanged one when the record is missing, or the resolver can
+     * neither fill the name nor correct the kind.
      */
     fun backfillDisplayName(id: String): MediaSource? {
         val sources = load().toMutableList()
         val index = sources.indexOfFirst { it.id == id }
         if (index < 0) return null
         val current = sources[index]
-        if (current.displayName.isNotBlank()) return current
         val name = try {
             resolver.displayName(current.uri)
         } catch (e: Exception) {
             null
         }
-        if (name.isNullOrBlank()) return current
-        val updated = current.copy(displayName = name)
+        val updated = heal(current, name) ?: return current
         sources[index] = updated
         write(sources)
         return updated
+    }
+
+    /**
+     * Batched self-heal for records the M1 import fix missed (owner
+     * request 2026-11-27, M9): the same rule as
+     * [backfillDisplayName] applied to many records with ONE load and at
+     * most ONE write — the Library's bounded per-open pass passes its
+     * rotating slice ([ids]), the manual full sweep passes null (every
+     * record). The name resolution is the same CHEAP metadata query the
+     * access probe already makes (never an open), and records with
+     * nothing to heal cost nothing but the query (the [heal] no-op
+     * guard). Returns true when any record changed (the caller refreshes
+     * its list state then); false leaves project.json byte-identical.
+     */
+    fun backfillRecords(ids: List<String>? = null): Boolean {
+        val sources = load().toMutableList()
+        var changed = false
+        for (i in sources.indices) {
+            val current = sources[i]
+            if (ids != null && current.id !in ids) continue
+            val name = try {
+                resolver.displayName(current.uri)
+            } catch (e: Exception) {
+                null
+            }
+            val updated = heal(current, name)
+            if (updated != null) {
+                sources[i] = updated
+                changed = true
+            }
+        }
+        if (changed) write(sources)
+        return changed
+    }
+
+    /**
+     * The shared self-heal rule (M9): the record's name fills from the
+     * resolver's answer when blank, and the kind follows the name's rule
+     * — the import path's own truth, applied to records the import fix
+     * missed. Both fields are judged INDEPENDENTLY: a blank name fills
+     * while an already-filled one keeps the record's own name (a user
+     * rename is never overwritten); the kind follows the resolved name
+     * whenever the name RESOLVED and differs — a matching kind stays
+     * byte-identical (no spurious project.json rewrite), and an
+     * unresolvable name is NO evidence (the import path's nameKind guard,
+     * mirrored: an unknown name must not drag an ENCODED record back to
+     * the MCRAW default). Returns the healed record, or null when
+     * nothing changed (the caller's no-op guard: no write).
+     */
+    private fun heal(record: MediaSource, name: String?): MediaSource? {
+        val nameKind = name?.takeIf { it.isNotBlank() }?.let { VideoTree.kindFor(it) }
+        val filledName = when {
+            record.displayName.isNotBlank() -> record.displayName // a rename is never overwritten
+            name.isNullOrBlank() -> record.displayName // no evidence, keep blank
+            else -> name
+        }
+        val healedKind = when {
+            nameKind == null -> record.kind // no evidence, never touch
+            nameKind == record.kind -> record.kind // equal, byte-identical
+            else -> nameKind
+        }
+        val updated = record.copy(displayName = filledName, kind = healedKind)
+        return if (updated == record) null else updated
     }
 
     /**
