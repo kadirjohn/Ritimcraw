@@ -421,14 +421,13 @@ TEST_CASE("sequence_timecode_per_frame") {
 
     // Frame 0: the start code itself (drop-frame flag from 29.97).
     plan.timeCodesOf(0, code);
-    CHECK(code[4] == 1);
-    CHECK((code[0] & 0x7f) == 0);
+    CHECK(code[0] == 0x40); // frame 0 + drop-frame bit
     CHECK(code[3] == 0);
 
     // Frame 30: 29.97 rolls the frame field at 30; frame 30 is second 1.
     plan.timeCodesOf(30, code);
-    CHECK((code[2] & 0x7f) == 1);
-    CHECK((code[3] & 0x7f) == 0);
+    CHECK(code[1] == 0x01);
+    CHECK(code[0] == 0x40);
 }
 
 TEST_CASE("sequence_writes_frames_naming_progress") {
