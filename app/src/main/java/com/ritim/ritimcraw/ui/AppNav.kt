@@ -561,6 +561,10 @@ fun AppNav(
     // device leg off until the owner's morning run): CONSTRUCTING it
     // changes nothing — the sweep only deletes crash leftovers, and the
     // AUTO pass only enqueues through the pure decision table.
+    // Per-fingerprint "a proxy build just landed" counter: the editor screen
+    // reads its clip's value and reopens on the proxy at the NEXT seek/play
+    // (never mid-playback). Written from the build thread -> main.
+    val proxyLandedTicks = remember { androidx.compose.runtime.mutableStateMapOf<String, Int>() }
     val proxyRuntime = remember {
         // The clip's record + its measured metadata, resolved live per call
         // (the TimelineExporter's rule: the queue must see the world as it
@@ -624,6 +628,12 @@ fun AppNav(
                     frameCount = frames,
                     durationUs = meta?.durationUs?.value ?: -1L,
                 )
+            },
+            playbackEnabled = { com.ritim.ritimcraw.util.FeatureFlags.proxyEnabled },
+            onProxyReady = { fp ->
+                android.os.Handler(android.os.Looper.getMainLooper()).post {
+                    proxyLandedTicks[fp] = (proxyLandedTicks[fp] ?: 0) + 1
+                }
             },
         )
     }
@@ -704,7 +714,7 @@ fun AppNav(
     // by itself). While false the runtime exists (its constructor only swept
     // crash leftovers) but never starts: no build, no notification, and the
     // auto pass below never enqueues.
-    if (com.ritim.ritimcraw.util.FeatureFlags.PROXY_PRODUCTION_ENABLED) {
+    if (com.ritim.ritimcraw.util.FeatureFlags.proxyEnabled) {
         LaunchedEffect(Unit) { proxyRuntime.start() }
         // The AUTO pass (plan section 6): every clip whose facts the metadata
         // pass measured goes through the pure decision table once per app
@@ -1395,7 +1405,7 @@ fun AppNav(
             // G3: every export-state change re-kicks the proxy queue — an
             // export that just went RUNNING must hold it (the monitor sees
             // it within its poll), one that just went terminal releases it.
-            if (com.ritim.ritimcraw.util.FeatureFlags.PROXY_PRODUCTION_ENABLED) {
+            if (com.ritim.ritimcraw.util.FeatureFlags.proxyEnabled) {
                 proxyRuntime.kick()
             }
         }
@@ -2160,7 +2170,7 @@ fun AppNav(
                         // cache holds none for this clip's signature — or the
                         // runtime has no job for it); the ORIGINAL fd opens.
                         // NOTE (the auditor's finding 3): this seam is NOT
-                        // flag-conditional — while PROXY_PRODUCTION_ENABLED
+                        // flag-conditional — while proxyEnabled
                         // is false the runtime is never started and no build
                         // ever runs, so nothing resolves and the answer is -1
                         // BECAUSE THE CACHE IS EMPTY; if the flag is turned
@@ -2173,6 +2183,16 @@ fun AppNav(
                         proxyOpenFd = {
                             val rec = stores.sources.get(r.sourceId)
                             rec?.let { proxyRuntime.openPlaybackProxy(it.fingerprint) } ?: -1
+                        },
+                        // In-session switch: the tick bumps when a build for
+                        // this clip lands; the screen reopens at the next
+                        // seek/play through the runtime's gate (maybeSwitch).
+                        proxyLandedTick = stores.sources.get(r.sourceId)?.let {
+                            proxyLandedTicks[it.fingerprint]
+                        } ?: 0,
+                        proxySwitchFd = {
+                            val rec = stores.sources.get(r.sourceId)
+                            rec?.let { proxyRuntime.switchPlaybackProxy(it.fingerprint) } ?: -1
                         },
                         // The ORIGINAL clip's audio facts for a proxy-opened
                         // session (the plan's "ses orijinalden çalar, proxy'de
@@ -3428,7 +3448,7 @@ fun AppNav(
                                     sources.firstOrNull { it.fingerprint == fp }?.displayOrId
                                 },
                                 onDeleteProxyClip =
-                                    if (com.ritim.ritimcraw.util.FeatureFlags.PROXY_PRODUCTION_ENABLED) {
+                                    if (com.ritim.ritimcraw.util.FeatureFlags.proxyEnabled) {
                                         { fp ->
                                             proxyRuntime.cache.clearClip(fp)
                                             proxyRuntime.cancel(fp)
@@ -3438,7 +3458,7 @@ fun AppNav(
                                         null
                                     },
                                 onClearProxyAll =
-                                    if (com.ritim.ritimcraw.util.FeatureFlags.PROXY_PRODUCTION_ENABLED) {
+                                    if (com.ritim.ritimcraw.util.FeatureFlags.proxyEnabled) {
                                         {
                                             proxyRuntime.cache.clearAll()
                                             proxyStorageKick += 1
