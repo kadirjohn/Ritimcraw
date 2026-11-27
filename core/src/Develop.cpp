@@ -599,6 +599,353 @@ bool buildCameraToRec709(const RawMeta& meta, float out[9]) {
 
 } // namespace
 
+// The develop grade stages 9-20, extracted VERBATIM from developCpu
+// (E7, .cube bake): one shared definition so the grade -> .cube bake
+// evaluates the SAME arithmetic, in the same order, as the render
+// pipeline. A pure move: the body below is developCpu's old inline
+// block with the indentation removed, nothing else. The call in
+// developCpu replaces the inline block, so the rendered pixels are
+// bit-identical (locked by test_develop's golden hashes).
+//
+// Reuse contract for the E7 bake (docs: the .cube bake must match what
+// the app renders): a caller that needs "the grade's COLOR part" on an
+// arbitrary set of RGB samples (a LUT lattice) calls this on a synthetic
+// image; stage ORDER and float op order are this function's, never a
+// re-implementation. The spatial stages (7-8 denoise, 21-22 sharpen,
+// geometry) stay OUTSIDE it on purpose: they are not per-pixel pure and
+// a 3D LUT cannot carry them.
+void applyToneColorStagesCpu(ImageF& img, const Grade& grade) {
+// ---- Stages 9-13: tone controls (owner request 2026-11-10 section 2). ----
+// These run after camera->Rec.709 and before exposure, on scene-referred
+// linear values (midgray = 0.18): the shadows/midtones/contrast anchors
+// classify the scene, so an exposure change after them shifts the whole
+// graded range uniformly instead of re-bucketing tones. Each stage is a
+// per-channel scalar remap (neutrals stay neutral); only the shape of the
+// curve differs. All are guarded by `!= neutral` so a neutral grade
+// executes none of them (bit-identical to the pre-tone pipeline).
+
+// Stage 9: black point (grade.blackPoint in [-100, 100], 0 = neutral).
+// Endpoint remap of the toe, pinned at white: x' = lift + (1 - lift) * x
+// with lift = -0.12 * bp/100 (A6 black point range shrink, owner
+// request 2026-11-23: k was 0.25, which crushed 44.7% of night-frame
+// pixels fully black at bp = +100; bp_measure on the night fixtures
+// picked k = 0.12, which crushes 10.8% — inside the 10-15% target).
+// Positive bp (lift < 0) crushes: the toe crossing zero clamps to
+// black at display, and everything below white darkens toward it.
+// Negative bp (lift > 0) lifts the floor — at bp = -100 the input
+// floor 0 maps to 0.12 (faded/filmic blacks). The
+// map is monotone increasing in x, x = 1 stays 1, and the scalar remap
+// applies per channel, so neutrals stay neutral and hue order above the
+// clamp is preserved.
+if (grade.blackPoint != 0.0f) {
+    const float lift = -0.12f * (grade.blackPoint / 100.0f);
+    // Parallel: per-output-row; each row writes only its own elements.
+    parallelForRows(img.h, [&](size_t y0, size_t y1) {
+        const size_t rowElems = static_cast<size_t>(img.w) * 3;
+        for (size_t i = y0 * rowElems; i < y1 * rowElems; ++i)
+            img.rgb[i] = lift + (1.0f - lift) * img.rgb[i];
+    });
+}
+
+// Stage 10: white point (grade.whitePoint in [-100, 100], 0 = neutral).
+// Endpoint remap of the shoulder, mirror image of stage 9 and pinned at
+// black (0 stays 0, the toe is untouched): a uniform scale. Positive
+// brightens the shoulder — x' = x / (1 - 0.25*wp/100), at wp = +100 a
+// scale of 4/3, so brights rise and clip at display sooner. Negative
+// pulls the ceiling down — x' = x * (1 + 0.25*wp/100), at wp = -100 a
+// scale of 3/4, compressing highlights into range. Monotone in x; a
+// scalar per channel, so neutrals stay neutral.
+if (grade.whitePoint != 0.0f) {
+    const float scale = grade.whitePoint > 0.0f
+        ? 1.0f / (1.0f - 0.25f * (grade.whitePoint / 100.0f))
+        : 1.0f + 0.25f * (grade.whitePoint / 100.0f);
+    // Parallel: per-output-row; each row writes only its own elements.
+    parallelForRows(img.h, [&](size_t y0, size_t y1) {
+        const size_t rowElems = static_cast<size_t>(img.w) * 3;
+        for (size_t i = y0 * rowElems; i < y1 * rowElems; ++i)
+            img.rgb[i] *= scale;
+    });
+}
+
+// Stage 11: shadows (grade.shadows in [-100, 100], 0 = neutral).
+// Gain weighted toward black, applied uniformly per pixel (diagonal
+// gain — neutrals stay neutral). weight = smoothstepf(0.18, 0, mx): 1 at
+// black, 0 at midgray and above; gain = 2^(strength * weight), the same
+// exponential-gain idiom as temp/tint. Positive lifts shadows (2x at
+// the floor when +100), negative deepens them (0.5x at -100) —
+// symmetric, never zero, no inversion.
+if (grade.shadows != 0.0f) {
+    const float strength = grade.shadows / 100.0f;
+    // Parallel: per-output-row over 3-float pixels; each row writes
+    // only its own pixels.
+    parallelForRows(img.h, [&](size_t y0, size_t y1) {
+        const size_t rowElems = static_cast<size_t>(img.w) * 3;
+        for (size_t i = y0 * rowElems; i < y1 * rowElems; i += 3) {
+            const float mx = std::max(img.rgb[i], std::max(img.rgb[i + 1], img.rgb[i + 2]));
+            const float wDark = smoothstepf(0.18f, 0.0f, mx); // 1 at black
+            const float gain = std::pow(2.0f, strength * wDark);
+            img.rgb[i + 0] *= gain;
+            img.rgb[i + 1] *= gain;
+            img.rgb[i + 2] *= gain;
+        }
+    });
+}
+
+// Stage 12: midtones (grade.midtones in [-100, 100], 0 = neutral).
+// Gain weighted around midgray, the same diagonal-gain shape as
+// shadows. weight = smoothstepf(0, 0.18, mx) * (1 - smoothstepf(0.18,
+// 0.72, mx)): a tent that is 0 at black, 1 at midgray (0.18) and 0 again
+// by 0.72, so shadows and highlights keep their own controls; gain =
+// 2^(strength * weight). Positive brightens mids, negative darkens them.
+if (grade.midtones != 0.0f) {
+    const float strength = grade.midtones / 100.0f;
+    // Parallel: per-output-row over 3-float pixels; each row writes
+    // only its own pixels.
+    parallelForRows(img.h, [&](size_t y0, size_t y1) {
+        const size_t rowElems = static_cast<size_t>(img.w) * 3;
+        for (size_t i = y0 * rowElems; i < y1 * rowElems; i += 3) {
+            const float mx = std::max(img.rgb[i], std::max(img.rgb[i + 1], img.rgb[i + 2]));
+            const float wMid = smoothstepf(0.0f, 0.18f, mx)
+                            * (1.0f - smoothstepf(0.18f, 0.72f, mx));
+            const float gain = std::pow(2.0f, strength * wMid);
+            img.rgb[i + 0] *= gain;
+            img.rgb[i + 1] *= gain;
+            img.rgb[i + 2] *= gain;
+        }
+    });
+}
+
+// Stage 13: contrast (grade.contrast in [-100, 100], 0 = neutral).
+// Linear slope around the midgray pivot in scene-referred space:
+// x' = pivot + (x - pivot) * slope, pivot = 0.18, slope = 1 + c with
+// c = contrast/100. +100 doubles the distance from midgray (slope 2),
+// -100 flattens it to zero slope (all tones collapse to the pivot, no
+// inversion). Monotone for every setting; every channel of a neutral
+// pixel moves identically, so neutrals stay neutral.
+if (grade.contrast != 0.0f) {
+    const float c = grade.contrast / 100.0f;
+    const float slope = 1.0f + c;
+    const float pivot = 0.18f;
+    // Parallel: per-output-row; each row writes only its own elements.
+    parallelForRows(img.h, [&](size_t y0, size_t y1) {
+        const size_t rowElems = static_cast<size_t>(img.w) * 3;
+        for (size_t i = y0 * rowElems; i < y1 * rowElems; ++i)
+            img.rgb[i] = pivot + (img.rgb[i] - pivot) * slope;
+    });
+}
+
+// ---- Stage 14: exposure as 2^ev. ----
+if (grade.exposureEv != 0.0f) {
+    const float scale = std::pow(2.0f, grade.exposureEv);
+    // Parallel: per-output-row; each row writes only its own elements.
+    parallelForRows(img.h, [&](size_t y0, size_t y1) {
+        const size_t rowElems = static_cast<size_t>(img.w) * 3;
+        for (size_t i = y0 * rowElems; i < y1 * rowElems; ++i)
+            img.rgb[i] *= scale;
+    });
+}
+
+// ---- Stage 15: highlights (grade.highlights in [-100, 100]). ----
+// Negative = recovery: a monotone shoulder compresses the over-knee
+// region toward the knee (filmic rolloff, detail comes back). Positive =
+// a gentle lift of the same region. Neutrals stay neutral (uniform gain
+// per pixel), mid-tones below the knee are untouched.
+//
+// The old quadratic factor (1 - 0.65*s*t) was NOT monotone in t: for
+// recovery (s > 0) it crossed zero at t = 1/(0.65*s) and went negative
+// beyond, so a bright pixel above the crossing came out DARKER than a
+// dimmer one (order reversal) and a very bright one went negative, which
+// the Rec.709 clamp turned into black (owner finding 2026-11-10:
+// sky turning black at Highlights -55 with Exposure +2.1 EV). The new
+// shoulder is monotone for every strength and never goes below the
+// knee: shoulder(t) = knee + (1-knee)*t/(1+t), blending between the
+// original value and the shoulder by the recovery strength s, so at
+// s = 0 (highlights = 0) nothing changes and at full recovery the
+// over-knee region maps to a bounded, order-preserving rolloff.
+// Knee = 0.18 (scene-linear middle gray), owner-approved 2026-11-26: with the knee at 0.40 the slider moved the
+// brightest 5% of a night frame (AgX Punchy, +2.7 EV) by only ~1.4/255 at -100, because the tonemap that follows
+// already compresses those values; at 0.18 the same measurement gives ~8.6/255 (6x) and 10.5% of pixels change by
+// >= 2 codes instead of 1.7%. Earlier history: 0.75 -> 0.40 (2026-11-25).
+if (grade.highlights != 0.0f) {
+    // D3 (2026-11-26): the knee follows the clip (P85 of its own post-Gain luma, bounded);
+    // an unmeasured grade (highlightKneeRef == 0) keeps the legacy 0.18 exactly.
+    const float clipKnee = highlightKnee(grade.highlightKneeRef, std::pow(2.0f, grade.exposureEv));
+    // The shoulder keeps the legacy shape (knee 0.18, span 0.82) but runs on the clip-normalised
+    // max channel mx * k, k = 0.18 / clipKnee >= 1: a dark clip is treated as if its own P85 sat
+    // at 0.18, so the slider acts on it like on a normal clip. k == 1.0f exactly when the clip
+    // knee is the legacy 0.18 (0.18f / 0.18f), so those clips are bit-identical to before.
+    const float kScale = kHighlightKneeMax / clipKnee;
+    const float knee = kHighlightKneeMax;
+    const float span = 1.0f - knee;
+    const float s = -grade.highlights / 100.0f; // recovery -> +1, lift -> -1
+    for (size_t i = 0; i < img.rgb.size(); i += 3) {
+        const float mx = kScale * std::max(img.rgb[i], std::max(img.rgb[i + 1], img.rgb[i + 2]));
+        if (mx <= knee)
+            continue;
+        const float over = mx - knee;
+        const float t = over / span;               // 0..1+ above the knee
+        // Monotone shoulder: bounded, order-preserving for all t.
+        const float shoulder = knee + span * (t / (1.0f + t));
+        // Blend original -> shoulder by strength (s in [-1, 1]).
+        const float newMx = mx + s * (shoulder - mx);
+        const float gain = mx > 0.0f ? newMx / mx : 1.0f;
+        img.rgb[i + 0] *= gain;
+        img.rgb[i + 1] *= gain;
+        img.rgb[i + 2] *= gain;
+    }
+}
+
+// ---- Stage 16: temperature (grade.tempK, 2000..50000, neutral 5600). ----
+// Warm/cool adjustment in linear space around the as-shot state: a
+// smooth red/blue push proportional to log2(tempK/5600), applied as a
+// diagonal gain so neutrals stay neutral (no cast on gray).
+// Skipped when the grade requests the camera's as-shot WB
+// (grade.asShot true): asShotNeutral (stage 5) already carries the
+// recorded WB, and an as-shot grade is equivalent to tempK 5600 /
+// tint 0 — both stages would be no-ops anyway. Manual values stay
+// stored in tempK/tint and come back the moment asShot is false.
+if (!grade.asShot) {
+    const float tempShift =
+        grade.tempK > 0.0f ? std::log2(grade.tempK / 5600.0f) : 0.0f;
+    if (std::abs(tempShift) > 1e-4f) {
+        const float warmGain = std::pow(2.0f, 0.35f * tempShift);   // red up when warm
+        const float coolGain = std::pow(2.0f, -0.35f * tempShift);  // blue up when cool
+        for (size_t i = 0; i < img.rgb.size(); i += 3) {
+            img.rgb[i + 0] *= warmGain;
+            // Green rides the geometric mean so luminance is preserved.
+            img.rgb[i + 1] *= std::sqrt(warmGain * coolGain);
+            img.rgb[i + 2] *= coolGain;
+        }
+    }
+}
+
+// ---- Stage 17: tint (grade.tint in [-100, 100], 0 = neutral). ----
+// Green/magenta push on the green channel only: negative -> magenta
+// (green down), positive -> green up. Smooth, bounded, neutral-safe.
+// Skipped together with stage 16 when the WB source is as-shot.
+if (!grade.asShot && grade.tint != 0.0f) {
+    const float greenGain = std::pow(2.0f, 0.4f * (grade.tint / 100.0f));
+    for (size_t i = 0; i < img.rgb.size(); i += 3)
+        img.rgb[i + 1] *= greenGain;
+}
+
+// ---- Stage 18: color wheel (COL-13). ----
+// Three tonal-band color offsets, one (x, y) unit-disc pair per band,
+// (0, 0) = neutral. The band weights REUSE the tone-slider bands —
+// shadows smoothstepf(0.18, 0, mx), midtones the 0.18-peaked tent,
+// highlights smoothstepf(0.18, 0.72, mx) — which form an exact partition
+// of unity, so the three wheels tile the tonal range with no
+// double-counting and their anchors match the sliders. Because the
+// weights sum to 1, the per-pixel offset is the WEIGHTED AVERAGE of the
+// three band offsets; each axis then becomes one exponent, i.e. one
+// diagonal gain per channel — the temp idiom for x (red up / blue down,
+// green untouched, riding the geometric mean) and the tint idiom for y
+// (green up/down, red/blue untouched). Full deflection (|x| or |y| = 1
+// in the dominant band) is half a stop on its axis: smooth, bounded,
+// never a cross-channel mix, so hue never twists; saturation (20) still
+// runs after to scale the final chroma. The wheel center being the only
+// neutral point is the spec contract ("merkez nötrdür"): an offset from
+// center is a color cast by design, on grays too.
+const bool wheelActive = grade.wheelShadowX != 0.0f || grade.wheelShadowY != 0.0f
+                      || grade.wheelMidX != 0.0f    || grade.wheelMidY != 0.0f
+                      || grade.wheelHighX != 0.0f   || grade.wheelHighY != 0.0f;
+if (wheelActive) {
+    for (size_t i = 0; i < img.rgb.size(); i += 3) {
+        const float mx = std::max(img.rgb[i + 0],
+                      std::max(img.rgb[i + 1], img.rgb[i + 2]));
+        const float wDark = smoothstepf(0.18f, 0.0f, mx);
+        const float wMid = smoothstepf(0.0f, 0.18f, mx)
+                         * (1.0f - smoothstepf(0.18f, 0.72f, mx));
+        const float wHigh = smoothstepf(0.18f, 0.72f, mx);
+        const float xBlend = wDark * grade.wheelShadowX
+                          + wMid  * grade.wheelMidX
+                          + wHigh * grade.wheelHighX;
+        const float yBlend = wDark * grade.wheelShadowY
+                          + wMid  * grade.wheelMidY
+                          + wHigh * grade.wheelHighY;
+        img.rgb[i + 0] *= std::pow(2.0f,  0.5f * xBlend); // red: warm axis
+        img.rgb[i + 1] *= std::pow(2.0f,  0.5f * yBlend); // green: tint axis
+        img.rgb[i + 2] *= std::pow(2.0f, -0.5f * xBlend); // blue: cool axis
+    }
+}
+
+// ---- Stage 19: split tone (COL-13). ----
+// Independent hue tints for the shadow and highlight bands with a
+// balance-controlled crossover: the midpoint m = 0.18 * 2^(balance/100)
+// is midgray at balance 0 (the wheel-band anchor); the shadow tint
+// ramps in over [0, m] (smoothstepf(m, 0, mx): 1 at black, 0 at m), the
+// highlight tint over [m, 1] (smoothstepf(m, 1, mx)). Hue angle ->
+// per-channel gains via raised-cosine windows 120 degrees apart (red
+// peaks at 0, green 120, blue 240, half-width 120), normalized so the
+// window average is 1: the tint is then a bounded push around unity
+// scaled by tintAmount stops at full weight — a tint, not a recolor.
+// The gain is DIAGONAL per channel (weight-scaled), so the stage never
+// mixes channels; saturation (20) still runs after. -1 = off is the
+// neutral default for each hue.
+const bool splitActive = grade.splitShadowHue >= 0.0f
+                      || grade.splitHighlightHue >= 0.0f;
+if (splitActive) {
+    const float m = 0.18f * std::pow(2.0f, grade.splitBalance / 100.0f);
+    // Hue (degrees) -> per-channel unit-average raised-cosine windows,
+    // channels 120 degrees apart: red peaks at 0, green 120, blue 240.
+    // Each window is 0.5 + 0.5*cos(d) rescaled by 2 so its average over
+    // the circle is 1 (mean of 0.5 + 0.5cos is 0.5): the tint pushes
+    // around unity instead of lifting the whole band.
+    auto hueGains = [](float hueDeg) {
+        std::array<float, 3> gains{};
+        for (int c = 0; c < 3; ++c) {
+            const float center = 120.0f * c; // r, g, b peaks
+            float d = std::abs(hueDeg - center);
+            if (d > 180.0f)
+                d = 360.0f - d; // circular distance
+            gains[c] = 2.0f * (0.5f + 0.5f * std::cos(d * 3.14159265f / 180.0f));
+        }
+        return gains;
+    };
+    const std::array<float, 3> sh =
+        grade.splitShadowHue >= 0.0f ? hueGains(grade.splitShadowHue)
+                                     : std::array<float, 3>{1.0f, 1.0f, 1.0f};
+    const std::array<float, 3> hl =
+        grade.splitHighlightHue >= 0.0f ? hueGains(grade.splitHighlightHue)
+                                        : std::array<float, 3>{1.0f, 1.0f, 1.0f};
+    const float tintAmount = 0.35f; // stops at full weight
+    for (size_t i = 0; i < img.rgb.size(); i += 3) {
+        const float r = img.rgb[i + 0], g = img.rgb[i + 1], b = img.rgb[i + 2];
+        const float mx = std::max(r, std::max(g, b));
+        const float wShadow = smoothstepf(m, 0.0f, mx); // 1 at black, 0 at m
+        const float wHighlight = smoothstepf(m, 1.0f, mx); // 0 at m, 1 at white
+        for (int c = 0; c < 3; ++c) {
+            const float gain = std::pow(
+                2.0f, tintAmount * (wShadow * (sh[c] - 1.0f)
+                                  + wHighlight * (hl[c] - 1.0f)));
+            img.rgb[i + c] *= gain;
+        }
+    }
+}
+
+// ---- Stage 20: saturation (grade.saturation in [-100, 100], 0 = neutral). ----
+// Chroma scaling around luma, LAST of the color stages so it scales the
+// final chroma after every per-channel gain (wheel 18, split tone 19
+// included): r' = luma + (r - luma) * f, same for g/b, with
+// luma = 0.2126r + 0.7152g + 0.0722b (Rec.709). f = 2^(0.75 * sat/100):
+// +100 scales chroma by 2^0.75 ~= 1.68, -100 by 2^-0.75 ~= 0.59 —
+// symmetric in stops, never clamped to 0 chroma, so hue is preserved
+// for every setting and a neutral pixel (r = g = b) is untouched (its
+// chroma is 0). Monotone, no hue twists.
+if (grade.saturation != 0.0f) {
+    const float f = std::pow(2.0f, 0.75f * (grade.saturation / 100.0f));
+    for (size_t i = 0; i < img.rgb.size(); i += 3) {
+        const float luma = 0.2126f * img.rgb[i + 0]
+                        + 0.7152f * img.rgb[i + 1]
+                        + 0.0722f * img.rgb[i + 2];
+        img.rgb[i + 0] = luma + (img.rgb[i + 0] - luma) * f;
+        img.rgb[i + 1] = luma + (img.rgb[i + 1] - luma) * f;
+        img.rgb[i + 2] = luma + (img.rgb[i + 2] - luma) * f;
+    }
+}
+
+}
+
 // External stage entry points (declared in Develop.h). Thin wrappers over
 // the internal implementations above so developCpu and developEncoded
 // (Transfer.cpp) run the SAME denoise, detail and tonemapping stages while
@@ -1536,334 +1883,11 @@ ImageF developCpu(const uint16_t* cfa, const FrameInfo& info, const RawMeta& met
     if (grade.noiseReduction != 0.0f)
         denoiseLuma(img, std::min(std::max(grade.noiseReduction, 0.0f), 100.0f) / 100.0f);
 
-    // ---- Stages 9-13: tone controls (owner request 2026-11-10 section 2). ----
-    // These run after camera->Rec.709 and before exposure, on scene-referred
-    // linear values (midgray = 0.18): the shadows/midtones/contrast anchors
-    // classify the scene, so an exposure change after them shifts the whole
-    // graded range uniformly instead of re-bucketing tones. Each stage is a
-    // per-channel scalar remap (neutrals stay neutral); only the shape of the
-    // curve differs. All are guarded by `!= neutral` so a neutral grade
-    // executes none of them (bit-identical to the pre-tone pipeline).
-
-    // Stage 9: black point (grade.blackPoint in [-100, 100], 0 = neutral).
-    // Endpoint remap of the toe, pinned at white: x' = lift + (1 - lift) * x
-    // with lift = -0.12 * bp/100 (A6 black point range shrink, owner
-    // request 2026-11-23: k was 0.25, which crushed 44.7% of night-frame
-    // pixels fully black at bp = +100; bp_measure on the night fixtures
-    // picked k = 0.12, which crushes 10.8% — inside the 10-15% target).
-    // Positive bp (lift < 0) crushes: the toe crossing zero clamps to
-    // black at display, and everything below white darkens toward it.
-    // Negative bp (lift > 0) lifts the floor — at bp = -100 the input
-    // floor 0 maps to 0.12 (faded/filmic blacks). The
-    // map is monotone increasing in x, x = 1 stays 1, and the scalar remap
-    // applies per channel, so neutrals stay neutral and hue order above the
-    // clamp is preserved.
-    if (grade.blackPoint != 0.0f) {
-        const float lift = -0.12f * (grade.blackPoint / 100.0f);
-        // Parallel: per-output-row; each row writes only its own elements.
-        parallelForRows(img.h, [&](size_t y0, size_t y1) {
-            const size_t rowElems = static_cast<size_t>(img.w) * 3;
-            for (size_t i = y0 * rowElems; i < y1 * rowElems; ++i)
-                img.rgb[i] = lift + (1.0f - lift) * img.rgb[i];
-        });
-    }
-
-    // Stage 10: white point (grade.whitePoint in [-100, 100], 0 = neutral).
-    // Endpoint remap of the shoulder, mirror image of stage 9 and pinned at
-    // black (0 stays 0, the toe is untouched): a uniform scale. Positive
-    // brightens the shoulder — x' = x / (1 - 0.25*wp/100), at wp = +100 a
-    // scale of 4/3, so brights rise and clip at display sooner. Negative
-    // pulls the ceiling down — x' = x * (1 + 0.25*wp/100), at wp = -100 a
-    // scale of 3/4, compressing highlights into range. Monotone in x; a
-    // scalar per channel, so neutrals stay neutral.
-    if (grade.whitePoint != 0.0f) {
-        const float scale = grade.whitePoint > 0.0f
-            ? 1.0f / (1.0f - 0.25f * (grade.whitePoint / 100.0f))
-            : 1.0f + 0.25f * (grade.whitePoint / 100.0f);
-        // Parallel: per-output-row; each row writes only its own elements.
-        parallelForRows(img.h, [&](size_t y0, size_t y1) {
-            const size_t rowElems = static_cast<size_t>(img.w) * 3;
-            for (size_t i = y0 * rowElems; i < y1 * rowElems; ++i)
-                img.rgb[i] *= scale;
-        });
-    }
-
-    // Stage 11: shadows (grade.shadows in [-100, 100], 0 = neutral).
-    // Gain weighted toward black, applied uniformly per pixel (diagonal
-    // gain — neutrals stay neutral). weight = smoothstepf(0.18, 0, mx): 1 at
-    // black, 0 at midgray and above; gain = 2^(strength * weight), the same
-    // exponential-gain idiom as temp/tint. Positive lifts shadows (2x at
-    // the floor when +100), negative deepens them (0.5x at -100) —
-    // symmetric, never zero, no inversion.
-    if (grade.shadows != 0.0f) {
-        const float strength = grade.shadows / 100.0f;
-        // Parallel: per-output-row over 3-float pixels; each row writes
-        // only its own pixels.
-        parallelForRows(img.h, [&](size_t y0, size_t y1) {
-            const size_t rowElems = static_cast<size_t>(img.w) * 3;
-            for (size_t i = y0 * rowElems; i < y1 * rowElems; i += 3) {
-                const float mx = std::max(img.rgb[i], std::max(img.rgb[i + 1], img.rgb[i + 2]));
-                const float wDark = smoothstepf(0.18f, 0.0f, mx); // 1 at black
-                const float gain = std::pow(2.0f, strength * wDark);
-                img.rgb[i + 0] *= gain;
-                img.rgb[i + 1] *= gain;
-                img.rgb[i + 2] *= gain;
-            }
-        });
-    }
-
-    // Stage 12: midtones (grade.midtones in [-100, 100], 0 = neutral).
-    // Gain weighted around midgray, the same diagonal-gain shape as
-    // shadows. weight = smoothstepf(0, 0.18, mx) * (1 - smoothstepf(0.18,
-    // 0.72, mx)): a tent that is 0 at black, 1 at midgray (0.18) and 0 again
-    // by 0.72, so shadows and highlights keep their own controls; gain =
-    // 2^(strength * weight). Positive brightens mids, negative darkens them.
-    if (grade.midtones != 0.0f) {
-        const float strength = grade.midtones / 100.0f;
-        // Parallel: per-output-row over 3-float pixels; each row writes
-        // only its own pixels.
-        parallelForRows(img.h, [&](size_t y0, size_t y1) {
-            const size_t rowElems = static_cast<size_t>(img.w) * 3;
-            for (size_t i = y0 * rowElems; i < y1 * rowElems; i += 3) {
-                const float mx = std::max(img.rgb[i], std::max(img.rgb[i + 1], img.rgb[i + 2]));
-                const float wMid = smoothstepf(0.0f, 0.18f, mx)
-                                * (1.0f - smoothstepf(0.18f, 0.72f, mx));
-                const float gain = std::pow(2.0f, strength * wMid);
-                img.rgb[i + 0] *= gain;
-                img.rgb[i + 1] *= gain;
-                img.rgb[i + 2] *= gain;
-            }
-        });
-    }
-
-    // Stage 13: contrast (grade.contrast in [-100, 100], 0 = neutral).
-    // Linear slope around the midgray pivot in scene-referred space:
-    // x' = pivot + (x - pivot) * slope, pivot = 0.18, slope = 1 + c with
-    // c = contrast/100. +100 doubles the distance from midgray (slope 2),
-    // -100 flattens it to zero slope (all tones collapse to the pivot, no
-    // inversion). Monotone for every setting; every channel of a neutral
-    // pixel moves identically, so neutrals stay neutral.
-    if (grade.contrast != 0.0f) {
-        const float c = grade.contrast / 100.0f;
-        const float slope = 1.0f + c;
-        const float pivot = 0.18f;
-        // Parallel: per-output-row; each row writes only its own elements.
-        parallelForRows(img.h, [&](size_t y0, size_t y1) {
-            const size_t rowElems = static_cast<size_t>(img.w) * 3;
-            for (size_t i = y0 * rowElems; i < y1 * rowElems; ++i)
-                img.rgb[i] = pivot + (img.rgb[i] - pivot) * slope;
-        });
-    }
-
-    // ---- Stage 14: exposure as 2^ev. ----
-    if (grade.exposureEv != 0.0f) {
-        const float scale = std::pow(2.0f, grade.exposureEv);
-        // Parallel: per-output-row; each row writes only its own elements.
-        parallelForRows(img.h, [&](size_t y0, size_t y1) {
-            const size_t rowElems = static_cast<size_t>(img.w) * 3;
-            for (size_t i = y0 * rowElems; i < y1 * rowElems; ++i)
-                img.rgb[i] *= scale;
-        });
-    }
-
-    // ---- Stage 15: highlights (grade.highlights in [-100, 100]). ----
-    // Negative = recovery: a monotone shoulder compresses the over-knee
-    // region toward the knee (filmic rolloff, detail comes back). Positive =
-    // a gentle lift of the same region. Neutrals stay neutral (uniform gain
-    // per pixel), mid-tones below the knee are untouched.
-    //
-    // The old quadratic factor (1 - 0.65*s*t) was NOT monotone in t: for
-    // recovery (s > 0) it crossed zero at t = 1/(0.65*s) and went negative
-    // beyond, so a bright pixel above the crossing came out DARKER than a
-    // dimmer one (order reversal) and a very bright one went negative, which
-    // the Rec.709 clamp turned into black (owner finding 2026-11-10:
-    // sky turning black at Highlights -55 with Exposure +2.1 EV). The new
-    // shoulder is monotone for every strength and never goes below the
-    // knee: shoulder(t) = knee + (1-knee)*t/(1+t), blending between the
-    // original value and the shoulder by the recovery strength s, so at
-    // s = 0 (highlights = 0) nothing changes and at full recovery the
-    // over-knee region maps to a bounded, order-preserving rolloff.
-    // Knee = 0.18 (scene-linear middle gray), owner-approved 2026-11-26: with the knee at 0.40 the slider moved the
-    // brightest 5% of a night frame (AgX Punchy, +2.7 EV) by only ~1.4/255 at -100, because the tonemap that follows
-    // already compresses those values; at 0.18 the same measurement gives ~8.6/255 (6x) and 10.5% of pixels change by
-    // >= 2 codes instead of 1.7%. Earlier history: 0.75 -> 0.40 (2026-11-25).
-    if (grade.highlights != 0.0f) {
-        // D3 (2026-11-26): the knee follows the clip (P85 of its own post-Gain luma, bounded);
-        // an unmeasured grade (highlightKneeRef == 0) keeps the legacy 0.18 exactly.
-        const float clipKnee = highlightKnee(grade.highlightKneeRef, std::pow(2.0f, grade.exposureEv));
-        // The shoulder keeps the legacy shape (knee 0.18, span 0.82) but runs on the clip-normalised
-        // max channel mx * k, k = 0.18 / clipKnee >= 1: a dark clip is treated as if its own P85 sat
-        // at 0.18, so the slider acts on it like on a normal clip. k == 1.0f exactly when the clip
-        // knee is the legacy 0.18 (0.18f / 0.18f), so those clips are bit-identical to before.
-        const float kScale = kHighlightKneeMax / clipKnee;
-        const float knee = kHighlightKneeMax;
-        const float span = 1.0f - knee;
-        const float s = -grade.highlights / 100.0f; // recovery -> +1, lift -> -1
-        for (size_t i = 0; i < img.rgb.size(); i += 3) {
-            const float mx = kScale * std::max(img.rgb[i], std::max(img.rgb[i + 1], img.rgb[i + 2]));
-            if (mx <= knee)
-                continue;
-            const float over = mx - knee;
-            const float t = over / span;               // 0..1+ above the knee
-            // Monotone shoulder: bounded, order-preserving for all t.
-            const float shoulder = knee + span * (t / (1.0f + t));
-            // Blend original -> shoulder by strength (s in [-1, 1]).
-            const float newMx = mx + s * (shoulder - mx);
-            const float gain = mx > 0.0f ? newMx / mx : 1.0f;
-            img.rgb[i + 0] *= gain;
-            img.rgb[i + 1] *= gain;
-            img.rgb[i + 2] *= gain;
-        }
-    }
-
-    // ---- Stage 16: temperature (grade.tempK, 2000..50000, neutral 5600). ----
-    // Warm/cool adjustment in linear space around the as-shot state: a
-    // smooth red/blue push proportional to log2(tempK/5600), applied as a
-    // diagonal gain so neutrals stay neutral (no cast on gray).
-    // Skipped when the grade requests the camera's as-shot WB
-    // (grade.asShot true): asShotNeutral (stage 5) already carries the
-    // recorded WB, and an as-shot grade is equivalent to tempK 5600 /
-    // tint 0 — both stages would be no-ops anyway. Manual values stay
-    // stored in tempK/tint and come back the moment asShot is false.
-    if (!grade.asShot) {
-        const float tempShift =
-            grade.tempK > 0.0f ? std::log2(grade.tempK / 5600.0f) : 0.0f;
-        if (std::abs(tempShift) > 1e-4f) {
-            const float warmGain = std::pow(2.0f, 0.35f * tempShift);   // red up when warm
-            const float coolGain = std::pow(2.0f, -0.35f * tempShift);  // blue up when cool
-            for (size_t i = 0; i < img.rgb.size(); i += 3) {
-                img.rgb[i + 0] *= warmGain;
-                // Green rides the geometric mean so luminance is preserved.
-                img.rgb[i + 1] *= std::sqrt(warmGain * coolGain);
-                img.rgb[i + 2] *= coolGain;
-            }
-        }
-    }
-
-    // ---- Stage 17: tint (grade.tint in [-100, 100], 0 = neutral). ----
-    // Green/magenta push on the green channel only: negative -> magenta
-    // (green down), positive -> green up. Smooth, bounded, neutral-safe.
-    // Skipped together with stage 16 when the WB source is as-shot.
-    if (!grade.asShot && grade.tint != 0.0f) {
-        const float greenGain = std::pow(2.0f, 0.4f * (grade.tint / 100.0f));
-        for (size_t i = 0; i < img.rgb.size(); i += 3)
-            img.rgb[i + 1] *= greenGain;
-    }
-
-    // ---- Stage 18: color wheel (COL-13). ----
-    // Three tonal-band color offsets, one (x, y) unit-disc pair per band,
-    // (0, 0) = neutral. The band weights REUSE the tone-slider bands —
-    // shadows smoothstepf(0.18, 0, mx), midtones the 0.18-peaked tent,
-    // highlights smoothstepf(0.18, 0.72, mx) — which form an exact partition
-    // of unity, so the three wheels tile the tonal range with no
-    // double-counting and their anchors match the sliders. Because the
-    // weights sum to 1, the per-pixel offset is the WEIGHTED AVERAGE of the
-    // three band offsets; each axis then becomes one exponent, i.e. one
-    // diagonal gain per channel — the temp idiom for x (red up / blue down,
-    // green untouched, riding the geometric mean) and the tint idiom for y
-    // (green up/down, red/blue untouched). Full deflection (|x| or |y| = 1
-    // in the dominant band) is half a stop on its axis: smooth, bounded,
-    // never a cross-channel mix, so hue never twists; saturation (20) still
-    // runs after to scale the final chroma. The wheel center being the only
-    // neutral point is the spec contract ("merkez nötrdür"): an offset from
-    // center is a color cast by design, on grays too.
-    const bool wheelActive = grade.wheelShadowX != 0.0f || grade.wheelShadowY != 0.0f
-                          || grade.wheelMidX != 0.0f    || grade.wheelMidY != 0.0f
-                          || grade.wheelHighX != 0.0f   || grade.wheelHighY != 0.0f;
-    if (wheelActive) {
-        for (size_t i = 0; i < img.rgb.size(); i += 3) {
-            const float mx = std::max(img.rgb[i + 0],
-                          std::max(img.rgb[i + 1], img.rgb[i + 2]));
-            const float wDark = smoothstepf(0.18f, 0.0f, mx);
-            const float wMid = smoothstepf(0.0f, 0.18f, mx)
-                             * (1.0f - smoothstepf(0.18f, 0.72f, mx));
-            const float wHigh = smoothstepf(0.18f, 0.72f, mx);
-            const float xBlend = wDark * grade.wheelShadowX
-                              + wMid  * grade.wheelMidX
-                              + wHigh * grade.wheelHighX;
-            const float yBlend = wDark * grade.wheelShadowY
-                              + wMid  * grade.wheelMidY
-                              + wHigh * grade.wheelHighY;
-            img.rgb[i + 0] *= std::pow(2.0f,  0.5f * xBlend); // red: warm axis
-            img.rgb[i + 1] *= std::pow(2.0f,  0.5f * yBlend); // green: tint axis
-            img.rgb[i + 2] *= std::pow(2.0f, -0.5f * xBlend); // blue: cool axis
-        }
-    }
-
-    // ---- Stage 19: split tone (COL-13). ----
-    // Independent hue tints for the shadow and highlight bands with a
-    // balance-controlled crossover: the midpoint m = 0.18 * 2^(balance/100)
-    // is midgray at balance 0 (the wheel-band anchor); the shadow tint
-    // ramps in over [0, m] (smoothstepf(m, 0, mx): 1 at black, 0 at m), the
-    // highlight tint over [m, 1] (smoothstepf(m, 1, mx)). Hue angle ->
-    // per-channel gains via raised-cosine windows 120 degrees apart (red
-    // peaks at 0, green 120, blue 240, half-width 120), normalized so the
-    // window average is 1: the tint is then a bounded push around unity
-    // scaled by tintAmount stops at full weight — a tint, not a recolor.
-    // The gain is DIAGONAL per channel (weight-scaled), so the stage never
-    // mixes channels; saturation (20) still runs after. -1 = off is the
-    // neutral default for each hue.
-    const bool splitActive = grade.splitShadowHue >= 0.0f
-                          || grade.splitHighlightHue >= 0.0f;
-    if (splitActive) {
-        const float m = 0.18f * std::pow(2.0f, grade.splitBalance / 100.0f);
-        // Hue (degrees) -> per-channel unit-average raised-cosine windows,
-        // channels 120 degrees apart: red peaks at 0, green 120, blue 240.
-        // Each window is 0.5 + 0.5*cos(d) rescaled by 2 so its average over
-        // the circle is 1 (mean of 0.5 + 0.5cos is 0.5): the tint pushes
-        // around unity instead of lifting the whole band.
-        auto hueGains = [](float hueDeg) {
-            std::array<float, 3> gains{};
-            for (int c = 0; c < 3; ++c) {
-                const float center = 120.0f * c; // r, g, b peaks
-                float d = std::abs(hueDeg - center);
-                if (d > 180.0f)
-                    d = 360.0f - d; // circular distance
-                gains[c] = 2.0f * (0.5f + 0.5f * std::cos(d * 3.14159265f / 180.0f));
-            }
-            return gains;
-        };
-        const std::array<float, 3> sh =
-            grade.splitShadowHue >= 0.0f ? hueGains(grade.splitShadowHue)
-                                         : std::array<float, 3>{1.0f, 1.0f, 1.0f};
-        const std::array<float, 3> hl =
-            grade.splitHighlightHue >= 0.0f ? hueGains(grade.splitHighlightHue)
-                                            : std::array<float, 3>{1.0f, 1.0f, 1.0f};
-        const float tintAmount = 0.35f; // stops at full weight
-        for (size_t i = 0; i < img.rgb.size(); i += 3) {
-            const float r = img.rgb[i + 0], g = img.rgb[i + 1], b = img.rgb[i + 2];
-            const float mx = std::max(r, std::max(g, b));
-            const float wShadow = smoothstepf(m, 0.0f, mx); // 1 at black, 0 at m
-            const float wHighlight = smoothstepf(m, 1.0f, mx); // 0 at m, 1 at white
-            for (int c = 0; c < 3; ++c) {
-                const float gain = std::pow(
-                    2.0f, tintAmount * (wShadow * (sh[c] - 1.0f)
-                                      + wHighlight * (hl[c] - 1.0f)));
-                img.rgb[i + c] *= gain;
-            }
-        }
-    }
-
-    // ---- Stage 20: saturation (grade.saturation in [-100, 100], 0 = neutral). ----
-    // Chroma scaling around luma, LAST of the color stages so it scales the
-    // final chroma after every per-channel gain (wheel 18, split tone 19
-    // included): r' = luma + (r - luma) * f, same for g/b, with
-    // luma = 0.2126r + 0.7152g + 0.0722b (Rec.709). f = 2^(0.75 * sat/100):
-    // +100 scales chroma by 2^0.75 ~= 1.68, -100 by 2^-0.75 ~= 0.59 —
-    // symmetric in stops, never clamped to 0 chroma, so hue is preserved
-    // for every setting and a neutral pixel (r = g = b) is untouched (its
-    // chroma is 0). Monotone, no hue twists.
-    if (grade.saturation != 0.0f) {
-        const float f = std::pow(2.0f, 0.75f * (grade.saturation / 100.0f));
-        for (size_t i = 0; i < img.rgb.size(); i += 3) {
-            const float luma = 0.2126f * img.rgb[i + 0]
-                            + 0.7152f * img.rgb[i + 1]
-                            + 0.0722f * img.rgb[i + 2];
-            img.rgb[i + 0] = luma + (img.rgb[i + 0] - luma) * f;
-            img.rgb[i + 1] = luma + (img.rgb[i + 1] - luma) * f;
-            img.rgb[i + 2] = luma + (img.rgb[i + 2] - luma) * f;
-        }
-    }
+    // ---- Stages 9-20: the grade's tone/color controls. ----
+    // Extracted verbatim into applyToneColorStagesCpu (E7) so the .cube
+    // bake reuses the SAME code path; the call is the old inline block,
+    // so the pipeline's pixels are bit-identical.
+    applyToneColorStagesCpu(img, grade);
 
     // ---- Stage 21: sharpness (grade.sharpness in [-100, 100], 0 = neutral). ----
     // ---- Stage 22: detail    (grade.detail    in [-100, 100], 0 = neutral). ----

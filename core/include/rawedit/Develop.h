@@ -361,6 +361,18 @@ void denoiseLuma(ImageF& img, float strength);
 void unsharpLuma(ImageF& img, float radius, float amount);
 void tonemapFrame(ImageF& img, int mode);
 
+// The grade's per-pixel tone/color stages 9-20 (black point, white point,
+// shadows, midtones, contrast, exposure, highlights, temp, tint, color
+// wheel, split tone, saturation), extracted VERBATIM from developCpu's old
+// inline block (E7): the .cube bake calls this so the exported LUT carries
+// the SAME arithmetic in the SAME order as the render pipeline — the whole
+// point of the bake is that the LUT matches what the app renders. Spatial
+// stages (7-8 denoise, 21-22 sharpen) are deliberately NOT here: they are
+// not per-pixel pure and a 3D LUT cannot carry them. developCpu calls this
+// at the stage 9-20 position, so its pixels are bit-identical (the golden
+// hashes in test_develop lock that).
+void applyToneColorStagesCpu(ImageF& img, const Grade& grade);
+
 // Develops one CFA frame into linear RGB.
 //   cfa: width*height uint16 samples, row-major, 2x2 repeating pattern
 //        given by info.cfa.

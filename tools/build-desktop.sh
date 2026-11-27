@@ -42,7 +42,7 @@ done
 
 echo "== building rawedit core =="
 CORE_OBJS=()
-for src in Source.cpp Develop.cpp Transfer.cpp DngWriter.cpp Gyro.cpp Orientation.cpp OrientationEstimate.cpp Thumbnail.cpp Lut.cpp Color.cpp ColorModel.cpp OpenDrt.cpp OpenDrtAsync.cpp Sync.cpp OpticalSync.cpp Temporal.cpp Stabilization.cpp Warp.cpp RawStats.cpp Parallel.cpp ImageStab.cpp ImageStabSource.cpp; do
+for src in Source.cpp Develop.cpp Transfer.cpp DngWriter.cpp Gyro.cpp Orientation.cpp OrientationEstimate.cpp Thumbnail.cpp Lut.cpp Color.cpp ColorModel.cpp OpenDrt.cpp OpenDrtAsync.cpp Sync.cpp OpticalSync.cpp Temporal.cpp Stabilization.cpp Warp.cpp RawStats.cpp Parallel.cpp ImageStab.cpp ImageStabSource.cpp CubeExport.cpp; do
   obj="$BUILD/core_${src%.cpp}.o"
   "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" -c "$ROOT/core/src/$src" -o "$obj"
   CORE_OBJS+=("$obj")
@@ -329,6 +329,11 @@ echo "== building tests =="
 # repo root, like bp_measure/hr_measure.
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/stripe_measure.cpp" \
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/stripe_measure"
+# test_cube_export: E7 grade -> .cube bake + writer — format bytes,
+# identity bake, baked-vs-direct error (exact lattice + trilinear),
+# nodes/OpenDRT output, the honest refusals, determinism. Synthetic only.
+"$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_cube_export.cpp" \
+  "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_cube_export"
 
 if [[ "${1:-}" == "--no-tests" ]]; then
   echo "== done (tests skipped): $BUILD/rawcli =="
@@ -413,6 +418,8 @@ echo "== running test_develop_stripes =="
 "$BUILD/test_develop_stripes"
 echo "== running test_resample =="
 "$BUILD/test_resample"
+echo "== running test_cube_export =="
+"$BUILD/test_cube_export"
 echo "== running bench_develop (real-clip case needs RAWEDIT_REALCLIP=1) =="
 (cd "$ROOT" && "$BUILD/bench_develop")
 
