@@ -184,8 +184,7 @@ TEST_CASE("dng_writes_timecodes_and_frame_rate_tags") {
 
     DngSequenceMeta seq;
     seq.hasTimeCodes = true;
-    // 01:02:03:04 at exact 25 fps: hour flag bit clear (25 fps), frame
-    // field 4, no drop-frame flag.
+    // 01:02:03:04 at exact 25 fps: BCD 04 03 02 01, no drop-frame flag.
     uint8_t code[8] = {0};
     smpteTimeCodes(1, 2, 3, 4, 0, 25.0, code);
     std::memcpy(seq.timeCodes, code, 8);
@@ -295,47 +294,46 @@ TEST_CASE("dng_sequence_tags_merge_with_extra_meta") {
 TEST_CASE("smpte_timecode_layout_and_flags") {
     uint8_t code[8] = {0};
 
-    SUBCASE("exact 25: no flags, fields verbatim") {
+    SUBCASE("exact 25: BCD, frames first, no flags") {
         smpteTimeCodes(1, 2, 3, 4, 0, 25.0, code);
-        CHECK(code[0] == 1);
-        CHECK(code[1] == 2);
-        CHECK(code[2] == 3);
-        CHECK(code[3] == 4);
-        CHECK(code[4] == 0); // no drop-frame
+        CHECK(code[0] == 0x04); // frames
+        CHECK(code[1] == 0x03); // seconds
+        CHECK(code[2] == 0x02); // minutes
+        CHECK(code[3] == 0x01); // hours
+        for (int k = 4; k < 8; ++k) CHECK(code[k] == 0);
     }
-    SUBCASE("24 family sets bgf8") {
+    SUBCASE("24 family sets no flag bit (no bgf8 in 12M)") {
         smpteTimeCodes(0, 0, 0, 0, 0, 24.0, code);
-        CHECK((code[0] & 0x80) != 0); // bgf8 flag on the hour byte
-        CHECK((code[0] & 0x7f) == 0);
+        for (int k = 0; k < 8; ++k) CHECK(code[k] == 0);
         smpteTimeCodes(0, 0, 0, 0, 0, 24000.0 / 1001.0, code);
-        CHECK((code[0] & 0x80) != 0); // 23.976 counts as the 24 family
+        for (int k = 0; k < 8; ++k) CHECK(code[k] == 0);
     }
-    SUBCASE("29.97 sets drop-frame; exact 30 does not") {
+    SUBCASE("29.97 sets drop-frame (byte 0 bit 6); exact 30 does not") {
         smpteTimeCodes(0, 0, 0, 0, 0, 30000.0 / 1001.0, code);
-        CHECK(code[4] == 1);
-        CHECK((code[0] & 0x80) == 0);
-        smpteTimeCodes(0, 0, 0, 0, 0, 30.0, code);
+        CHECK(code[0] == 0x40);
         CHECK(code[4] == 0);
+        smpteTimeCodes(0, 0, 0, 0, 0, 30.0, code);
+        CHECK(code[0] == 0);
     }
     SUBCASE("frame rollover at 25") {
         smpteTimeCodes(0, 0, 0, 23, 2, 25.0, code);
-        CHECK(code[3] == 0); // 23 + 2 rolls to frame 0
-        CHECK(code[2] == 1); // next second
-        CHECK((code[2] & 0x7f) == 1);
+        CHECK(code[0] == 0x00); // 23 + 2 rolls to frame 0
+        CHECK(code[1] == 0x01); // next second
     }
     SUBCASE("second/minute/hour rollover") {
         smpteTimeCodes(0, 0, 59, 24, 1, 25.0, code);
-        CHECK(code[2] == 0);
-        CHECK(code[1] == 1); // minute rolls
+        CHECK(code[1] == 0x00);
+        CHECK(code[2] == 0x01); // minute rolls
         smpteTimeCodes(0, 59, 59, 24, 1, 25.0, code);
-        CHECK(code[1] == 0);
-        CHECK(code[0] == 1); // hour rolls
+        CHECK(code[2] == 0x00);
+        CHECK(code[3] == 0x01); // hour rolls
         smpteTimeCodes(23, 59, 59, 24, 1, 25.0, code);
-        CHECK((code[0] & 0x7f) == 0); // hour wraps at 24
+        CHECK(code[3] == 0x00); // hour wraps at 24
     }
     SUBCASE("raw passthrough keeps the user-bit tail") {
-        uint8_t in[8] = {0, 0, 0, 0, 0, 0xAB, 0xCD, 0xEF};
+        uint8_t in[8] = {0, 0, 0, 0, 0x11, 0xAB, 0xCD, 0xEF};
         smpteTimeCodesRaw(in, 0, 25.0, code);
+        CHECK(code[4] == 0x11);
         CHECK(code[5] == 0xAB);
         CHECK(code[6] == 0xCD);
         CHECK(code[7] == 0xEF);
@@ -517,7 +515,7 @@ TEST_CASE("sequence_writes_frames_naming_progress") {
         const Tag tc = get(tags, 51043);
         CHECK(tc.type == 1);
         CHECK(tc.count == 8);
-        CHECK((tc.value[3] & 0x7f) == i); // frame field = i
+        CHECK(tc.value[0] == i); // frames byte first (BCD, i < 10)
         const Tag fr = get(tags, 51044);
         CHECK(fr.type == 5);
         CHECK(fr.count == 1);
