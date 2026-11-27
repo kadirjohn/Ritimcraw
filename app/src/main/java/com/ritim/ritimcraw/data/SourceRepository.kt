@@ -755,6 +755,11 @@ internal class JsonParser2(private val s: String) {
                 '"' -> { i++; return sb.toString() }
                 '\\' -> {
                     i++
+                    // Same resilience rule as JsonParser: a truncated or
+                    // garbage escape fails as IllegalArgumentException (the
+                    // type the callers' corrupt-file fallback catches),
+                    // never as an unchecked bounds/number error.
+                    if (i >= s.length) throw IllegalArgumentException("unterminated escape")
                     when (val e = s[i]) {
                         '"' -> sb.append('"')
                         '\\' -> sb.append('\\')
@@ -765,8 +770,16 @@ internal class JsonParser2(private val s: String) {
                         'r' -> sb.append('\r')
                         't' -> sb.append('\t')
                         'u' -> {
+                            if (i + 5 > s.length) {
+                                throw IllegalArgumentException("truncated unicode escape")
+                            }
                             val hex = s.substring(i + 1, i + 5)
-                            sb.append(hex.toInt(16).toChar())
+                            val code = try {
+                                hex.toInt(16)
+                            } catch (e: NumberFormatException) {
+                                throw IllegalArgumentException("bad unicode escape at $i")
+                            }
+                            sb.append(code.toChar())
                             i += 4
                         }
                         else -> throw IllegalArgumentException("bad escape at $i")

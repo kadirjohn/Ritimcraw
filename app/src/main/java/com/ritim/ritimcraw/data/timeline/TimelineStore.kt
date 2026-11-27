@@ -195,8 +195,14 @@ class TimelineStore(private val file: File) {
             return sb.toString()
         }
 
+        /**
+         * E1 resilience: a non-finite Double renders as 0, never as a bare
+         * NaN/Infinity token (not JSON — the file would become unreadable
+         * to this build's own parser). Finite values render byte-identically.
+         */
         private fun num(v: Double): String =
-            if (v == v.toLong().toDouble()) v.toLong().toString() else v.toString()
+            if (!v.isFinite()) "0"
+            else if (v == v.toLong().toDouble()) v.toLong().toString() else v.toString()
 
         // ---- reader ----
 

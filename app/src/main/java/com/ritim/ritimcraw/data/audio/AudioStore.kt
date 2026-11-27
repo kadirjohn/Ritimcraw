@@ -125,7 +125,7 @@ class AudioStore(private val file: File) {
             // never touched the master writes no key, so files written
             // before the field stay byte-identical and load as unity.
             if (p.masterGainDb != 0f || p.masterMuted) {
-                sb.append(",\"master\":{\"gainDb\":").append(p.masterGainDb)
+                sb.append(",\"master\":{\"gainDb\":").append(num(p.masterGainDb))
                 if (p.masterMuted) sb.append(",\"muted\":true")
                 sb.append('}')
             }
@@ -164,12 +164,12 @@ class AudioStore(private val file: File) {
                     .append(",\"sampleRateHz\":").append(c.sampleRateHz)
                 // Optional fields render OMIT-WHEN-DEFAULT so files stay
                 // minimal and pre-field files stay byte-identical.
-                if (c.gainDb != 0f) sb.append(",\"gainDb\":").append(c.gainDb)
+                if (c.gainDb != 0f) sb.append(",\"gainDb\":").append(num(c.gainDb))
                 if (c.fadeInMs != 0) sb.append(",\"fadeInMs\":").append(c.fadeInMs)
                 if (c.fadeOutMs != 0) sb.append(",\"fadeOutMs\":").append(c.fadeOutMs)
                 // pan/muted (AUD-07, landed 2026-11-23): same rule — a
                 // centered, unmuted clip writes neither key.
-                if (c.pan != 0f) sb.append(",\"pan\":").append(c.pan)
+                if (c.pan != 0f) sb.append(",\"pan\":").append(num(c.pan))
                 if (c.muted) sb.append(",\"muted\":true")
                 sb.append('}')
             }
@@ -178,6 +178,15 @@ class AudioStore(private val file: File) {
         }
 
         // ---- reader ----
+
+        /**
+         * E1 resilience: a non-finite float renders as 0 (matching the
+         * parse side's own NaN guards: gain "NaN -> 0", pan "NaN ->
+         * center"), never as a bare NaN/Infinity token that would make
+         * project.json unreadable to this build's own parser. Finite
+         * values render byte-identically.
+         */
+        private fun num(v: Float): String = if (v.isFinite()) v.toString() else "0"
 
         /**
          * Parses the "audio" section of a project.json. Throws

@@ -209,8 +209,15 @@ class MetadataStore(private val file: File) {
 
         private fun renderDoubleField(sb: StringBuilder, name: String, f: Field<Double>) {
             if (f.status == FieldStatus.UNKNOWN) return
+            // E1 resilience: a non-finite Double (a bad measurement) is
+            // reported as UNKNOWN — the honest "not known" — never as a
+            // bare NaN/Infinity token that would make project.json
+            // unreadable to this build's own parser. Finite values render
+            // byte-identically.
+            val value = f.value
+            if (value != null && !value.isFinite()) return
             sb.append(',').append(ProjectJson.quote(name)).append(":{\"v\":")
-                .append(f.value)
+                .append(value)
             if (f.status == FieldStatus.ESTIMATED) {
                 sb.append(",\"s\":\"ESTIMATED\",\"b\":")
                     .append(ProjectJson.quote(f.basis!!))
