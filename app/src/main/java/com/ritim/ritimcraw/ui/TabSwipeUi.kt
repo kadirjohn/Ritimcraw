@@ -17,9 +17,10 @@ import androidx.compose.ui.unit.Velocity
  * request 2026-11-26 D3, "like Telegram's folder switch"): a
  * predominantly-horizontal drag anywhere on the browse content flips to
  * the adjacent browse tab, per [TabSwipe]'s direction mapping and
- * thresholds. AppNav applies this modifier to the browse Crossfade (the
- * else branch AFTER the editor/timeline/report checks — those routes
- * compose OUTSIDE it and keep their own gestures untouched).
+ * thresholds. AppNav applies this modifier to the browse container Box
+ * around the AnimatedContent page slide (the else branch AFTER the
+ * editor/timeline/report checks — those routes compose OUTSIDE it and
+ * keep their own gestures untouched).
  *
  * CHILD PRIORITY — THE WHOLE DESIGN (verified against the foundation
  * 1.7.3 sources this app compiles against — BOM 2024.09.00; files
@@ -144,9 +145,10 @@ fun Modifier.tabSwipeGesture(
                     change.consume()
                     dragDelta((change.position.x - down.position.x) / density)
                 }
-                // Gesture over (flip, cancel, or lift): the follow
-                // offset snaps back to zero — the caller clears its
-                // drag-follow state, the Crossfade carries the flip.
+                // Gesture over (flip, cancel, or lift): the release
+                // signal (dragDelta(0f)) tells the caller to settle the
+                // follow offset back with its spring while the
+                // AnimatedContent slide carries the flip.
                 dragDelta(0f)
             }
         }

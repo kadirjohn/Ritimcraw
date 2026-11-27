@@ -117,8 +117,9 @@ internal object TabSwipe {
      * still-active drag shifts the current page by — the Telegram
      * "page drags with the finger" feel at the cheapest price: the
      * CURRENT tab's content follows the finger (capped, no adjacent
-     * page is composed — the Crossfade, not a pager, carries the flip
-     * itself), and the release snaps back to zero as the flip fades in.
+     * page is composed — the AnimatedContent slide, not a pager,
+     * carries the flip itself), and the release settles back to zero
+     * with the wiring's spring as the flip's slide plays.
      *
      * [dxDp] is the live accumulated horizontal delta; [widthDp] is the
      * container's width. The cap ([FOLLOW_MAX_FRACTION]) keeps a long
