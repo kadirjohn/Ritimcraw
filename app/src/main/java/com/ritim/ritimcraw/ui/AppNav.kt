@@ -1241,9 +1241,10 @@ fun AppNav(
     // deleted file is the honest outcome of a best-effort delete).
     fun deleteExportsFromDisk(ids: Set<String>) {
         if (ids.isEmpty()) return
-        // Read the rows BEFORE the record delete below: the store's
-        // all() is the same list the pure rule filters; after delete()
-        // the rows are gone and the URIs with them.
+        // Read the rows NOW: the caller runs this BEFORE the record delete
+        // (see the onDelete wiring below) because after delete() the rows
+        // are gone and the URIs with them. The pure rule filters the same
+        // still-live list the dialog saw.
         val targets = ExportDelete.diskTargets(stores.exports.all(), ids)
         if (targets.isEmpty()) return
         scope.launch {
@@ -2863,13 +2864,15 @@ fun AppNav(
                             // owner request 2026-11-27: "diskten de silsin")
                             // is the dialog's delete-from-disk checkbox:
                             // checked -> the published rows and internal
-                            // copies leave too (best-effort, AFTER the
-                            // record delete decision — the record leaves
-                            // regardless, the checkbox only widens it).
+                            // copies leave too. The disk pass resolves its
+                            // targets BEFORE the record delete (the rows'
+                            // URIs die with the records), then deletes
+                            // best-effort — the record leaves regardless,
+                            // the checkbox only widens it.
                             onDelete = { ids, fromDisk ->
+                                if (fromDisk) deleteExportsFromDisk(ids)
                                 stores.exports.delete(ids)
                                 exportJobs = stores.exports.all()
-                                if (fromDisk) deleteExportsFromDisk(ids)
                             },
                         )
                         Destination.SETTINGS -> SettingsScreen(
