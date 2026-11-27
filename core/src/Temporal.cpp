@@ -443,7 +443,16 @@ void matchProxyBlocks(const LumaProxy& center, const LumaProxy& neighbor,
     if (neighbor.w != center.w || neighbor.h != center.h || outW == 0 || outH == 0)
         return;
 
-    for (uint32_t by = 0; by < outH; ++by) {
+    // D4 idea 1 (row parallelism): each output block is an INDEPENDENT
+    // argmin over its own 81 candidates (no cross-block state), so the
+    // block rows go through parallelForRows. Bit-exactness: the merge
+    // output is a pure function of the field, and the field is a pure
+    // function of the inputs — the row split only changes WHICH thread
+    // computes which block, never the arithmetic (same expressions, same
+    // order per block). Pinned by the golden checksums and the A/B test
+    // (the serial fallback path is the same code).
+    parallelForRows(outH, [&](size_t rowBegin, size_t rowEnd) {
+    for (uint32_t by = static_cast<uint32_t>(rowBegin); by < static_cast<uint32_t>(rowEnd); ++by) {
         for (uint32_t bx = 0; bx < outW; ++bx) {
             const uint32_t ox = bx * kBlockSize;
             const uint32_t oy = by * kBlockSize;
@@ -469,6 +478,7 @@ void matchProxyBlocks(const LumaProxy& center, const LumaProxy& neighbor,
             out[static_cast<size_t>(by) * outW + bx] = mv;
         }
     }
+    });
 }
 
 void matchProxyBlocksSeeded(const LumaProxy& center, const LumaProxy& neighbor,
@@ -495,7 +505,12 @@ void matchProxyBlocksSeeded(const LumaProxy& center, const LumaProxy& neighbor,
         1.0f / static_cast<float>((kBlockSize / 2) * (kBlockSize / 2));
     const float thresh = accept > 0.0f ? accept : std::numeric_limits<float>::max();
 
-    for (uint32_t by = 0; by < outH; ++by) {
+    // D4 idea 1 (row parallelism): same independence argument as
+    // matchProxyBlocks — the seed is READ-ONLY and each block's
+    // early-accept/scan decision touches only its own inputs. Row split
+    // changes the executing thread, never the arithmetic.
+    parallelForRows(outH, [&](size_t rowBegin, size_t rowEnd) {
+    for (uint32_t by = static_cast<uint32_t>(rowBegin); by < static_cast<uint32_t>(rowEnd); ++by) {
         for (uint32_t bx = 0; bx < outW; ++bx) {
             const uint32_t ox = bx * kBlockSize;
             const uint32_t oy = by * kBlockSize;
@@ -545,6 +560,7 @@ void matchProxyBlocksSeeded(const LumaProxy& center, const LumaProxy& neighbor,
             out[bi] = mv;
         }
     }
+    });
 }
 
 namespace {
