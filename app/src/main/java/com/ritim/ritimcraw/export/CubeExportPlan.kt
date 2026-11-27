@@ -83,7 +83,7 @@ object CubeExportPlan {
     fun suggestedFileName(clipName: String, now: java.time.Instant, zone: java.time.ZoneId): String {
         var base = clipName.trim()
         val dot = base.lastIndexOf('.')
-        if (dot > 0 && base.substring(dot + 1).lowercase(Locale.ROOT) in CLIP_EXTENSIONS) {
+        if (dot >= 0 &&base.substring(dot + 1).lowercase(Locale.ROOT) in CLIP_EXTENSIONS) {
             base = base.substring(0, dot)
         }
         val safe = base
