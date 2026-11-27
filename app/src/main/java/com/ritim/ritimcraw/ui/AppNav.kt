@@ -2372,12 +2372,14 @@ fun AppNav(
                 // had been dragged one way and the spring yanked it BACK
                 // (a visible reversal into the slide: the
                 // jerk-then-transition). On a flip the settle now flies
-                // the page TOWARD the side it was dragged
-                // (TabSwipe.settleTargetFraction: ±60% of the width,
-                // past the 15% follow cap, inside the slide's travel,
-                // clipped by AnimatedContent's own clipToBounds), so the
-                // nudged page departs in the direction it was already
-                // moving and the slide's fade-out carries it away; a
+                // the page in the SLIDE's exit direction
+                // (TabSwipe.exitTravelSign → settleTargetFraction:
+                // ±60% of the width, past the 15% follow cap, inside
+                // the slide's travel, clipped by AnimatedContent's own
+                // clipToBounds), so the nudge hand-off and the slide
+                // push the page the SAME way — including the fling-back
+                // flip, where the exit direction is the fling's, not
+                // the stale nudge's; a
                 // no-flip release still returns home to 0.
                 // (c) the nudge layer lived INSIDE the AnimatedContent
                 // content, so the settle moved BOTH pages — the ENTERING
