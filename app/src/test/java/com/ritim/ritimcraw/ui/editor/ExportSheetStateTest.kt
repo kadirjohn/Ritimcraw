@@ -7,6 +7,7 @@ import com.ritim.ritimcraw.export.ExportResolution
 import com.ritim.ritimcraw.export.ExportSheetModel
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -113,13 +114,27 @@ class ExportSheetStateTest {
             listOf("FORMAT", "PRESET", "RESOLUTION", "FRAME_RATE", "CODEC", "BIT_DEPTH"),
             ExportSheetState.mainRows(false).map { it.name },
         )
+        // test change (E5, night D2): the loudness target row joins the
+        // Advanced order between AUDIO and the read-only AUDIO_FORMAT —
+        // the audio section's own setting, before the audio-format
+        // description row.
         assertEquals(
-            listOf("BITRATE", "RATE_MODE", "KEYFRAME", "PROFILE", "AUDIO", "AUDIO_FORMAT"),
+            listOf("BITRATE", "RATE_MODE", "KEYFRAME", "PROFILE", "AUDIO", "LOUDNESS", "AUDIO_FORMAT"),
             ExportSheetState.advancedRows().map { it.name },
         )
         val all = ExportSheetState.mainRows(false) + ExportSheetState.advancedRows()
         assertEquals(ExportSheetState.Row.entries.toSet(), all.toSet())
         assertEquals(all.size, all.toSet().size)
+    }
+
+    @Test
+    fun the_loudness_row_value_is_off_or_the_whole_lufs_number() {
+        // (E5, night D2) A null target reads "Off"; a target reads as the
+        // whole number the presets use (−14, −16, −23), Locale.ROOT.
+        assertNull(ExportSheetState.loudnessValue(null))
+        assertEquals("-14", ExportSheetState.loudnessValue(-14f))
+        assertEquals("-16", ExportSheetState.loudnessValue(-16f))
+        assertEquals("-23", ExportSheetState.loudnessValue(-23f))
     }
 
     @Test

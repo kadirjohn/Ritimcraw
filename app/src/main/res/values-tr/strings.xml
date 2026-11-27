@@ -414,6 +414,15 @@
     <string name="export_frame_rate_value">%1$s kare/sn (klipten)</string>
     <string name="export_audio_format">Ses örnekleme hızı ve kanallar</string>
     <string name="export_audio_format_value">Klip ile aynı</string>
+    <string name="export_loudness">Ses şiddeti hedefi</string>
+    <string name="export_loudness_value">%1$s LUFS</string>
+    <string name="export_loudness_off">Kapalı</string>
+    <string name="export_loudness_off_hint">Klibin sesi değiştirilmeden aktarılır</string>
+    <string name="export_loudness_social">Sosyal −14</string>
+    <string name="export_loudness_podcast">Podcast −16</string>
+    <string name="export_loudness_broadcast">Yayın −23</string>
+    <string name="export_loudness_target_hint">Sesi bu seviyeye getirir, gerçek tepe −1 dBTP\'de kalır</string>
+    <string name="export_help_loudness">Dışa aktarılan sesin ne kadar yüksek sesli olacağını belirler. Kapalı, klibi aynen korur. Diğerleri sesi hedef seviyeye getirir ve gerçek tepeyi −1 dBTP\'nin altında tutar.</string>
     <string name="export_issue_fix">Bu ayarları kullan</string>
     <string name="export_issue_fix_resolution">%1$s × %2$s kullan</string>
     <string name="export_issue_no_encoder">Bu telefonda bu dışa aktarmayı yapabilecek %1$s video kodlayıcı yok.</string>

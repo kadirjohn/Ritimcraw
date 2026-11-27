@@ -417,6 +417,15 @@
     <string name="export_frame_rate_value">%1$s fps (from the clip)</string>
     <string name="export_audio_format">Audio sample rate and channels</string>
     <string name="export_audio_format_value">Same as the clip</string>
+    <string name="export_loudness">Loudness target</string>
+    <string name="export_loudness_value">%1$s LUFS</string>
+    <string name="export_loudness_off">Off</string>
+    <string name="export_loudness_off_hint">The clip\'s audio is exported unchanged</string>
+    <string name="export_loudness_social">Social −14</string>
+    <string name="export_loudness_podcast">Podcast −16</string>
+    <string name="export_loudness_broadcast">Broadcast −23</string>
+    <string name="export_loudness_target_hint">Normalizes the audio to this level, true peak at −1 dBTP</string>
+    <string name="export_help_loudness">Sets how loud the exported audio is. Off keeps the clip exactly as it is. The others normalize to the target level and keep the true peak under −1 dBTP.</string>
     <string name="export_issue_fix">Use these settings</string>
     <string name="export_issue_fix_resolution">Use %1$s × %2$s</string>
     <string name="export_issue_no_encoder">No %1$s video encoder on this phone can make this export.</string>
