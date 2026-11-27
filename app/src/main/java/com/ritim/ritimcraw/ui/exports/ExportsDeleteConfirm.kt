@@ -1,5 +1,6 @@
 package com.ritim.ritimcraw.ui.exports
 
+import com.ritim.ritimcraw.export.ExportDelete
 import com.ritim.ritimcraw.export.ExportJob
 import com.ritim.ritimcraw.export.State
 
@@ -39,6 +40,14 @@ import com.ritim.ritimcraw.export.State
  * only ids that are STILL deletable at the button press: a row that
  * turned live between the arm and the confirm (a Retry racing the
  * swipe) drops out here, exactly like [ExportsSelection.deleteIds].
+ *
+ * DELETE-FROM-DISK (owner request 2026-11-27, the M8 pass: the dialog
+ * also carries a "Delete from disk" checkbox, default UNCHECKED): the
+ * decision of WHICH files a checked box removes is the pure
+ * [ExportDelete] rule (this package's own object — see its doc); the
+ * checkbox STATE itself is one boolean the composable holds, reset to
+ * unchecked whenever a new row arms, so one dialog can never inherit
+ * the last one's disk choice.
  */
 object ExportsDeleteConfirm {
 
@@ -50,6 +59,16 @@ object ExportsDeleteConfirm {
      */
     fun arm(pendingId: String?, job: ExportJob): String? =
         if (ExportRowModel.isDeletable(job.state)) job.id else pendingId
+
+    /**
+     * The checkbox's state when a row arms: UNCHECKED every time (the
+     * owner's safe side — the box is the user's opt-in for THIS dialog,
+     * never inherited from the last one; [ExportDelete.DEFAULT_DELETE_FROM_DISK]
+     * is the same rule from the export package's own side). The
+     * composable calls this at the arm so one dialog can never start
+     * with the previous row's disk choice.
+     */
+    fun armCheckbox(checked: Boolean): Boolean = ExportDelete.DEFAULT_DELETE_FROM_DISK
 
     /**
      * The dialog's confirm button: the ids the store's delete receives.
@@ -71,7 +90,8 @@ object ExportsDeleteConfirm {
      * The cancel/dismiss outcome: nothing deletes, the armed state
      * clears. The row itself already rolled back at the veto — the
      * swipe's visual reset is material3's own rollback animation, not
-     * this function's business.
+     * this function's business. The checkbox resets with the dialog (it
+     * is the dialog's own state, not the screen's — see [arm]).
      */
     fun cancel(pendingId: String?): String? = null
 
@@ -89,4 +109,16 @@ object ExportsDeleteConfirm {
         } else {
             ExportRowModel.sourceName(job, sourceNames)
         }
+
+    /**
+     * Whether the delete-from-disk checkbox should even compose in this
+     * dialog (owner request 2026-11-27): only when the armed row HAS a
+     * disk target — a DONE row with a published URI. A FAILED/CANCELLED
+     * row (or a DONE row whose publish failed) has nothing on disk to
+     * offer: the checkbox would be a switch that does nothing, so it is
+     * not shown at all (the honest no-target skip, [ExportDelete]'s own
+     * rule — this only reads it for visibility).
+     */
+    fun showsDiskCheckbox(job: ExportJob): Boolean =
+        job.state == State.DONE && !job.publishedUri.isNullOrBlank()
 }

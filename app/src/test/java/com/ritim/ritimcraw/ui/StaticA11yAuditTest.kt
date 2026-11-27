@@ -634,11 +634,14 @@ class StaticA11yAuditTest {
         // clickable rides the CARD modifier while the label — the row's
         // filename headline Text — sits in the card's content lambda past
         // the window; TalkBack merges the card's texts into the row focus.
-        "ExportsScreen.kt:635" to "DONE export card, select-mode toggle branch: the card's filename headline Text (content lambda) labels the merged row focus",
-        "ExportsScreen.kt:637" to "DONE export card, open branch: the card's filename headline Text (content lambda) labels the merged row focus",
-        "ExportsScreen.kt:761" to "LIVE export card, select-mode toggle branch: the card's filename headline Text labels the merged row focus (same reviewed pattern as the DONE card)",
-        "ExportsScreen.kt:763" to "LIVE export card, open branch: the card's filename headline Text labels the merged row focus (same reviewed pattern as the DONE card)",
-        "ExportsScreen.kt:1100" to "ARCHIVE export card, select-mode toggle branch: the card's filename headline Text labels the merged row focus (same reviewed pattern)",
+        // (M8, 2026-11-27) the dialog additions moved the rows again
+        // (635/637 → 781/783, 761/763 → 907/909, 1100 → 1246): the same
+        // reviewed shapes, renumbered to the live file.
+        "ExportsScreen.kt:781" to "DONE export card, select-mode toggle branch: the card's filename headline Text (content lambda) labels the merged row focus",
+        "ExportsScreen.kt:783" to "DONE export card, open branch: the card's filename headline Text (content lambda) labels the merged row focus",
+        "ExportsScreen.kt:907" to "DONE export card (thumbnail shape), select-mode toggle branch: the card's filename headline Text labels the merged row focus",
+        "ExportsScreen.kt:909" to "DONE export card (thumbnail shape), open branch: the card's filename headline Text labels the merged row focus",
+        "ExportsScreen.kt:1246" to "FAILED export card, select-mode toggle branch: the card's filename headline Text labels the merged row focus (same reviewed pattern)",
     )
 
     @Test

@@ -123,10 +123,15 @@ import com.ritim.ritimcraw.util.Format
  * 2026-11-27: a page-turn swipe must not lose an export — the
  * confirmValueChange VETO below rolls the row back and opens the
  * confirm dialog; see [ExportsDeleteConfirm]); the dialog's Delete, or
- * the selection trash, lands in [onDelete] -> the store's delete(ids),
- * which removes the job RECORD only, exactly like Clear-all (the
- * output file under files/exports and the published media-store row
- * are never touched; see ExportStore.delete). Deletion is
+ * the selection trash's confirm, lands in [onDelete] -> the store's
+ * delete(ids), which removes the job RECORD only, exactly like
+ * Clear-all — UNLESS the dialog's delete-from-disk checkbox is checked
+ * (owner request 2026-11-27, M8: "delete from disk box'u da olsun ve
+ * bunu işaretlerse diskten de silsin"): the checkbox (default
+ * UNCHECKED, the safe side) routes the checked state beside the ids,
+ * and the shell's adapter removes the DONE rows' published media-store
+ * rows and internal copies best-effort through the pure
+ * [com.ritim.ritimcraw.export.ExportDelete] rule. Deletion is
  * irreversible; NO undo snackbar was added — a true undo needs
  * position-true re-insertion this append-only store cannot do, and the
  * owner did not ask. In select mode the swipe is disabled (a tap
@@ -146,7 +151,12 @@ fun ExportsScreen(
     // the shell routes it to the store's delete(ids) — swipe-to-dismiss
     // on a terminal row and the selection mode's trash both land here.
     // The store repeats the live-guard under its own lock.
-    onDelete: (Set<String>) -> Unit = {},
+    // DELETE-FROM-DISK (owner request 2026-11-27, M8): the checkbox's
+    // checked state rides beside the ids — the shell's adapter resolves
+    // the rows' own disk targets from the ids through the pure
+    // [ExportDelete] rule, so the callback stays a thin pair, never a
+    // URI list (the screen never learns resolver facts).
+    onDelete: (Set<String>, Boolean) -> Unit = { _, _ -> },
     // sourceId -> display name (owner request §2b): rows show the clip's
     // real file name; the id is the fallback for unknown/missing sources.
     sourceNames: Map<String, String> = emptyMap(),
@@ -183,6 +193,21 @@ fun ExportsScreen(
         pendingDeleteId = null
     }
     val pendingDeleteJob = pendingDeleteId?.let { id -> jobs.firstOrNull { it.id == id } }
+
+    // The dialog's delete-from-disk checkbox (owner request 2026-11-27,
+    // M8: "diskten de silsin"): UNCHECKED at every arm (the pure
+    // [ExportsDeleteConfirm.armCheckbox] rule — the box is the user's
+    // opt-in for THIS dialog, never the last dialog's choice).
+    var deleteFromDisk by remember { mutableStateOf(ExportsDeleteConfirm.armCheckbox(false)) }
+
+    // Selection-mode delete confirmation (owner request 2026-11-27, M8 —
+    // the Library's E2 confirm-dialog precedent): the trash in the
+    // selection bar asks before it deletes, exactly like the swipe's
+    // dialog asks, and carries the SAME delete-from-disk checkbox so
+    // both delete paths offer the same choice. The dialog composes only
+    // while the selection is live; Cancel exits selection mode too (the
+    // Library's rule: selection exits after delete OR cancel).
+    var confirmSelectionDelete by remember { mutableStateOf(false) }
 
     // Back (the LibrarySelection.onBack rule): back while rows are
     // checked exits SELECTION mode — the screen stays.
@@ -226,8 +251,12 @@ fun ExportsScreen(
                         .padding(start = 8.dp),
                 )
                 IconButton(onClick = {
-                    onDelete(ExportsSelection.deleteIds(selection, jobs))
-                    selectedIds = emptySet() // exit selection mode first
+                    // M8 (owner request 2026-11-27): the trash ASKS first —
+                    // the Library's E2 confirm dialog — and its own checkbox
+                    // carries the delete-from-disk choice; the delete itself
+                    // lands at the dialog's confirm, not here.
+                    deleteFromDisk = ExportsDeleteConfirm.armCheckbox(deleteFromDisk)
+                    confirmSelectionDelete = true
                 }) {
                     Icon(
                         painterResource(R.drawable.ic_delete),
@@ -332,7 +361,13 @@ fun ExportsScreen(
                             onOpen = onOpen,
                             onCancel = onCancel,
                             onDelete = onDelete,
-                            onSwipeArm = { pendingDeleteId = ExportsDeleteConfirm.arm(pendingDeleteId, job) },
+                            onSwipeArm = {
+                                pendingDeleteId = ExportsDeleteConfirm.arm(pendingDeleteId, job)
+                                // The checkbox resets with every arm (M8): the
+                                // new dialog never inherits the last one's
+                                // disk choice — the pure rule, applied here.
+                                deleteFromDisk = ExportsDeleteConfirm.armCheckbox(deleteFromDisk)
+                            },
                             exportDir = exportDir,
                             thumbnailStore = thumbnailStore,
                         )
@@ -370,7 +405,8 @@ fun ExportsScreen(
         // record leaves. The body names WHAT leaves — the output file
         // for a DONE row, the source clip otherwise (the pure
         // [ExportsDeleteConfirm.subjectLine]) — plus the record-only
-        // meaning, so the user knows the exported FILE stays on disk.
+        // meaning, so the user knows the exported FILE stays on disk
+        // UNLESS the checkbox below opts it out (M8).
         // Delete re-runs the still-deletable check at the press (the
         // pure confirmIds — a Retry racing the swipe re-queued the row
         // and nothing routes); Cancel/dismiss clears the arm and the
@@ -380,17 +416,50 @@ fun ExportsScreen(
                 onDismissRequest = { pendingDeleteId = ExportsDeleteConfirm.cancel(pendingDeleteId) },
                 title = { Text(stringResource(R.string.exports_delete_title)) },
                 text = {
-                    Text(
-                        stringResource(
-                            R.string.exports_delete_message,
-                            ExportsDeleteConfirm.subjectLine(pendingDeleteJob, sourceNames),
+                    Column {
+                        Text(
+                            stringResource(
+                                R.string.exports_delete_message,
+                                ExportsDeleteConfirm.subjectLine(pendingDeleteJob, sourceNames),
+                            )
                         )
-                    )
+                        // DELETE FROM DISK (owner request 2026-11-27, M8:
+                        // "delete from disk box'u da olsun ve bunu
+                        // işaretlerse diskten de silsin"): the opt-in
+                        // checkbox under the record-only meaning. Only a
+                        // DONE row with a published file shows it (the
+                        // pure [ExportsDeleteConfirm.showsDiskCheckbox] —
+                        // a FAILED/CANCELLED row has nothing on disk, and
+                        // a checkbox that does nothing would be a lie).
+                        // Default UNCHECKED: the safe side keeps the M3
+                        // meaning; the user opts the FILE out by checking.
+                        if (ExportsDeleteConfirm.showsDiskCheckbox(pendingDeleteJob)) {
+                            Row(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .padding(top = 12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Checkbox(
+                                    checked = deleteFromDisk,
+                                    onCheckedChange = { deleteFromDisk = it },
+                                )
+                                Text(
+                                    stringResource(R.string.exports_delete_from_disk),
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    modifier = Modifier.padding(start = 4.dp),
+                                )
+                            }
+                        }
+                    }
                 },
                 confirmButton = {
                     TextButton(
                         onClick = {
-                            onDelete(ExportsDeleteConfirm.confirmIds(pendingDeleteId, jobs))
+                            onDelete(
+                                ExportsDeleteConfirm.confirmIds(pendingDeleteId, jobs),
+                                deleteFromDisk,
+                            )
                             pendingDeleteId = null
                         },
                     ) {
@@ -400,6 +469,82 @@ fun ExportsScreen(
                 dismissButton = {
                     TextButton(
                         onClick = { pendingDeleteId = ExportsDeleteConfirm.cancel(pendingDeleteId) },
+                    ) {
+                        Text(stringResource(R.string.exports_delete_cancel))
+                    }
+                },
+            )
+        }
+
+        // The selection-mode delete confirm (M8, owner request
+        // 2026-11-27: the trash asks too — the Library's E2 precedent,
+        // the swipe dialog's own shape): the checked set's still-deletable
+        // filter runs at the CONFIRM press (the pure
+        // [ExportsSelection.deleteIds] — live rows drop out there), the
+        // checkbox offers the same disk choice as the swipe dialog, and
+        // the body states HOW MANY rows leave (the Library's multi-select
+        // honesty). Cancel exits selection mode too (the Library's rule:
+        // selection exits after delete OR cancel).
+        if (confirmSelectionDelete && selecting) {
+            AlertDialog(
+                onDismissRequest = { confirmSelectionDelete = false },
+                title = { Text(stringResource(R.string.exports_selection_delete_title)) },
+                text = {
+                    Column {
+                        Text(
+                            stringResource(
+                                R.string.exports_selection_delete_message,
+                                selection.size,
+                            )
+                        )
+                        // The SAME delete-from-disk opt-in (M8): shown only
+                        // when at least one checked row has a published
+                        // file — the same pure rule the swipe dialog
+                        // applies, mapped over the checked set.
+                        if (jobs.any {
+                                it.id in selection &&
+                                    ExportsDeleteConfirm.showsDiskCheckbox(it)
+                            }
+                        ) {
+                            Row(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .padding(top = 12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Checkbox(
+                                    checked = deleteFromDisk,
+                                    onCheckedChange = { deleteFromDisk = it },
+                                )
+                                Text(
+                                    stringResource(R.string.exports_delete_from_disk),
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    modifier = Modifier.padding(start = 4.dp),
+                                )
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            confirmSelectionDelete = false
+                            onDelete(
+                                ExportsSelection.deleteIds(selection, jobs),
+                                deleteFromDisk,
+                            )
+                            selectedIds = emptySet() // exit selection mode first
+                        },
+                    ) {
+                        Text(stringResource(R.string.exports_delete_confirm))
+                    }
+                },
+                dismissButton = {
+                    TextButton(
+                        onClick = {
+                            confirmSelectionDelete = false
+                            selectedIds = emptySet()
+                        },
                     ) {
                         Text(stringResource(R.string.exports_delete_cancel))
                     }
@@ -434,7 +579,8 @@ fun ExportsScreen(
  *
  * Deleting is IRREVERSIBLE and there is no undo snackbar: the store's
  * delete removes the RECORD only (exactly what clear-all does — the
- * output file and the published row are never touched), and a true
+ * output file and the published row are never touched UNLESS the
+ * dialog's delete-from-disk checkbox was checked, M8), and a true
  * undo would need position-true re-insertion this append-only store
  * cannot do (the owner did not ask; see ExportStore.delete).
  */
@@ -445,7 +591,7 @@ private fun DismissableJobCard(
     onRetry: (ExportJob) -> Unit,
     onOpen: (ExportJob) -> Unit,
     onCancel: (ExportJob) -> Unit,
-    onDelete: (Set<String>) -> Unit,
+    onDelete: (Set<String>, Boolean) -> Unit,
     onSwipeArm: () -> Unit,
     exportDir: File?,
     thumbnailStore: ThumbnailStore?,

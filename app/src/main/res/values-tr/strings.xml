@@ -514,6 +514,13 @@
     <string name="exports_delete_message">%1$s\n\nBuradaki kayıt kaldırılır; dışa aktarılan dosya diskte kalır.</string>
     <string name="exports_delete_confirm">Sil</string>
     <string name="exports_delete_cancel">Vazgeç</string>
+    <!-- Delete from disk (owner request 2026-11-27, M8: "delete from disk
+         box'u da olsun ve bunu işaretlerse diskten de silsin"): the
+         checkbox's own label, plus the selection-mode trash's confirm
+         dialog (the Library's E2 shape, arrived with the same pass). -->
+    <string name="exports_delete_from_disk">Dışa aktarılan dosyayı diskten de sil</string>
+    <string name="exports_selection_delete_title">Bu dışa aktarımlar silinsin mi?</string>
+    <string name="exports_selection_delete_message">%1$d seçili kayıt kaldırılır; dışa aktarılan dosyalar diskte kalır.</string>
     <!-- Export foreground notification (owner finding 2026-11-14): the
          visible side of the process priority that keeps a backgrounded
          export alive. IMPORTANCE_LOW channel — silent, no heads-up. -->
