@@ -130,6 +130,30 @@ internal object TabSwipe {
         return (dxDp / widthDp).coerceIn(-FOLLOW_MAX_FRACTION, FOLLOW_MAX_FRACTION)
     }
 
-    /** The drag-follow cap: never shift the page more than 15% of its width. */
+    /**
+     * The drag-follow cap: never shift the page more than 15% of its width.
+     */
     const val FOLLOW_MAX_FRACTION = 0.15f
+
+    /**
+     * The drag-follow's RELEASE settle: the fraction the page still has
+     * to travel when the finger lifts. 0f — the page returns to its
+     * resting offset. A pure constant (not a lambda) so the wiring's
+     * spring target is JVM-readable; the actual spring spec (below)
+     * lives in the wiring because AnimationSpec is not JVM-pure API in
+     * this project's tests.
+     */
+    const val FOLLOW_RELEASE_TARGET_FRACTION = 0f
+
+    /**
+     * Whether a reported drag delta is the gesture's RELEASE reset (the
+     * wiring's own gesture-end signal, `dragDelta(0f)`) rather than a
+     * live finger position. The release must ANIMATE back (the spring),
+     * while every live delta SNAPS (the finger owns the frame); treating
+     * the release like a live snap is exactly the hard-stop the owner
+     * reported ("animasyon duruyor, sonra geçiliyor"). Zero is also the
+     * pre-slop resting value, where snapping is a no-op — the same
+     * answer either way, so one rule covers both.
+     */
+    fun isReleaseReset(dxDp: Float): Boolean = dxDp == 0f
 }
