@@ -9,8 +9,18 @@ import android.util.Log
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FiniteAnimationSpec
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
@@ -2080,49 +2090,104 @@ fun AppNav(
                 // Tab swipe (owner request 2026-11-26 D3, "like
                 // Telegram's folder switch"): a horizontal drag anywhere
                 // on the browse content flips to the adjacent tab. The
-                // gesture sits on the CROSSFADE CONTAINER (a parent to
+                // gesture sits on the TRANSITION CONTAINER (a parent to
                 // every screen's content), so children — rows, buttons,
                 // chips, the vertical scroll bodies — see every event
                 // first and consume what they want; only drags no child
                 // claims flip the tab (see tabSwipeGesture's doc for
-                // the verified foundation dispatch order). The
-                // drag-follow offset rides the content INSIDE the
-                // Crossfade: the current page nudges with the finger
-                // (capped at 15% of the width, TabSwipe's pure rule),
-                // then snaps back as the flip's fade plays. This branch
+                // the verified foundation dispatch order). This branch
                 // is the browse-only scope: the editor, timeline and
                 // Device report routes sit ABOVE it and are untouched.
-                var tabDragDeltaDp by remember { mutableStateOf(0f) }
-                Crossfade(
-                    targetState = destination,
-                    animationSpec = tween(220),
-                    label = "browse",
-                    // The container-level detector: children win (the
-                    // modifier is composed OUTER to every screen's
-                    // content), the flip lands in `destination` — the
-                    // same state the bottom NavigationBar writes, so
-                    // the bar's selection follows the swipe.
-                    modifier = Modifier.tabSwipeGesture(
-                        currentTab = { destination },
-                        onFlip = { destination = it },
-                        onDragDeltaDp = { delta -> tabDragDeltaDp = delta },
-                    ),
-                ) { d ->
-                    // The nudge layer is INSIDE the Crossfade so it
-                    // applies to the fading page only, never to the
-                    // outer Box's other children.
-                    Box(
-                        Modifier
-                            .fillMaxSize()
-                            .graphicsLayer {
-                                translationX =
-                                    TabSwipe.followOffsetFraction(
-                                        tabDragDeltaDp,
-                                        size.width / density,
-                                    ) * size.width
+                //
+                // SMOOTHNESS REWORK (owner request 2026-11-27, "geçiş
+                // ve smoothness güzel olup page durmamalı"): the old
+                // wiring wrote the drag-follow offset STRAIGHT into the
+                // graphicsLayer and reset it to zero in the same frame
+                // the 220ms Crossfade fade began — the page hard-stopped
+                // at its 15% nudge, then a plain fade played over an
+                // already-frozen page (the owner's "animasyon duruyor,
+                // sonra geçiliyor"). Two changes, both on this container:
+                // (1) the follow offset is an [Animatable] — live finger
+                // deltas SNAP it (the finger owns the frame), and the
+                // gesture's release reset ANIMATES it back with the
+                // critically-damped spring (the PanelSheet settle
+                // precedent: no overshoot, no hard stop); (2) the flip
+                // itself is an [AnimatedContent] shared-axis-X slide
+                // (DESIGN.md Motion: "shared axis X (tool tabs)" —
+                // slide + fade toward the target's display order), so
+                // the release's spring and the slide run TOGETHER: the
+                // page keeps moving through the whole transition.
+                val tabFollowDp = remember { Animatable(0f) }
+                val scope = rememberCoroutineScope()
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .tabSwipeGesture(
+                            currentTab = { destination },
+                            onFlip = { destination = it },
+                            onDragDeltaDp = { delta ->
+                                if (TabSwipe.isReleaseReset(delta)) {
+                                    // The gesture's end signal: settle
+                                    // back with the spring (canceled by
+                                    // the next gesture's snap — the
+                                    // Animatable's own mutation rule).
+                                    scope.launch {
+                                        tabFollowDp.animateTo(
+                                            0f,
+                                            tabSwipeSettleSpec(),
+                                        )
+                                    }
+                                } else {
+                                    // A live finger delta: the finger
+                                    // owns the frame — snap, no easing.
+                                    scope.launch { tabFollowDp.snapTo(delta) }
+                                }
+                            },
+                        ),
+                ) {
+                    AnimatedContent(
+                        targetState = destination,
+                        transitionSpec = {
+                            val from = Destination.entries.indexOf(initialState)
+                            val to = Destination.entries.indexOf(targetState)
+                            val forward = to > from
+                            // Shared axis X (DESIGN.md Motion): the new
+                            // page enters from the side it lives on in
+                            // display order, the old page exits toward
+                            // the opposite side, both with a fade. The
+                            // slide distance is a fraction of the width
+                            // (the ExportSettingsPanel page-slide
+                            // precedent, it / 3) — a full-width slide
+                            // would drag both pages across the nav bar.
+                            if (forward) {
+                                (slideInHorizontally { it / 3 } + fadeIn()) togetherWith
+                                    (slideOutHorizontally { -it / 3 } + fadeOut())
+                            } else {
+                                (slideInHorizontally { -it / 3 } + fadeIn()) togetherWith
+                                    (slideOutHorizontally { it / 3 } + fadeOut())
                             }
-                    ) {
-                    when (d) {
+                        },
+                        label = "browse",
+                    ) { d ->
+                        // The nudge layer is INSIDE the AnimatedContent
+                        // so it applies to the transitioning page only,
+                        // never to the outer Box's other children. The
+                        // Animatable carries the LIVE dp delta; this
+                        // layer converts it through the same pure
+                        // fraction rule the old wiring used (the 15% cap
+                        // included), with the layer's own density.
+                        Box(
+                            Modifier
+                                .fillMaxSize()
+                                .graphicsLayer {
+                                    translationX =
+                                        TabSwipe.followOffsetFraction(
+                                            tabFollowDp.value,
+                                            size.width / density,
+                                        ) * size.width
+                                }
+                        ) {
+                        when (d) {
                         Destination.LIBRARY -> LibraryScreen(
                             sources = sources,
                             // The toolbar's persisted sort + view state
@@ -2654,6 +2719,7 @@ fun AppNav(
                         )
                     }
                     }
+                    }
                 }
             }
             // The ambiguity picker (G1): two or more .gcsv logs in the
@@ -2738,6 +2804,20 @@ fun AppNav(
 
 /** Window width from which the browse nav becomes an end-edge rail. */
 private const val WIDE_NAV_MIN_WIDTH_DP = 600
+
+/**
+ * The tab-swipe drag-follow's release settle (owner request 2026-11-27,
+ * "animasyon duruyor, sonra geçiliyor" — the release must not hard-stop):
+ * a critically damped spring (no overshoot — the PanelSheet settle
+ * precedent, dampingRatio 1f) at MEDIUM stiffness, so the page's 15%
+ * nudge returns through a short visible ease while the flip's slide is
+ * still running. A spring, not a tween: the gesture may end mid-motion,
+ * and the spring inherits the Animatable's velocity — a release during
+ * a fast drag settles proportionally faster instead of ignoring the
+ * hand.
+ */
+private fun tabSwipeSettleSpec(): FiniteAnimationSpec<Float> =
+    spring(dampingRatio = 1f, stiffness = Spring.StiffnessMedium)
 
 private class Stores(
     val sources: SourceRepository,

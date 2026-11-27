@@ -1,7 +1,9 @@
 package com.ritim.ritimcraw.ui
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -260,5 +262,19 @@ class TabSwipeTest {
             TabSwipe.followOffsetFraction(dxDp = -200f, widthDp = 0f),
             0f,
         )
+    }
+
+    // ---- the release reset signal (the smoothness rework, 2026-11-27) ----
+
+    @Test
+    fun zero_is_the_release_reset_and_must_animate_not_snap() {
+        // The wiring's gesture-end signal is dragDelta(0f): the release
+        // must settle with the spring, while every live delta snaps.
+        // Zero is also the resting value pre-slop, where a snap is a
+        // no-op — one rule covers both.
+        assertTrue(TabSwipe.isReleaseReset(0f))
+        assertFalse(TabSwipe.isReleaseReset(0.1f))
+        assertFalse(TabSwipe.isReleaseReset(-80f))
+        assertFalse(TabSwipe.isReleaseReset(2000f))
     }
 }

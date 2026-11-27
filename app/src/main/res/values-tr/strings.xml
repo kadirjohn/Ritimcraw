@@ -461,6 +461,12 @@
     <string name="exports_selection_close">Seçimden çık</string>
     <string name="exports_selection_delete">Dışa aktarımları sil</string>
     <string name="exports_delete_swipe">Dışa aktarımı sil</string>
+    <!-- Swipe-delete confirmation (owner request 2026-11-27: a page-turn
+         swipe must not lose an export): the dialog names what leaves. -->
+    <string name="exports_delete_title">Bu dışa aktarım silinsin mi?</string>
+    <string name="exports_delete_message">%1$s\n\nBuradaki kayıt kaldırılır; dışa aktarılan dosya diskte kalır.</string>
+    <string name="exports_delete_confirm">Sil</string>
+    <string name="exports_delete_cancel">Vazgeç</string>
     <!-- Export foreground notification (owner finding 2026-11-14): the
          visible side of the process priority that keeps a backgrounded
          export alive. IMPORTANCE_LOW channel — silent, no heads-up. -->

@@ -464,6 +464,12 @@
     <string name="exports_selection_close">Exit selection</string>
     <string name="exports_selection_delete">Delete exports</string>
     <string name="exports_delete_swipe">Delete export</string>
+    <!-- Swipe-delete confirmation (owner request 2026-11-27: a page-turn
+         swipe must not lose an export): the dialog names what leaves. -->
+    <string name="exports_delete_title">Delete this export?</string>
+    <string name="exports_delete_message">%1$s\n\nOnly the entry here is removed; the exported file stays on disk.</string>
+    <string name="exports_delete_confirm">Delete</string>
+    <string name="exports_delete_cancel">Cancel</string>
     <!-- Export foreground notification (owner finding 2026-11-14): the
          visible side of the process priority that keeps a backgrounded
          export alive. IMPORTANCE_LOW channel — silent, no heads-up. -->
