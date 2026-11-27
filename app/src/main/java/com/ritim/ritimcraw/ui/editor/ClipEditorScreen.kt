@@ -1849,34 +1849,19 @@ fun ClipEditorScreen(
                 }
                 val bytes = withContext(Dispatchers.Default) {
                     try {
-                        // The grade the bake samples. ENCODED clips run NO
-                        // tone-band stage 9-20 in their render (Transfer.h's
-                        // own record), so their cube neutralizes those fields
-                        // here — the bake mirrors what the encoded path
-                        // actually renders (E7's source-kind caveat, the
-                        // wiring layer's decision the core header records).
-                        // MCRAW keeps the grade verbatim: its render IS the
-                        // full 9-20 chain.
-                        val bakeGrade = if (sourcePath == SourcePath.ENCODED) {
-                            grade.copy(
-                                blackPoint = 0f,
-                                whitePoint = 0f,
-                                midtones = 0f,
-                                contrast = 0f,
-                                saturation = 0f,
-                                wheelShadowX = 0f,
-                                wheelShadowY = 0f,
-                                wheelMidX = 0f,
-                                wheelMidY = 0f,
-                                wheelHighX = 0f,
-                                wheelHighY = 0f,
-                                splitShadowHue = -1f,
-                                splitHighlightHue = -1f,
-                                splitBalance = 0f,
-                            )
-                        } else {
-                            grade
-                        }
+                        // The grade + wire the bake samples. Both are the
+                        // render's own composition, made testable in one
+                        // place: CubeExportPlan.bakeGrade neutralizes the
+                        // tone-band 9-20 fields for an ENCODED clip (its
+                        // render skips those stages; the bake core runs
+                        // them unconditionally, so the parcel must carry
+                        // zeros), and CubeExportPlan.bakeChainWire rides
+                        // highlights/shadows on the node chain's log wheels
+                        // instead — the EncodedToneBridge call the render
+                        // itself makes. MCRAW keeps both verbatim.
+                        val bakeGrade = CubeExportPlan.bakeGrade(
+                            grade, sourcePath == SourcePath.ENCODED,
+                        )
                         // The v2 chain — the SAME routing the render site
                         // uses (the trimmed chain's wire for a NODES/DRT
                         // grade, null for a LEGACY one): the cube carries
@@ -1892,22 +1877,9 @@ fun ClipEditorScreen(
                             }
                             NodeChainWire.encode(v2, active)
                         }.getOrNull()
-                        // ENCODED highlights/shadows ride the node chain's
-                        // log wheels (EncodedToneBridge, owner decision
-                        // 2026-11-25), NOT the tone-band stages — so the
-                        // ENCODED bake applies the SAME bridge the render
-                        // applies (EncodedSource.renderFrame's own line).
-                        // The neutralized highlights/shadows above stay:
-                        // the bake must not run stage 15/11 on them again.
-                        // A chain at the N1 cap keeps the sliders a no-op
-                        // here exactly as they are in the render.
-                        val chainWire = if (sourcePath == SourcePath.ENCODED) {
-                            com.ritim.ritimcraw.engine.EncodedToneBridge.apply(
-                                grade.highlights, grade.shadows, rawChainWire,
-                            )
-                        } else {
-                            rawChainWire
-                        }
+                        val chainWire = CubeExportPlan.bakeChainWire(
+                            grade, sourcePath == SourcePath.ENCODED, rawChainWire,
+                        )
                         // The stage-24 LUT pair, the render site's own
                         // resolution (percent -> 0..1, the ordinals by
                         // value, -1 the legacy path).

@@ -1,5 +1,7 @@
 package com.ritim.ritimcraw.export
 
+import com.ritim.ritimcraw.data.GradeK
+import com.ritim.ritimcraw.engine.EncodedToneBridge
 import java.util.Locale
 
 /**
@@ -157,6 +159,53 @@ object CubeExportPlan {
             is Refusal.BakeRefused -> "bake"
         }
     }
+
+    /**
+     * The grade the bake samples, composed per source kind. An ENCODED
+     * clip's render NEVER runs the tone-band stages 9-20 (Transfer.cpp's
+     * own record; its two GPU doors zero the fields before the chain,
+     * jni_bridge.cpp 4423/5353), so the ENCODED bake neutralizes them
+     * here — the parcel must not wake stage 15/11 in the bake core
+     * (CubeExport.cpp runs applyToneColorStagesCpu unconditionally).
+     * Highlights/shadows ride the CHAIN instead ([bakeChainWire], the
+     * EncodedToneBridge owner decision 2026-11-25), so they are zeroed
+     * here too: the parcel neutral and the effect in the wire is the
+     * render's exact shape — applied once, where the user sees it.
+     * MCRAW keeps the grade verbatim: its render IS the full 9-20 chain.
+     */
+    fun bakeGrade(grade: GradeK, encoded: Boolean): GradeK =
+        if (!encoded) grade
+        else grade.copy(
+            highlights = 0f,
+            blackPoint = 0f,
+            whitePoint = 0f,
+            shadows = 0f,
+            midtones = 0f,
+            contrast = 0f,
+            saturation = 0f,
+            wheelShadowX = 0f,
+            wheelShadowY = 0f,
+            wheelMidX = 0f,
+            wheelMidY = 0f,
+            wheelHighX = 0f,
+            wheelHighY = 0f,
+            splitShadowHue = -1f,
+            splitHighlightHue = -1f,
+            splitBalance = 0f,
+        )
+
+    /**
+     * The chain wire the bake sends, composed per source kind: on an
+     * ENCODED clip the ORIGINAL slider values (NOT [bakeGrade]'s zeroed
+     * ones) drive [EncodedToneBridge.apply] — the exact call the render
+     * site makes (EncodedSource.renderFrame), so the cube's highlights
+     * and shadows match what the user sees. A chain already at the N1
+     * cap keeps the sliders a no-op here exactly as they are in the
+     * render. MCRAW passes the wire through untouched.
+     */
+    fun bakeChainWire(grade: GradeK, encoded: Boolean, rawWire: FloatArray?): FloatArray? =
+        if (!encoded) rawWire
+        else EncodedToneBridge.apply(grade.highlights, grade.shadows, rawWire)
 
     /** The "about X MB" readout for the size line: "≈ 7.9 MB". */
     fun sizeReadout(grid: Grid, hasTitle: Boolean): String {
