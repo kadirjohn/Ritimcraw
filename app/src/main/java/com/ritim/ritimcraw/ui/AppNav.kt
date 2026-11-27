@@ -325,6 +325,8 @@ fun AppNav(
             // omit-when-default(false), the SystemMonitorStore pattern.
             scrubFrames = ScrubFramesStore(project),
             exportsDeletePrefs = ExportsDeletePrefsStore(project),
+            // Proxy mode (Settings): top-level "proxyMode" string scalar, omitted at the default (Off).
+            proxyMode = com.ritim.ritimcraw.data.ProxyModeStore(project),
         )
     }
     // Image-based stabilization analysis service (S4, ships dark behind
@@ -565,6 +567,18 @@ fun AppNav(
     // reads its clip's value and reopens on the proxy at the NEXT seek/play
     // (never mid-playback). Written from the build thread -> main.
     val proxyLandedTicks = remember { androidx.compose.runtime.mutableStateMapOf<String, Int>() }
+    // The user's proxy mode is the source of truth for the proxy flag (FeatureFlags reads the
+    // stored value; the debug property is OR'd in there). Pushed BEFORE the runtime exists.
+    var proxyMode by remember {
+        mutableStateOf(stores.proxyMode.get().also { com.ritim.ritimcraw.util.FeatureFlags.storedProxyMode = it })
+    }
+    val proxyEffectiveMode = remember(proxyMode) { com.ritim.ritimcraw.util.FeatureFlags.effectiveProxyMode }
+    // Per-fingerprint proxy status for the library rows and the editor (written on the main thread).
+    val proxyStatuses = remember { androidx.compose.runtime.mutableStateMapOf<String, com.ritim.ritimcraw.proxy.ProxyStatus>() }
+    // Clips the "Create proxy?" prompt will name (Ask mode), and those already named this session.
+    val proxyAskPending = remember { androidx.compose.runtime.mutableStateListOf<String>() }
+    val proxyAsked = remember { HashSet<String>() }
+    val proxyRuntimeHolder = remember { arrayOfNulls<com.ritim.ritimcraw.proxy.ProxyRuntime>(1) }
     val proxyRuntime = remember {
         // The clip's record + its measured metadata, resolved live per call
         // (the TimelineExporter's rule: the queue must see the world as it
@@ -630,12 +644,44 @@ fun AppNav(
                 )
             },
             playbackEnabled = { com.ritim.ritimcraw.util.FeatureFlags.proxyEnabled },
+            onStatusChanged = { fp ->
+                val st = proxyRuntimeHolder[0]?.statusOf(fp) ?: com.ritim.ritimcraw.proxy.ProxyStatus.None
+                android.os.Handler(android.os.Looper.getMainLooper()).post {
+                    if (st == com.ritim.ritimcraw.proxy.ProxyStatus.None) proxyStatuses.remove(fp) else proxyStatuses[fp] = st
+                }
+            },
             onProxyReady = { fp ->
                 android.os.Handler(android.os.Looper.getMainLooper()).post {
                     proxyLandedTicks[fp] = (proxyLandedTicks[fp] ?: 0) + 1
                 }
             },
+        ).also { proxyRuntimeHolder[0] = it }
+    }
+    // The mode decision for one clip (import, editor open, app start): enqueue, offer, or nothing.
+    fun proxyConsider(fingerprint: String, trigger: com.ritim.ritimcraw.proxy.ProxyTrigger) {
+        val action = com.ritim.ritimcraw.proxy.ProxyImportDecision.decide(
+            mode = com.ritim.ritimcraw.util.FeatureFlags.effectiveProxyMode,
+            trigger = trigger,
+            clip = proxyRuntime.clipInfoOf(fingerprint),
+            busy = proxyRuntime.isBuiltOrQueued(fingerprint),
+            alreadyAsked = fingerprint in proxyAsked,
         )
+        when (action) {
+            com.ritim.ritimcraw.proxy.ProxyAction.ENQUEUE -> {
+                proxyRuntime.start()
+                proxyRuntime.maybeQueue(fingerprint, front = trigger == com.ritim.ritimcraw.proxy.ProxyTrigger.EDITOR_OPEN)
+            }
+            com.ritim.ritimcraw.proxy.ProxyAction.ASK ->
+                if (fingerprint !in proxyAskPending) proxyAskPending.add(fingerprint)
+            com.ritim.ritimcraw.proxy.ProxyAction.NONE -> {}
+        }
+    }
+    fun proxyCreate(fingerprints: List<String>) {
+        proxyRuntime.start()
+        fingerprints.forEach { proxyRuntime.createManual(it) }
+    }
+    fun proxyDelete(fingerprints: List<String>) {
+        fingerprints.forEach { proxyRuntime.deleteProxy(it) }
     }
     // Queue bookkeeping: a monotonically increasing kick counter — every
     // enqueue/retry bumps it and the runner effect drains the queue.
@@ -714,17 +760,25 @@ fun AppNav(
     // by itself). While false the runtime exists (its constructor only swept
     // crash leftovers) but never starts: no build, no notification, and the
     // auto pass below never enqueues.
-    if (com.ritim.ritimcraw.util.FeatureFlags.proxyEnabled) {
-        LaunchedEffect(Unit) { proxyRuntime.start() }
-        // The AUTO pass (plan section 6): every clip whose facts the metadata
-        // pass measured goes through the pure decision table once per app
-        // session — 8K / 4K60 encoded clips enqueue (MCRAW stays opt-in by
-        // the policy's own default). The queue's own policy gate decides
-        // when a build actually starts (export > playing > proxy).
-        LaunchedEffect(Unit) {
+    // Follows the user's mode: Off stops/unqueues, Ask/Automatic start the runtime. The
+    // app-start AUTO pass enqueues for Automatic only (Ask offers on import/open, never at launch).
+    LaunchedEffect(proxyEffectiveMode) {
+        if (proxyEffectiveMode == com.ritim.ritimcraw.proxy.ProxyMode.OFF) {
+            proxyRuntime.stopAll()
+        } else {
+            proxyRuntime.start()
             stores.sources.all().forEach { rec ->
-                proxyRuntime.maybeQueue(rec.fingerprint)
+                proxyConsider(rec.fingerprint, com.ritim.ritimcraw.proxy.ProxyTrigger.START_SCAN)
             }
+        }
+    }
+    // Status snapshot for every clip at start and when the library changes (the
+    // per-event updates arrive through onStatusChanged).
+    LaunchedEffect(sources.size, proxyEffectiveMode) {
+        val fps = sources.map { it.fingerprint }
+        val snap = withContext(Dispatchers.IO) { fps.associateWith { proxyRuntime.statusOf(it) } }
+        snap.forEach { (fp, st) ->
+            if (st == com.ritim.ritimcraw.proxy.ProxyStatus.None) proxyStatuses.remove(fp) else proxyStatuses[fp] = st
         }
     }
     // ---- Proxy storage page state (G3) ----
@@ -967,6 +1021,8 @@ fun AppNav(
                 ?: record.fileIdentity,
         )
         stores.metadata.put(recordWithFile)
+        // The clip's facts are known now: the proxy mode decides (enqueue / offer / nothing).
+        proxyConsider(source.fingerprint, com.ritim.ritimcraw.proxy.ProxyTrigger.IMPORT)
     }
 
     // Enqueue feedback (owner finding 2026-11-10: Export MP4 gave NO
@@ -976,6 +1032,37 @@ fun AppNav(
     val exportSnackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     val exportQueuedText = stringResource(R.string.export_queued_snackbar)
+    // Ask mode: ONE small non-blocking prompt after an import settles (a short quiet
+    // period lets a whole batch land first). Only still-eligible, not-yet-built clips
+    // are counted; dismissing leaves them alone (not asked again this session).
+    val proxyAskAction = stringResource(R.string.proxy_ask_action)
+    LaunchedEffect(proxyAskPending.size) {
+        if (proxyAskPending.isEmpty()) return@LaunchedEffect
+        kotlinx.coroutines.delay(1500)
+        val fps = proxyAskPending.toList().filter { fp ->
+            com.ritim.ritimcraw.proxy.ProxyImportDecision.decide(
+                mode = com.ritim.ritimcraw.util.FeatureFlags.effectiveProxyMode,
+                trigger = com.ritim.ritimcraw.proxy.ProxyTrigger.IMPORT,
+                clip = proxyRuntime.clipInfoOf(fp),
+                busy = proxyRuntime.isBuiltOrQueued(fp),
+            ) == com.ritim.ritimcraw.proxy.ProxyAction.ASK
+        }
+        if (fps.isEmpty()) {
+            proxyAskPending.clear()
+            return@LaunchedEffect
+        }
+        val text = context.resources.getQuantityString(R.plurals.proxy_ask_prompt, fps.size, fps.size)
+        // A new clip landing while the prompt shows restarts this effect (the prompt
+        // re-shows with the larger count); the pending list is only emptied once the
+        // prompt was really shown and answered or dismissed.
+        val result = exportSnackbar.showSnackbar(text, actionLabel = proxyAskAction, duration = SnackbarDuration.Long)
+        proxyAsked.addAll(fps)
+        proxyAskPending.removeAll(fps)
+        if (result == SnackbarResult.ActionPerformed) {
+            proxyRuntime.start()
+            fps.forEach { proxyRuntime.maybeQueue(it) }
+        }
+    }
     // The Device report copy confirmation (spec device_report_screen):
     // the same shell snackbar, the same SHORT duration — the clipboard
     // write itself happens in the report screen's callback below.
@@ -1988,6 +2075,12 @@ fun AppNav(
                     DisposableEffect(r.sourceId) {
                         onDispose { runCatching { pfd?.close() } }
                     }
+                    // Opening a clip re-checks its proxy (per mode); the user is waiting, so it jumps the queue.
+                    LaunchedEffect(r.sourceId, proxyEffectiveMode) {
+                        stores.sources.get(r.sourceId)?.let {
+                            proxyConsider(it.fingerprint, com.ritim.ritimcraw.proxy.ProxyTrigger.EDITOR_OPEN)
+                        }
+                    }
                     ClipEditorScreen(
                         sourceId = r.sourceId,
                         onBack = { editorSourceId = null },
@@ -2180,6 +2273,19 @@ fun AppNav(
                         // The fingerprint is resolved LIVE (the queue's own
                         // rule: the session must see the clip as it is when
                         // it opens).
+                        proxyStatus = if (proxyEffectiveMode == com.ritim.ritimcraw.proxy.ProxyMode.OFF) {
+                            com.ritim.ritimcraw.proxy.ProxyStatus.None
+                        } else {
+                            stores.sources.get(r.sourceId)?.let { proxyStatuses[it.fingerprint] }
+                                ?: com.ritim.ritimcraw.proxy.ProxyStatus.None
+                        },
+                        proxyMenuVisible = com.ritim.ritimcraw.proxy.ProxyImportDecision.manualActionsVisible(proxyEffectiveMode),
+                        onCreateProxy = {
+                            stores.sources.get(r.sourceId)?.let { proxyCreate(listOf(it.fingerprint)) }
+                        },
+                        onDeleteProxy = {
+                            stores.sources.get(r.sourceId)?.let { proxyDelete(listOf(it.fingerprint)) }
+                        },
                         proxyOpenFd = {
                             val rec = stores.sources.get(r.sourceId)
                             rec?.let { proxyRuntime.openPlaybackProxy(it.fingerprint) } ?: -1
@@ -2871,6 +2977,21 @@ fun AppNav(
                                     libraryViewMode = mode
                                 },
                                 onOpenClip = { sourceId -> editorSourceId = sourceId },
+                                proxyStatusFor = { id ->
+                                    if (proxyEffectiveMode == com.ritim.ritimcraw.proxy.ProxyMode.OFF) {
+                                        com.ritim.ritimcraw.proxy.ProxyStatus.None
+                                    } else {
+                                        sources.firstOrNull { it.id == id }?.let { proxyStatuses[it.fingerprint] }
+                                            ?: com.ritim.ritimcraw.proxy.ProxyStatus.None
+                                    }
+                                },
+                                proxyMenuVisible = com.ritim.ritimcraw.proxy.ProxyImportDecision.manualActionsVisible(proxyEffectiveMode),
+                                onCreateProxy = { ids ->
+                                    proxyCreate(sources.filter { it.id in ids }.map { it.fingerprint })
+                                },
+                                onDeleteProxy = { ids ->
+                                    proxyDelete(sources.filter { it.id in ids }.map { it.fingerprint })
+                                },
                                 onImport = { uri ->
                                     // SAF pick landed: import through the repository
                                     // (fingerprint dedupe keeps ids and grades stable),
@@ -3432,6 +3553,12 @@ fun AppNav(
                                 // callback persists + refreshes it; the
                                 // editor reads the state at its own
                                 // composition.
+                                proxyMode = proxyMode,
+                                onProxyModeChange = { mode ->
+                                    stores.proxyMode.put(mode)
+                                    com.ritim.ritimcraw.util.FeatureFlags.storedProxyMode = mode
+                                    proxyMode = mode
+                                },
                                 scrubFrames = scrubFramesEnabled,
                                 onScrubFramesChange = { enabled ->
                                     stores.scrubFrames.put(enabled)
@@ -3450,8 +3577,7 @@ fun AppNav(
                                 onDeleteProxyClip =
                                     if (com.ritim.ritimcraw.util.FeatureFlags.proxyEnabled) {
                                         { fp ->
-                                            proxyRuntime.cache.clearClip(fp)
-                                            proxyRuntime.cancel(fp)
+                                            proxyRuntime.deleteProxy(fp)
                                             proxyStorageKick += 1
                                         }
                                     } else {
@@ -3672,4 +3798,6 @@ private class Stores(
     // pattern. The Exports screen reads the first dialog's value from it
     // and writes every toggle back.
     val exportsDeletePrefs: ExportsDeletePrefsStore,
+    // The proxy mode choice (Off / Ask after import / Automatic), default Off.
+    val proxyMode: com.ritim.ritimcraw.data.ProxyModeStore,
 )

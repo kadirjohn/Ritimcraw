@@ -213,6 +213,9 @@ fun SettingsScreen(
     // project.json keeps the editor's seek drag byte-identical.
     scrubFrames: Boolean = false,
     onScrubFramesChange: (Boolean) -> Unit = {},
+    // ---- Proxy mode (Off / Ask after import / Automatic), default Off ----
+    proxyMode: com.ritim.ritimcraw.proxy.ProxyMode = com.ritim.ritimcraw.proxy.ProxyMode.DEFAULT,
+    onProxyModeChange: (com.ritim.ritimcraw.proxy.ProxyMode) -> Unit = {},
     // ---- Proxy storage section (G3, plan P4) ----
     // The pure feed's state + the display-name seam + the delete/clear
     // actions. Null state = the section renders nothing (the feature
@@ -275,7 +278,7 @@ fun SettingsScreen(
                 expandedText = stringResource(R.string.settings_expanded),
                 collapsedText = stringResource(R.string.settings_collapsed),
                 index = 0,
-                count = 4,
+                count = 5,
             ) {
                 AppSegmentedControl(
                     options = listOf(
@@ -310,7 +313,7 @@ fun SettingsScreen(
                 expandedText = stringResource(R.string.settings_expanded),
                 collapsedText = stringResource(R.string.settings_collapsed),
                 index = 1,
-                count = 4,
+                count = 5,
             ) {
                 AppSegmentedControl(
                     options = listOf(
@@ -337,7 +340,7 @@ fun SettingsScreen(
                 checked = autoHidePlayerBar,
                 onCheckedChange = onAutoHidePlayerBarChange,
                 index = 2,
-                count = 4,
+                count = 5,
             )
             // Scrub frames (F2-C3 wiring): the seek drag's cached-frame
             // toggle. Ships OFF (ScrubFramesStore.DEFAULT) — the hint's
@@ -355,8 +358,35 @@ fun SettingsScreen(
                 checked = scrubFrames,
                 onCheckedChange = onScrubFramesChange,
                 index = 3,
-                count = 4,
+                count = 5,
             )
+            // Proxy mode (Off / Ask after import / Automatic): the source of truth for
+            // whether proxies are built and used at all. Default Off.
+            SettingRowExpandable(
+                icon = Filmstrip,
+                title = stringResource(R.string.settings_proxy_mode),
+                hint = when (proxyMode) {
+                    com.ritim.ritimcraw.proxy.ProxyMode.OFF -> stringResource(R.string.settings_proxy_mode_hint_off)
+                    com.ritim.ritimcraw.proxy.ProxyMode.ASK -> stringResource(R.string.settings_proxy_mode_hint_ask)
+                    com.ritim.ritimcraw.proxy.ProxyMode.AUTOMATIC -> stringResource(R.string.settings_proxy_mode_hint_auto)
+                },
+                infoContentDescription = stringResource(R.string.settings_proxy_mode_about),
+                infoNote = stringResource(R.string.settings_proxy_mode_info),
+                expandedText = stringResource(R.string.settings_expanded),
+                collapsedText = stringResource(R.string.settings_collapsed),
+                index = 4,
+                count = 5,
+            ) {
+                AppSegmentedControl(
+                    options = listOf(
+                        stringResource(R.string.settings_proxy_mode_off),
+                        stringResource(R.string.settings_proxy_mode_ask),
+                        stringResource(R.string.settings_proxy_mode_auto),
+                    ),
+                    selectedIndex = proxyMode.ordinal,
+                    onSelect = { index -> onProxyModeChange(com.ritim.ritimcraw.proxy.ProxyMode.entries[index]) },
+                )
+            }
         }
                 // ---- Storage & device ----
         SettingsSectionLabel(text = stringResource(R.string.settings_section_storage_device))

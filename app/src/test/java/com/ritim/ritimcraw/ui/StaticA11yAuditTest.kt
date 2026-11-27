@@ -687,6 +687,6 @@ class StaticA11yAuditTest {
         // (merged F+I5) CinemaDngSection's two decorative icons (folder
         // glyph beside the folder-ROW's own Text; warning glyph whose
         // verdict text follows in the same line) — reviewed, decorative.
-        const val DECORATIVE_NULL_COUNT = 52
+        const val DECORATIVE_NULL_COUNT = 53
     }
 }

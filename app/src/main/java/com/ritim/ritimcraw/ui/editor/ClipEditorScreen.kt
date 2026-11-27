@@ -964,6 +964,12 @@ fun ClipEditorScreen(
     // the file). Null (the default) = the flag-off path, byte-identical to
     // the pre-G3 open: every existing caller keeps sourceFdProvider.
     proxyOpenFd: () -> Int = { -1 },
+    // Proxy status line (None = nothing) + the info sheet's manual Create/Delete proxy
+    // items (hidden while the proxy mode is Off).
+    proxyStatus: com.ritim.ritimcraw.proxy.ProxyStatus = com.ritim.ritimcraw.proxy.ProxyStatus.None,
+    proxyMenuVisible: Boolean = false,
+    onCreateProxy: () -> Unit = {},
+    onDeleteProxy: () -> Unit = {},
     // In-session switch (owner rule): [proxyLandedTick] bumps when a build for
     // this clip lands; the session reopens on the proxy at the NEXT seek/play
     // (ProxyPlaybackPolicy.shouldReopen), never mid-playback, through
@@ -5652,6 +5658,10 @@ fun ClipEditorScreen(
                     onRenameClip = onRenameClip,
                     onBack = onBack,
                     onExport = onExport,
+                    proxyStatus = proxyStatus,
+                    proxyMenuVisible = proxyMenuVisible,
+                    onCreateProxy = onCreateProxy,
+                    onDeleteProxy = onDeleteProxy,
                     // (Night E-F) the CinemaDNG sequence's queue action rides
                     // the same top-bar sheet; the screen is a pass-through.
                     onExportCinemaDng = onExportCinemaDng,
