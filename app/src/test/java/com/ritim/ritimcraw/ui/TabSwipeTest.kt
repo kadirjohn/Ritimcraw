@@ -277,4 +277,118 @@ class TabSwipeTest {
         assertFalse(TabSwipe.isReleaseReset(-80f))
         assertFalse(TabSwipe.isReleaseReset(2000f))
     }
+
+    // ---- the v2 smoothness pass (owner request 2026-11-27, second round:
+    // "biraz daha smooth olabilir") — the pure halves of the two root
+    // causes found in the v1 wiring. The ANIMATION halves (spring specs,
+    // easing, slide distance) are visual tuning, JVM-untestable — device
+    // checklist carries them. ----
+
+    @Test
+    fun a_live_drag_delta_needs_no_release_velocity() {
+        // ROOT CAUSE 1 (v1): the settle spring claimed to inherit the
+        // finger's velocity, but every live delta went through
+        // Animatable.snapTo, which RESETS the internal velocity — the
+        // release spring always started from a standstill, the page
+        // visibly parked ("animasyon duruyor"). The v2 contract: the
+        // gesture wiring must hand the RELEASE VELOCITY (dp/s, signed) to
+        // the settle as initialVelocity — this pure rule only shapes what
+        // that number MEANS so the wiring passes it raw (sign included):
+        // nothing here zeroes or filters it.
+        assertEquals(
+            -600f,
+            TabSwipe.settleInitialVelocityDpPerS(
+                releaseVelocityX = -600f,
+                dxDp = -80f,
+            ),
+            0f,
+        )
+        // A slow deliberate drag releases near zero velocity: the settle
+        // starts from a standstill — still passed through raw.
+        assertEquals(
+            0f,
+            TabSwipe.settleInitialVelocityDpPerS(
+                releaseVelocityX = 0f,
+                dxDp = 120f,
+            ),
+            0f,
+        )
+        // The sign travels with the release velocity, never with the
+        // capped follow offset's sign — a fling-back release (finger left
+        // but flung right) settles in the VELOCITY's direction, the pager
+        // convention the pure flip rule already follows.
+        assertEquals(
+            800f,
+            TabSwipe.settleInitialVelocityDpPerS(
+                releaseVelocityX = 800f,
+                dxDp = -50f,
+            ),
+            0f,
+        )
+    }
+
+    @Test
+    fun the_flip_release_settle_flies_toward_the_slide_not_back_to_zero() {
+        // ROOT CAUSE 2 (v1): on a flip, the spring pulled the nudged page
+        // BACK toward offset 0 (opposite the slide's travel) — a visible
+        // jerk into the slide, the "duruyor, sonra geçiliyor" feel. The v2
+        // rule: a flip release settles toward the target page's EDGE (a
+        // fraction of the width, SAME sign as the drag), so the nudged
+        // page departs in the direction it was already travelling — the
+        // slide's own pixels carry the arrival. A NO-flip release (drag
+        // too small, wrong direction, end-clamped) still settles to zero
+        // (the page returns home).
+        // Finger dragged LEFT past the threshold on PROJECTS: flips, the
+        // settle target goes LEFT (negative fraction).
+        assertEquals(
+            -TabSwipe.FOLLOW_DEPART_FRACTION,
+            TabSwipe.settleTargetFraction(
+                willFlip = true,
+                dxDp = -80f,
+            ),
+            0f,
+        )
+        // Finger dragged RIGHT (flips toward the left tab): settle target
+        // is positive.
+        assertEquals(
+            TabSwipe.FOLLOW_DEPART_FRACTION,
+            TabSwipe.settleTargetFraction(
+                willFlip = true,
+                dxDp = 80f,
+            ),
+            0f,
+        )
+        // A non-flip release: home, zero — the page comes back to rest.
+        assertEquals(
+            0f,
+            TabSwipe.settleTargetFraction(
+                willFlip = false,
+                dxDp = -80f,
+            ),
+            0f,
+        )
+        // Degenerate: a flip signal with zero travel (cannot happen from
+        // the wiring — the flip rule needs |dx| or velocity) must not
+        // invent a direction; zero it is.
+        assertEquals(
+            0f,
+            TabSwipe.settleTargetFraction(
+                willFlip = true,
+                dxDp = 0f,
+            ),
+            0f,
+        )
+    }
+
+    @Test
+    fun the_depart_fraction_is_larger_than_the_follow_cap_so_the_page_leaves() {
+        // The depart target must sit BEYOND the 15% follow cap, or the
+        // settle would be a tiny correction the eye reads as a twitch,
+        // not a departure. 60% is nearly half the slide's full 1/3-width
+        // travel — the nudged page visibly leaves while the slide fades
+        // it out; it never drags across the nav bar (the full-slide
+        // concern the v1 comment pinned).
+        assertTrue(TabSwipe.FOLLOW_DEPART_FRACTION > TabSwipe.FOLLOW_MAX_FRACTION)
+        assertEquals(0.6f, TabSwipe.FOLLOW_DEPART_FRACTION, 0f)
+    }
 }

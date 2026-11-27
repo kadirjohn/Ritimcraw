@@ -157,4 +157,69 @@ internal object TabSwipe {
      * answer either way, so one rule covers both.
      */
     fun isReleaseReset(dxDp: Float): Boolean = dxDp == 0f
+
+    /**
+     * (v2, owner request 2026-11-27 second round: "biraz daha smooth
+     * olabilir") The release velocity (dp/s, signed) the wiring must hand
+     * the settle spring as its INITIAL VELOCITY.
+     *
+     * ROOT CAUSE this pins: the v1 wiring's spec comment claimed "the
+     * spring inherits the Animatable's velocity — a release during a fast
+     * drag settles proportionally faster". That never happened: every
+     * LIVE finger delta went through [Animatable.snapTo], which calls
+     * `endAnimation()` → `velocityVector.reset()` (verified against
+     * Compose animation-core 1.7.6). The Animatable's velocity was ALWAYS
+     * zero at the release, so the settle spring always started from a
+     * standstill and the page parked before easing — the remaining
+     * "duruyor" feel the owner reported. The fix is wiring-side (the
+     * gesture's release signal must carry the velocity); this pure rule
+     * exists so the contract is pinned by a JVM test: the velocity passes
+     * through RAW, sign included, never filtered by the drag position.
+     * The pager convention again: a fling-back release settles in the
+     * VELOCITY's direction, exactly like the flip decision itself.
+     *
+     * [releaseVelocityX] is the release's horizontal velocity in dp/s
+     * (signed, exactly what the gesture's VelocityTracker measured);
+     * [dxDp] is the gesture's total horizontal travel (present only so
+     * the signature states the rule it must NOT use).
+     */
+    fun settleInitialVelocityDpPerS(releaseVelocityX: Float, dxDp: Float): Float =
+        releaseVelocityX
+
+    /**
+     * (v2) The offset (fraction of the container width, signed) a
+     * FLIP-RELEASE settle targets — the direction the nudged page departs
+     * in while the AnimatedContent slide carries the flip.
+     *
+     * ROOT CAUSE this pins: v1's settle always targeted 0f. On a flip,
+     * the page had been dragged, say, LEFT (-15%), and the slide was
+     * sending it further LEFT — but the spring yanked it back toward 0
+     * (+), a visible reversal into the slide (the "duruyor, sonra
+     * geçiliyor" jerk). The v2 rule: when the release FLIPS, the settle
+     * flies the page toward the SAME side it was dragged toward (the
+     * fraction's sign follows the drag, [dxDp]'s sign — a fling-back
+     * flip still flips by velocity, but the page was nudged by the
+     * finger, so the nudge departs with the NUDGE's direction, not the
+     * fling's). When the release does NOT flip, the page was not going
+     * anywhere — settle to 0, home.
+     *
+     * The fraction itself is [FOLLOW_DEPART_FRACTION] (beyond the 15%
+     * follow cap, under the slide's full travel): big enough that the
+     * page visibly LEAVES during the slide's fade-out, small enough it
+     * never drags across the nav bar.
+     */
+    fun settleTargetFraction(willFlip: Boolean, dxDp: Float): Float {
+        if (!willFlip) return 0f
+        if (dxDp == 0f) return 0f
+        return if (dxDp > 0f) FOLLOW_DEPART_FRACTION else -FOLLOW_DEPART_FRACTION
+    }
+
+    /**
+     * (v2) The flip-release settle's depart target: 60% of the container
+     * width. Beyond the 15% follow cap (the page clearly departs, not
+     * twitches), under the slide's full 1/3-width travel (no nav-bar
+     * crossing). A constant, not a lambda, so tests can pin the
+     * relationship to [FOLLOW_MAX_FRACTION].
+     */
+    const val FOLLOW_DEPART_FRACTION = 0.6f
 }
