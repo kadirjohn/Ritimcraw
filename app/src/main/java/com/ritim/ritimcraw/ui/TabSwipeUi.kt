@@ -22,6 +22,13 @@ import androidx.compose.ui.unit.Velocity
  * editor/timeline/report checks — those routes compose OUTSIDE it and
  * keep their own gestures untouched).
  *
+ * [onRelease] is the v2 smoothness addition: on the finger's LIFT it
+ * reports the measured release velocity (dp/s, signed) and whether the
+ * flip rule fired, so the caller's settle spring can start with the
+ * finger's real momentum and aim at the flip's direction (pure halves:
+ * [TabSwipe.settleInitialVelocityDpPerS] and
+ * [TabSwipe.settleTargetFraction]).
+ *
  * CHILD PRIORITY — THE WHOLE DESIGN (verified against the foundation
  * 1.7.3 sources this app compiles against — BOM 2024.09.00; files
  * DragGestureDetector.kt, TapGestureDetector.kt, Scrollable.kt):
@@ -68,12 +75,27 @@ import androidx.compose.ui.unit.Velocity
  * (PrecisionScrub's dp-at-the-seam precedent); the release velocity is
  * capped by the platform's own [androidx.compose.ui.platform.ViewConfiguration.maximumFlingVelocity]
  * exactly like foundation's Draggable does.
+ *
+ * THE RELEASE SIGNAL (v2 smoothness pass, owner request 2026-11-27
+ * second round): [onRelease] fires BEFORE the legacy `dragDelta(0f)`
+ * reset on a finger LIFT only, carrying (velocityX dp/s signed,
+ * willFlip). The v1 wiring settled the follow offset with a spring
+ * whose comment claimed it inherited the finger's velocity — but the
+ * live deltas all went through Animatable.snapTo (which resets the
+ * stored velocity), so the spring always started from a standstill and
+ * the page parked at its nudge before easing. [onRelease] hands the
+ * ACTUAL release velocity to the caller so the settle spring can take
+ * it as initialVelocity; [TabSwipe.settleInitialVelocityDpPerS] pins
+ * the pass-through contract. A canceled gesture (child stole the
+ * stream, pointer vanished, system cancel) never lifts: no onRelease,
+ * just the plain reset — the settle stays a no-velocity return home.
  */
 @Composable
 fun Modifier.tabSwipeGesture(
     currentTab: () -> Destination,
     onFlip: (Destination) -> Unit,
     onDragDeltaDp: (Float) -> Unit,
+    onRelease: (velocityX: Float, willFlip: Boolean) -> Unit = { _, _ -> },
 ): Modifier {
     // Fresh-callback trampolines (the ThemeSlider / PrecisionScrubUi
     // pattern): the pointerInput block below restarts only on its key,
@@ -82,6 +104,7 @@ fun Modifier.tabSwipeGesture(
     val current by rememberUpdatedState(currentTab)
     val flip by rememberUpdatedState(onFlip)
     val dragDelta by rememberUpdatedState(onDragDeltaDp)
+    val release by rememberUpdatedState(onRelease)
     return this.then(
         Modifier.pointerInput(Unit) {
             awaitEachGesture {
@@ -111,6 +134,10 @@ fun Modifier.tabSwipeGesture(
                 // no drift can accumulate across events and the
                 // pre-slop motion counts toward the threshold (it is
                 // real finger travel; slop is ~8dp of it).
+                var lifted = false
+                var liftVelocityX = 0f
+                var willFlip = false
+                var liftDxDp = 0f
                 while (true) {
                     val event = awaitPointerEvent()
                     val change = event.changes.firstOrNull { it.id == down.id }
@@ -132,24 +159,42 @@ fun Modifier.tabSwipeGesture(
                         val velocity = tracker.calculateVelocity(
                             Velocity(maxVelocity, maxVelocity),
                         )
+                        liftDxDp = (change.position.x - down.position.x) / density
+                        liftVelocityX = velocity.x / density
                         val target = TabSwipe.target(
                             current = startTab,
-                            dxDp = (change.position.x - down.position.x) / density,
+                            dxDp = liftDxDp,
                             dyDp = (change.position.y - down.position.y) / density,
-                            velocityX = velocity.x / density,
+                            velocityX = liftVelocityX,
                         )
+                        willFlip = target != null
                         if (target != null) flip(target)
+                        lifted = true
                         break
                     }
                     tracker.addPointerInputChange(change)
                     change.consume()
                     dragDelta((change.position.x - down.position.x) / density)
                 }
-                // Gesture over (flip, cancel, or lift): the release
-                // signal (dragDelta(0f)) tells the caller to settle the
-                // follow offset back with its spring while the
-                // AnimatedContent slide carries the flip.
-                dragDelta(0f)
+                // Gesture over. A LIFT: onRelease alone — it carries the
+                // measured velocity and the flip verdict, and the CALLER
+                // now owns the whole settle (v2): a flip snaps the live
+                // drag to rest and animates the DEPART layer; a no-flip
+                // settles home WITH the finger's velocity. Sending the
+                // legacy dragDelta(0f) reset after that would start a
+                // SECOND, zero-velocity animateTo(0f) on the same
+                // Animatable — the mutator mutex cancels the velocity
+                // carry mid-flight (the exact standstill the v2 rework
+                // removes), so the reset is reserved for CANCELED
+                // gestures only.
+                if (lifted) {
+                    release(liftVelocityX, willFlip)
+                } else {
+                    // A CANCELED gesture (child stole the stream, the
+                    // pointer vanished, or a system cancel): the plain
+                    // reset — settle home from a standstill.
+                    dragDelta(0f)
+                }
             }
         }
     )

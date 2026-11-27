@@ -12,7 +12,9 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutLinearInEasing
 import androidx.compose.animation.core.FiniteAnimationSpec
+import androidx.compose.animation.core.LinearOutSlowInEasing
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
@@ -23,20 +25,12 @@ import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Box
-import com.ritim.ritimcraw.ui.theme.SystemBars
-import com.ritim.ritimcraw.ui.theme.SystemBarIconsEffect
-import com.ritim.ritimcraw.ui.theme.ThemePalettes
-import com.ritim.ritimcraw.ui.theme.ThemeSelection
 import androidx.compose.foundation.isSystemInDarkTheme
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.platform.LocalConfiguration
-import androidx.compose.material3.NavigationRailItem
-import androidx.compose.material3.NavigationRail
-import androidx.compose.foundation.layout.fillMaxHeight
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -45,6 +39,8 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationRail
+import androidx.compose.material3.NavigationRailItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
@@ -66,63 +62,65 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.dp
+import androidx.core.content.FileProvider
 import com.ritim.ritimcraw.BuildConfig
 import com.ritim.ritimcraw.R
 import com.ritim.ritimcraw.data.Access
 import com.ritim.ritimcraw.data.AndroidUriResolver
-import com.ritim.ritimcraw.data.GradeK
-import com.ritim.ritimcraw.data.LibraryPrefsStore
-import com.ritim.ritimcraw.data.audio.AudioStore
+import com.ritim.ritimcraw.data.AutoHidePlayerBarStore
 import com.ritim.ritimcraw.data.CollectionRefresh
 import com.ritim.ritimcraw.data.GcsvOrientation
+import com.ritim.ritimcraw.data.GradeK
 import com.ritim.ritimcraw.data.GradeStore
 import com.ritim.ritimcraw.data.GyroFolderStore
 import com.ritim.ritimcraw.data.GyroMatcher
 import com.ritim.ritimcraw.data.GyroStore
 import com.ritim.ritimcraw.data.GyroTree
 import com.ritim.ritimcraw.data.ImportFolderStore
-import com.ritim.ritimcraw.data.PreviewQualityStore
-import com.ritim.ritimcraw.data.PreviewStatsStore
-import com.ritim.ritimcraw.data.SystemMonitorStore
-import com.ritim.ritimcraw.data.AutoHidePlayerBarStore
-import com.ritim.ritimcraw.data.ScrubFramesStore
-import com.ritim.ritimcraw.ui.components.SystemMonitorBar
-import com.ritim.ritimcraw.data.PreviewStatsToggle
-import com.ritim.ritimcraw.data.RenderBackendStore
+import com.ritim.ritimcraw.data.LibraryPrefsStore
 import com.ritim.ritimcraw.data.LutStore
 import com.ritim.ritimcraw.data.MediaSource
 import com.ritim.ritimcraw.data.PresetStore
+import com.ritim.ritimcraw.data.PreviewQualityStore
+import com.ritim.ritimcraw.data.PreviewStatsStore
+import com.ritim.ritimcraw.data.PreviewStatsToggle
+import com.ritim.ritimcraw.data.RenderBackendStore
+import com.ritim.ritimcraw.data.ScrubFramesStore
+import com.ritim.ritimcraw.data.SourceKind
+import com.ritim.ritimcraw.data.SourceRepository
+import com.ritim.ritimcraw.data.SystemMonitorStore
+import com.ritim.ritimcraw.data.ThemeMode
+import com.ritim.ritimcraw.data.ThumbnailRules
+import com.ritim.ritimcraw.data.ThumbnailStore
+import com.ritim.ritimcraw.data.VideoTree
+import com.ritim.ritimcraw.data.audio.AudioStore
 import com.ritim.ritimcraw.data.metadata.Field
 import com.ritim.ritimcraw.data.metadata.MetadataExtractor
 import com.ritim.ritimcraw.data.metadata.MetadataStore
-import com.ritim.ritimcraw.data.SourceKind
-import com.ritim.ritimcraw.data.SourceRepository
-import com.ritim.ritimcraw.data.ThemeMode
-import com.ritim.ritimcraw.data.ThumbnailRules
-import com.ritim.ritimcraw.data.VideoTree
-import com.ritim.ritimcraw.data.ThumbnailStore
-import com.ritim.ritimcraw.engine.NodeLutHandles
-import com.ritim.ritimcraw.engine.RecoveryBench
-import com.ritim.ritimcraw.engine.StabilizationGate
+import com.ritim.ritimcraw.data.timeline.TimelineStore
 import com.ritim.ritimcraw.engine.ClipThumbnails
 import com.ritim.ritimcraw.engine.CodecMeasurer
 import com.ritim.ritimcraw.engine.CodecProbe
-import com.ritim.ritimcraw.engine.FolderThumbnails
-import com.ritim.ritimcraw.engine.NativeSource
 import com.ritim.ritimcraw.engine.ExportAbSweep
+import com.ritim.ritimcraw.engine.FolderThumbnails
 import com.ritim.ritimcraw.engine.GradeParitySweep
+import com.ritim.ritimcraw.engine.NativeSource
+import com.ritim.ritimcraw.engine.NodeLutHandles
 import com.ritim.ritimcraw.engine.PreviewMetrics
+import com.ritim.ritimcraw.engine.RecoveryBench
 import com.ritim.ritimcraw.engine.RenderBackend
 import com.ritim.ritimcraw.engine.SourcePath
 import com.ritim.ritimcraw.engine.SourcePathDecision
-import com.ritim.ritimcraw.ui.components.NavExports
-import com.ritim.ritimcraw.ui.components.NavLibrary
-import com.ritim.ritimcraw.ui.components.NavProjects
-import com.ritim.ritimcraw.ui.components.NavSettings
+import com.ritim.ritimcraw.engine.StabilizationGate
 import com.ritim.ritimcraw.export.BitmapPngWriter
 import com.ritim.ritimcraw.export.CodecMeasureStore
 import com.ritim.ritimcraw.export.DngExporter
@@ -144,7 +142,11 @@ import com.ritim.ritimcraw.export.State
 import com.ritim.ritimcraw.export.Target
 import com.ritim.ritimcraw.export.TimelineMp4Exporter
 import com.ritim.ritimcraw.export.TimelineRef
-import com.ritim.ritimcraw.data.timeline.TimelineStore
+import com.ritim.ritimcraw.ui.components.NavExports
+import com.ritim.ritimcraw.ui.components.NavLibrary
+import com.ritim.ritimcraw.ui.components.NavProjects
+import com.ritim.ritimcraw.ui.components.NavSettings
+import com.ritim.ritimcraw.ui.components.SystemMonitorBar
 import com.ritim.ritimcraw.ui.editor.ClipEditorScreen
 import com.ritim.ritimcraw.ui.exports.ExportsScreen
 import com.ritim.ritimcraw.ui.library.BulkImportOutcome
@@ -153,13 +155,16 @@ import com.ritim.ritimcraw.ui.library.LibraryScreen
 import com.ritim.ritimcraw.ui.projects.ProjectsScreen
 import com.ritim.ritimcraw.ui.settings.DeviceReportScreen
 import com.ritim.ritimcraw.ui.settings.SettingsScreen
+import com.ritim.ritimcraw.ui.theme.SystemBarIconsEffect
+import com.ritim.ritimcraw.ui.theme.SystemBars
+import com.ritim.ritimcraw.ui.theme.ThemePalettes
+import com.ritim.ritimcraw.ui.theme.ThemeSelection
 import com.ritim.ritimcraw.ui.timeline.TimelineScreen
+import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.withContext
-import androidx.core.content.FileProvider
-import java.io.File
 
 /**
  * Four browse destinations (sprint plan Task 3 routes: library, projects,
@@ -1014,18 +1019,14 @@ fun AppNav(
     }
 
     /**
-     * Resolves MCRAW clip orientation from a sibling .gcsv's accelerometer
-     * gravity (owner decision 2026-11-27: trust .gcsv gravity first; fall back
-     * to MotionCam's screen-orientation code when absent or undecidable).
-     *
-     * Runs independently of [FeatureFlags.GYRO_STABILIZATION_ENABLED] and
-     * without copying logs into GyroStore. Searches [importFolder] and
-     * [gyroFolder] for a sibling .gcsv matching [matchName], reads only the
-     * header + first ~1-2 s of rows, and persists any non-zero delta over the
-     * clip's metadata fallback into `manualRotationDeg` (never overriding an
-     * existing user rotation). Returns the latest [MediaSource] so the caller
-     * can generate the thumbnail with the final upright angle.
+     * Attaches [gcsvUri] to [source] through the exact editor attach
+     * path (gyro Phase 5): GyroStore.import (fingerprint dedupe + app-
+     * private copy) -> jniGyroSyncProbe on the clip's fd -> setGyro. A
+     * probe failure removes the imported entry again (the library never
+     * holds an unusable log) and reports nothing — the auto-match must
+     * never fail an import that succeeded. Returns true when attached.
      */
+
     suspend fun resolveGcsvOrientation(
         source: MediaSource,
         matchName: String,
@@ -1093,15 +1094,6 @@ fun AppNav(
         }
         return source
     }
-
-    /**
-     * Attaches [gcsvUri] to [source] through the exact editor attach
-     * path (gyro Phase 5): GyroStore.import (fingerprint dedupe + app-
-     * private copy) -> jniGyroSyncProbe on the clip's fd -> setGyro. A
-     * probe failure removes the imported entry again (the library never
-     * holds an unusable log) and reports nothing — the auto-match must
-     * never fail an import that succeeded. Returns true when attached.
-     */
     fun autoAttachGyro(source: MediaSource, gcsvUri: String, fallbackName: String): Boolean {
         return try {
             val imported = stores.gyros.import(gcsvUri, fallbackName)
@@ -1308,19 +1300,6 @@ fun AppNav(
         }
     }
 
-    // DELETE-FROM-DISK (owner request 2026-11-27, M8: "bunu işaretlerse
-    // diskten de silsin"): the device-gated half of the pure
-    // [ExportDelete] rule, the [MediaStorePublisher]/openExport adapter
-    // shape — the resolver delete and the internal-copy delete cannot
-    // run in JVM tests, so every decision (WHICH rows, WHICH URIs,
-    // WHICH internal candidates) lives in the pure object and this only
-    // executes it. BEST-EFFORT, exactly like the publish: a failed
-    // resolver delete (a SecurityException, a vanished row — MediaStore
-    // may refuse an owned-row delete under some policies) never blocks
-    // the RECORD delete that already landed; the failure is logged
-    // under the "ritim-trace" tag the owner greps, never surfaced as a
-    // user-facing error (the record is gone either way, and a half-
-    // deleted file is the honest outcome of a best-effort delete).
     fun deleteExportsFromDisk(ids: Set<String>) {
         if (ids.isEmpty()) return
         // Read the rows NOW: the caller runs this BEFORE the record delete
@@ -1362,6 +1341,7 @@ fun AppNav(
             }
         }
     }
+
 
     // Process-start recovery (owner finding 2026-11-10): a crash can leave
     // jobs persisted as RUNNING — a dead process's export. Mark them FAILED
@@ -1850,13 +1830,7 @@ fun AppNav(
                     // the rescue for clips imported before detection landed.
                     // A null mime (resolver failed / non-content URI) falls
                     // back to the stored kind — SourcePathDecision handles it.
-                    // VAR (not val): the first-open backfill below can heal
-                    // the kind (M9) — a pre-M1 record of an .mov (mime
-                    // video/quicktime, NOT the video/mp4 rescue) would
-                    // otherwise keep routing this session's opens through
-                    // the wrong engine path until re-entry. The healed value
-                    // is refreshed right after the backfill call.
-                    var sourceKind by remember(r.sourceId) {
+                    val sourceKind by remember(r.sourceId) {
                         mutableStateOf(stores.sources.get(r.sourceId)?.kind ?: SourceKind.MCRAW)
                     }
                     val sourceMime: String? by remember(r.sourceId) {
@@ -1941,22 +1915,10 @@ fun AppNav(
                             // First-open backfill (owner request §2b): a
                             // record imported before display names existed
                             // shows the id until the resolver can name it —
-                            // fill it in now and refresh the top bar. The
-                            // same call self-heals the KIND (M9, owner
-                            // request 2026-11-27): records imported before
-                            // the M1 import fix carry the MCRAW default in
-                            // project.json and normal usage never
-                            // re-imports them, so the first open's resolved
-                            // name corrects the kind here too (an .mp4
-                            // record's Library badge flips to the honest
-                            // gray MP4 token once this clip is opened).
-                            // A RECORD change (name or kind) refreshes the
-                            // list; an unchanged record (the resolver
-                            // stayed silent) touches nothing.
+                            // fill it in now and refresh the top bar.
                             val filled = stores.sources.backfillDisplayName(r.sourceId)
-                            if (filled != null && filled != source) {
+                            if (filled != null && filled.displayName.isNotBlank()) {
                                 sourceName = filled.displayOrId
-                                sourceKind = filled.kind
                                 sources = stores.sources.all()
                             }
                             try {
@@ -2501,30 +2463,215 @@ fun AppNav(
                 // slide + fade toward the target's display order), so
                 // the release's spring and the slide run TOGETHER: the
                 // page keeps moving through the whole transition.
+                //
+                // SMOOTHNESS v2 (owner request 2026-11-27 second round,
+                // "biraz daha smooth olabilir") — three residual root
+                // causes, verified against Compose animation-core 1.7.6
+                // sources (the jars this app compiles against):
+                // (a) the settle spring NEVER inherited the finger's
+                // velocity — every live delta goes through
+                // Animatable.snapTo, whose endAnimation() resets the
+                // stored velocityVector, so the release always started
+                // from a standstill and the page PARKED before easing
+                // (the residual "duruyor" feel; the v1 comment claimed
+                // the opposite). The gesture's onRelease now carries the
+                // measured release velocity, and the settle takes it as
+                // animateTo's initialVelocity
+                // (TabSwipe.settleInitialVelocityDpPerS pins the
+                // pass-through): a fast fling release settles
+                // proportionally faster — the finger's momentum
+                // survives the hand-off.
+                // (b) the settle always targeted 0f — on a flip the page
+                // had been dragged one way and the spring yanked it BACK
+                // (a visible reversal into the slide: the
+                // jerk-then-transition). On a flip the settle now flies
+                // the page in the SLIDE's exit direction
+                // (TabSwipe.exitTravelSign → settleTargetFraction:
+                // ±60% of the width, past the 15% follow cap, NOT inside
+                // the slide's 1/3 travel — 0.6 > 0.333, the earlier
+                // "inside the travel" wording was arithmetically wrong;
+                // what actually bounds the overshoot is
+                // AnimatedContent's clipToBounds, the ContentTransform
+                // default SizeTransform(clip = true)), so the nudge
+                // hand-off and the slide push the page the SAME way —
+                // including the fling-back flip, where the exit
+                // direction is the fling's, not the stale nudge's; a
+                // no-flip release still returns home to 0.
+                // (c) the nudge layer lived INSIDE the AnimatedContent
+                // content, so the settle moved BOTH pages — the ENTERING
+                // page got yanked backward too as the spring collapsed.
+                // The drag-follow now runs on a layer OUTSIDE the
+                // AnimatedContent (it applies to the current page, which
+                // is the page the finger is on), and the depart settle
+                // runs on a WRAPPING Box INSIDE the content whose
+                // graphicsLayer is applied ONLY on the copy whose state
+                // is not the container's destination — the old page's
+                // copy. The flip-release continuity chain (the wiring
+                // fix for the supervisor's RED): the outer drag layer
+                // still snaps to 0 on the flip frame (the entering page
+                // is born still), but the LEAVING page is drawn by the
+                // depart layer, which the release had snapped to the
+                // DRAWN drag offset in the same frame — so the visible
+                // page never teleports between layers; the depart settle
+                // starts exactly where the finger left the page.
+                //
+                // DEVICE CHECKLIST (the swipe v2 wiring fix's
+                // morning-verify list — 8 items, ONE place; visuals are
+                // device-only, night agents render blind):
+                //  1. Flip-release continuity: the frame the finger
+                //     lifts, the leaving page does NOT jump/teleport —
+                //     it departs smoothly from where it was.
+                //  2. Momentum home-return: a no-flip release settles
+                //     home carrying the finger's velocity (a fast fling
+                //     back returns fast, no parking stop).
+                //  3. Depart direction matches the fling: a
+                //     drag-left-then-fling-right release exits the old
+                //     page to the RIGHT (the fling's side), never the
+                //     drag's stale side.
+                //  4. Edge-tab no-wrap: a right-swipe on LIBRARY or a
+                //     left-swipe on SETTINGS is a settled no-op (returns
+                //     home, never wraps around).
+                //  5. Vertical never flips: scrolling the lists/grids
+                //     never triggers a tab flip.
+                //  6. Child gestures never flip: a drag on a row/button/
+                //     slider (Settings' theme row) does not flip the tab.
+                //  7. Entering page born still: the incoming tab does
+                //     not yank backward while the old one departs.
+                //  8. Wide-nav density: on a wide/landscape layout the
+                //     drag-follow and depart distances scale with the
+                //     container width (15% / 60% fractions), not fixed
+                //     dp — same feel at any width.
                 val tabFollowDp = remember { Animatable(0f) }
+                // The departing page's settle offset — SEPARATE from the
+                // live drag so the two animations never fight over one
+                // value: the release hands the drag's value to the
+                // depart (snapped once) and settles it while the drag
+                // Animatable resets for the next gesture.
+                val tabDepartDp = remember { Animatable(0f) }
+                // The container's width in dp, captured at layout — the
+                // settle target needs an absolute dp value while the
+                // pure rule is a fraction of the width.
+                var tabWidthDp by remember { mutableStateOf(0f) }
+                val screenDensity = LocalDensity.current
                 val scope = rememberCoroutineScope()
                 Box(
                     Modifier
                         .fillMaxSize()
+                        .onSizeChanged { tabWidthDp = it.width / screenDensity.density }
+                        // The DRAG-follow layer: OUTSIDE the
+                        // AnimatedContent, so only the composed page the
+                        // finger is dragging (the current target) moves
+                        // — the entering page is born still (root cause
+                        // (c)).
+                        .graphicsLayer {
+                            translationX =
+                                TabSwipe.followOffsetFraction(
+                                    tabFollowDp.value,
+                                    size.width / density,
+                                ) * size.width
+                        }
                         .tabSwipeGesture(
                             currentTab = { destination },
                             onFlip = { destination = it },
                             onDragDeltaDp = { delta ->
                                 if (TabSwipe.isReleaseReset(delta)) {
-                                    // The gesture's end signal: settle
-                                    // back with the spring (canceled by
-                                    // the next gesture's snap — the
+                                    // The gesture's end signal on a
+                                    // CANCELED gesture (a finger LIFT
+                                    // fires onRelease first): settle
+                                    // home from a standstill (canceled
+                                    // by the next gesture's snap — the
                                     // Animatable's own mutation rule).
                                     scope.launch {
-                                        tabFollowDp.animateTo(
-                                            0f,
-                                            tabSwipeSettleSpec(),
-                                        )
+                                        tabFollowDp.animateTo(0f, tabSwipeSettleSpec())
                                     }
                                 } else {
                                     // A live finger delta: the finger
                                     // owns the frame — snap, no easing.
-                                    scope.launch { tabFollowDp.snapTo(delta) }
+                                    // The same snap re-arms the DEPART
+                                    // layer at rest for this gesture's
+                                    // eventual release (the previous
+                                    // gesture's depart may still be
+                                    // travelling; the finger owns the
+                                    // frame now).
+                                    scope.launch {
+                                        tabFollowDp.snapTo(delta)
+                                        tabDepartDp.snapTo(0f)
+                                    }
+                                }
+                            },
+                            onRelease = { velocityX, willFlip ->
+                                // The finger's LIFT (v2): the settle
+                                // inherits the finger's velocity (a)
+                                // and, on a flip, departs in the slide's
+                                // exit direction instead of reversing
+                                // (b). The pure halves are pinned in
+                                // TabSwipeTest; the nudge hand-off value
+                                // comes from the live Animatable (the
+                                // finger's last position, snapped
+                                // frame-by-frame), handed to the depart
+                                // as the DRAWN (capped) offset — see the
+                                // snap below.
+                                val dxDp = tabFollowDp.value
+                                val settleVelocity =
+                                    TabSwipe.settleInitialVelocityDpPerS(velocityX, dxDp)
+                                if (willFlip) {
+                                    // Depart in the SLIDE's exit
+                                    // direction: the gesture's flip
+                                    // target decides it (the same
+                                    // velocity-decides convention the
+                                    // flip itself uses, so a fling-back
+                                    // flip departs with the fling — the
+                                    // slide already reversed with it).
+                                    val departSign = TabSwipe.exitTravelSign(
+                                        current = destination,
+                                        target = TabSwipe.target(
+                                            current = destination,
+                                            dxDp = dxDp,
+                                            dyDp = 0f,
+                                            velocityX = velocityX,
+                                        ),
+                                    )
+                                    val targetDp =
+                                        TabSwipe.settleTargetFraction(departSign) * tabWidthDp
+                                    // The hand-off snaps the depart to the
+                                    // DRAWN offset, not the raw drag: the
+                                    // outer layer renders
+                                    // followOffsetFraction(dxDp) (the 15%
+                                    // cap), so a long drag whose finger
+                                    // travel exceeds the cap must hand the
+                                    // depart the offset the eye is actually
+                                    // looking at — snapping the RAW dxDp
+                                    // would teleport the leaving page from
+                                    // the capped 15% to the raw finger
+                                    // travel in one frame (a v1-heritage
+                                    // nuiance, the same cap at the same
+                                    // seam).
+                                    val drawnDepartDp =
+                                        TabSwipe.followOffsetFraction(dxDp, tabWidthDp) *
+                                            tabWidthDp
+                                    scope.launch {
+                                        tabDepartDp.snapTo(drawnDepartDp)
+                                        tabDepartDp.animateTo(
+                                            targetDp,
+                                            tabSwipeSettleSpec(),
+                                            settleVelocity,
+                                        )
+                                    }
+                                    // The live drag resets immediately
+                                    // (the next page starts still); the
+                                    // settle home is a no-velocity
+                                    // snap-then-done for the NEXT page.
+                                    scope.launch { tabFollowDp.snapTo(0f) }
+                                } else {
+                                    // No flip: the same page returns
+                                    // home, momentum carried over.
+                                    scope.launch {
+                                        tabFollowDp.animateTo(
+                                            0f,
+                                            tabSwipeSettleSpec(),
+                                            settleVelocity,
+                                        )
+                                    }
                                 }
                             },
                         ),
@@ -2543,644 +2690,707 @@ fun AppNav(
                             // (the ExportSettingsPanel page-slide
                             // precedent, it / 3) — a full-width slide
                             // would drag both pages across the nav bar.
+                            // v2: pinned tween specs, not the spring
+                            // defaults. Two reasons: (1) DESIGN.md
+                            // Motion asks for "M3 standard easing and
+                            // durations" — the shared-axis-X standard
+                            // curve is LinearOutSlowInEasing on the
+                            // ENTER (decelerating, no slow-in start: the
+                            // page is already moving when it appears,
+                            // which kills the "arrives late" feel a
+                            // spring's open-ended tail produces) and
+                            // FastOutLinearInEasing on the EXIT (the
+                            // leaving page accelerates away — shared
+                            // axis fades the exit fast); (2) a fixed
+                            // 240ms duration keeps the settle spring and
+                            // the slide in a known race: the settle's
+                            // critically-damped 1500-stiffness spring
+                            // from ±15% with real finger velocity
+                            // finishes well inside 240ms, so the page
+                            // departs WHILE the slide still carries it,
+                            // never after.
                             if (forward) {
-                                (slideInHorizontally { it / 3 } + fadeIn()) togetherWith
-                                    (slideOutHorizontally { -it / 3 } + fadeOut())
+                                (slideInHorizontally(
+                                    animationSpec = tabSwipeSlideInSpec(),
+                                ) { it / 3 } + fadeIn(tabSwipeFadeInSpec())) togetherWith
+                                    (slideOutHorizontally(
+                                        animationSpec = tabSwipeSlideOutSpec(),
+                                    ) { -it / 3 } + fadeOut(tabSwipeFadeOutSpec()))
                             } else {
-                                (slideInHorizontally { -it / 3 } + fadeIn()) togetherWith
-                                    (slideOutHorizontally { it / 3 } + fadeOut())
+                                (slideInHorizontally(
+                                    animationSpec = tabSwipeSlideInSpec(),
+                                ) { -it / 3 } + fadeIn(tabSwipeFadeInSpec())) togetherWith
+                                    (slideOutHorizontally(
+                                        animationSpec = tabSwipeSlideOutSpec(),
+                                    ) { it / 3 } + fadeOut(tabSwipeFadeOutSpec()))
                             }
                         },
                         label = "browse",
                     ) { d ->
-                        // The nudge layer is INSIDE the AnimatedContent
-                        // so it applies to the transitioning page only,
-                        // never to the outer Box's other children. The
-                        // Animatable carries the LIVE dp delta; this
-                        // layer converts it through the same pure
-                        // fraction rule the old wiring used (the 15% cap
-                        // included), with the layer's own density.
+                        // The DEPART layer: INSIDE the AnimatedContent
+                        // content, a WRAPPING Box around each page, with
+                        // its graphicsLayer applied ONLY on the copy
+                        // whose state is NOT the container's current
+                        // destination — during a flip that is exactly the
+                        // EXITING page (the entering and resting page's
+                        // d == the destination, so their copy composes
+                        // the identity modifier and is born STILL; the
+                        // finger's live drag already ran on the outer
+                        // layer). The departing page WRAPS its content in
+                        // the depart layer, so translationX moves the
+                        // whole screen — the settle flies it toward the
+                        // depart target while the slide sends it out:
+                        // both animations push the page the SAME
+                        // direction, the settle never yanks it back.
+                        // FLIP-RELEASE CONTINUITY (the v2 wiring fix):
+                        // the outer drag layer still snaps to 0 on the
+                        // flip frame (the entering page must be born
+                        // still), but that snap can no longer teleport
+                        // anything VISIBLE — the leaving page is drawn
+                        // by THIS layer, whose Animatable was snapped to
+                        // the departing offset in the same release, so
+                        // the page the eye follows never jumps between
+                        // layers: the frame the finger lifts is the
+                        // frame the depart settle starts from.
+                        // NOTE: the depart offset draws RAW (dp→px),
+                        // NOT through followOffsetFraction — the 15%
+                        // follow cap is the LIVE drag's affordance
+                        // limit (pinned in TabSwipeTest); the depart is
+                        // a fly-through toward ±60% of the width
+                        // (TabSwipe.FOLLOW_DEPART_FRACTION) that must
+                        // NOT clamp mid-flight, or the leaving page
+                        // would visibly stick at 15% while the slide
+                        // un-clipped it — a twitch, not a departure.
+                        // What clips the overshoot is NOT the ±60%
+                        // target being "inside the slide's 1/3 travel"
+                        // (0.6 > 0.333 — it is NOT inside it, and the
+                        // arithmetic was never the reason); it is
+                        // AnimatedContent's clipToBounds (the
+                        // ContentTransform default SizeTransform(clip =
+                        // true)): the page may fly past the slide's own
+                        // 1/3-width travel and be clipped at the
+                        // container's edge while the fade takes it out.
                         Box(
-                            Modifier
-                                .fillMaxSize()
-                                .graphicsLayer {
-                                    translationX =
-                                        TabSwipe.followOffsetFraction(
-                                            tabFollowDp.value,
-                                            size.width / density,
-                                        ) * size.width
-                                }
+                            if (d != destination) {
+                                Modifier
+                                    .fillMaxSize()
+                                    .graphicsLayer {
+                                        translationX = tabDepartDp.value * density
+                                    }
+                            } else {
+                                Modifier
+                            }
                         ) {
-                        when (d) {
-                        Destination.LIBRARY -> LibraryScreen(
-                            sources = sources,
-                            // The toolbar's persisted sort + view state
-                            // (library toolbar redesign, 2026-11-16):
-                            // AppNav owns the store writes so the choices
-                            // survive restarts; the screen renders from
-                            // the passed values only — the
-                            // previewQuality/renderBackend wiring shape.
-                            sortKey = librarySortKey,
-                            sortAscending = librarySortAscending,
-                            viewMode = libraryViewMode,
-                            onSortKeyChange = { key ->
-                                stores.libraryPrefs.putSortKey(key)
-                                librarySortKey = key
-                            },
-                            onSortAscendingChange = { ascending ->
-                                stores.libraryPrefs.putAscending(ascending)
-                                librarySortAscending = ascending
-                            },
-                            onViewModeChange = { mode ->
-                                stores.libraryPrefs.putViewMode(mode)
-                                libraryViewMode = mode
-                            },
-                            onOpenClip = { sourceId -> editorSourceId = sourceId },
-                            onImport = { uri ->
-                                // SAF pick landed: import through the repository
-                                // (fingerprint dedupe keeps ids and grades stable),
-                                // then generate the thumbnail + recorded stats
-                                // asynchronously — the import never blocks on the
-                                // develop (owner request 2026-11-11 §1). The gyro
-                                // auto-match (G1) runs after the import succeeds;
-                                // it is best-effort and never fails the import.
-                                try {
-                                    val imported = stores.sources.import(uri)
-                                    sources = stores.sources.all()
-                                    scope.launch {
-                                        val resolved = resolveGcsvOrientation(imported, imported.displayName)
-                                        generateThumbnail(resolved)
-                                    }
-                                    // IN-13: the metadata probe runs after the
-                                    // import, alongside the thumbnail — it
-                                    // never blocks the import announcement and
-                                    // persists its own section.
-                                    scope.launch { probeMetadata(imported) }
-                                    // The auto-match runs AFTER the import
-                                    // returns: the import announcement never
-                                    // waits on the tree query + copy + probe.
-                                    // The scope is the main dispatcher, so
-                                    // the store access stays single-threaded
-                                    // like every other store call.
-                                    //
-                                    // Import success is a system TOAST, not
-                                    // a snackbar (owner request 2026-11-12):
-                                    // a plain confirmation needs no tap and
-                                    // no layout space, and firing it HERE —
-                                    // after the auto-match resolves — lets
-                                    // ONE combined message name the gyro
-                                    // data when it attached. The attach
-                                    // state is known at toast time in this
-                                    // flow; it is threaded out of
-                                    // autoMatchGyro's return.
-                                    scope.launch {
-                                        val withGyro = autoMatchGyro(imported)
-                                        Toast.makeText(
-                                            context,
-                                            if (withGyro) gyroImportedWithText else importDoneText,
-                                            Toast.LENGTH_SHORT,
-                                        ).show()
-                                    }
-                                    Result.success(imported)
-                                } catch (e: Exception) {
-                                    Result.failure(e)
-                                }
-                            },
-                            // Re-link (spec IN-16): the degraded row's SAF pick
-                            // lands here — the fingerprint-checked relink
-                            // rebinds the SAME id (grade, gyro, stats and
-                            // export history all survive), and a mismatch is
-                            // the honest error (the record changes nothing).
-                            // The refreshed list state updates the row in
-                            // place; the thumbnail the row never could
-                            // generate while missing retries through the
-                            // backfill on this same composition.
-                            onRelink = { sourceId, uri ->
-                                try {
-                                    val relinked = stores.sources.relink(sourceId, uri)
-                                    sources = stores.sources.all()
-                                    scope.launch { generateThumbnail(relinked) }
-                                    // IN-13: a relink re-probes the metadata —
-                                    // the file may differ from what the old
-                                    // record described (the fingerprint check
-                                    // already guarantees it is the same clip).
-                                    scope.launch { probeMetadata(relinked) }
-                                    Result.success(relinked)
-                                } catch (e: Exception) {
-                                    Result.failure(e)
-                                }
-                            },
-                            // Manual full sweep (spec IN-12): pull-to-refresh
-                            // re-probes the WHOLE catalog — one cheap metadata
-                            // query per record, never an open. The cursor
-                            // stays put (the sweep covers everything). The
-                            // sweep also runs the M9 kind heal over every
-                            // record: one pull-to-refresh corrects the whole
-                            // library's badges at once.
-                            onRefresh = {
-                                libraryRefreshing = true
-                                sources = stores.sources.refreshStatus()
-                                stores.sources.backfillRecords()
-                                sources = stores.sources.all()
-                                libraryRefreshing = false
-                            },
-                            refreshing = libraryRefreshing,
-                            // Bounded per-open pass (spec IN-12): all degraded
-                            // rows (few, cheap, recoverable — a re-granted or
-                            // re-linked clip returns to OK on the next open)
-                            // plus the rotating healthy slice. The cursor
-                            // advances by the slice actually taken. The same
-                            // slice carries the M9 kind heal (records
-                            // imported before the M1 import fix carry the
-                            // MCRAW default in project.json: the badge
-                            // corrects as the rotation covers the library,
-                            // one cheap metadata query per record — the
-                            // same class as the access probe, never an
-                            // open).
-                            onOpenRefresh = {
-                                val batch = CollectionRefresh.batch(sources, refreshCursor)
-                                if (batch.isNotEmpty()) {
-                                    stores.sources.refreshStatus(batch)
-                                    stores.sources.backfillRecords(batch)
-                                    sources = stores.sources.all()
-                                    refreshCursor = CollectionRefresh.nextCursor(
-                                        sources, refreshCursor,
-                                    )
-                                }
-                            },
-                            thumbnailAt = { id ->
-                                // The persisted PNG's path, or null: the row
-                                // shows the placeholder while missing.
-                                thumbnailStore.fileFor(id)?.absolutePath
-                            },
-                            // The generation revision above: the rows pin
-                            // their thumbnailAt read to it, so an icon the
-                            // pass just wrote swaps in on the CURRENT
-                            // visit (owner finding 2026-11-14).
-                            thumbnailRevision = thumbnailRevision,
-                            thumbnailBatchLimit = thumbnailBatchLimit,
-                            onGenerateThumbnails = { pending ->
-                                // Bounded, cancellable backfill for records
-                                // imported before this pass existed: the Library
-                                // screen hands over the pending ids in list
-                                // order, this runner generates them one by one
-                                // (each on the preview engine thread) and stops
-                                // when the composable leaves composition —
-                                // cancelling the coroutine cancels the pass.
-                                scope.launch {
-                                    for (id in pending) {
-                                        val source = stores.sources.get(id) ?: continue
-                                        generateThumbnail(source)
-                                    }
-                                }
-                            },
-                            // E2 delete: the ONE composition of the store
-                            // removes (ClipDeletion documents the scope) —
-                            // record + grade + thumbnail PNG, never the
-                            // user's original SAF file, never export
-                            // history. Refresh through the same state the
-                            // import path uses, so the list (and the
-                            // empty-library state after deleting
-                            // everything) updates in place.
-                            onRenameClip = { id, name ->
-                                // Display name only: the record's field.
-                                // The file/URI is never touched.
-                                val renamed = stores.sources.rename(id, name)
-                                sources = stores.sources.all()
-                                renamed != null
-                            },
-                            onDeleteClips = { ids ->
-                                com.ritim.ritimcraw.data.ClipDeletion.delete(
-                                    ids = ids,
-                                    sources = stores.sources,
-                                    grades = stores.grades,
-                                    thumbnails = thumbnailStore,
-                                    imageStab = imageStabService,
-                                )
-                                sources = stores.sources.all()
-                            },
-                            // Folder-browser previews (owner request
-                            // 2026-11-15): the cells read the document-keyed
-                            // folder namespace, and a missing one generates
-                            // through the bounded pass — the fdProvider is
-                            // the same detachFd seam every import path uses.
-                            // The retention sweep rides the generation (the
-                            // only moment the namespace grows), so un-imported
-                            // browsing never accumulates past the cap without
-                            // a second scheduled pass.
-                            folderPreviewAt = { uri ->
-                                thumbnailStore.folderFileFor(uri)?.absolutePath
-                            },
-                            onGenerateFolderPreview = { uri, displayName ->
-                                folderThumbnails.preview(
-                                    uri = uri,
-                                    displayName = displayName,
-                                    fdProvider = {
-                                        try {
-                                            context.contentResolver
-                                                .openFileDescriptor(Uri.parse(uri), "r")
-                                                ?.detachFd() ?: -1
-                                        } catch (e: Exception) {
-                                            -1
-                                        }
-                                    },
-                                    gate = folderPreviewGate,
-                                )
-                                // The retention sweep rides the generation
-                                // (the only moment the namespace grows) —
-                                // a dir listing, off the main dispatcher.
-                                withContext(Dispatchers.IO) {
-                                    thumbnailStore.trimFolder(folderPreviewRetention)
-                                }
-                            },
-                            // Folder import (owner request 2026-11-15), single
-                            // file: the SAME per-file pipeline the SAF picker
-                            // rides, plus two folder-flow additions. (1) The
-                            // KIND routes on the FILE's extension (mp4/mov are
-                            // ENCODED, everything else MCRAW) — the picker path
-                            // always defaulted to MCRAW because its picker
-                            // filtered to pick-worthy types; a folder holds
-                            // both, so the kind must come from the name.
-                            // (2) The dialog's edited name lands as a rename
-                            // AFTER the import: the import's dedupe branch
-                            // refreshes displayName from the resolver, so the
-                            // user's name must land LAST to survive (pinned by
-                            // rename_survives_a_reimport_of_the_same_file).
-                            // The rename never changes the id, so the
-                            // in-flight thumbnail/probe/gyro work below is
-                            // unaffected. A null editedName (the bulk path)
-                            // keeps the file's own name. (3) The SUCCESS
-                            // cleanup: the per-import pipeline generates the
-                            // id-keyed icon, so the document-keyed pre-import
-                            // preview is redundant — deleted (a no-op when
-                            // none existed).
-                            onImportFromFolder = { uri, kind, editedName ->
-                                try {
-                                    val imported = stores.sources.import(uri, kind)
-                                    val matchName = imported.displayName
-                                    thumbnailStore.removeFolder(uri)
-                                    if (editedName != null) {
-                                        stores.sources.rename(imported.id, editedName)
-                                    }
-                                    sources = stores.sources.all()
-                                    val current = stores.sources.get(imported.id) ?: imported
-                                    scope.launch {
-                                        val resolved = resolveGcsvOrientation(current, matchName)
-                                        generateThumbnail(resolved)
-                                    }
-                                    scope.launch { probeMetadata(imported) }
-                                    scope.launch {
-                                        val withGyro = autoMatchGyro(imported)
-                                        Toast.makeText(
-                                            context,
-                                            if (withGyro) gyroImportedWithText else importDoneText,
-                                            Toast.LENGTH_SHORT,
-                                        ).show()
-                                    }
-                                    Result.success(imported)
-                                } catch (e: Exception) {
-                                    Result.failure(e)
-                                }
-                            },
-                            // Folder import, bulk: each document rides the
-                            // SAME per-file pipeline in sequence — its own
-                            // takePersistableUriPermission (the tree grant
-                            // alone would not survive its revocation), the
-                            // kind its FILE's extension routes to, the async
-                            // thumbnail + metadata probe + gyro auto-match,
-                            // and its OWN display name (no rename dialog per
-                            // file in bulk mode — the owner's request names
-                            // the dialog for the single-file flow). Failures
-                            // are per-file honest: one bad file never stops
-                            // the batch, and the browser's ONE summary
-                            // (N imported, M failed) carries the batch's
-                            // verdict. The imports run on the caller's thread
-                            // (the browser's confirm click); each file's
-                            // async work is already on the main scope.
-                            onImportManyFromFolder = { docs ->
-                                var importedCount = 0
-                                var failedCount = 0
-                                var firstError: Throwable? = null
-                                val batchGcsvLogs: List<GyroTree.GcsvDocument>? =
-                                    GcsvOrientation.candidateFolders(importFolder, gyroFolder)
-                                        .flatMap { folder ->
-                                            try {
-                                                GyroTree.listGcsv(context, folder)
-                                            } catch (_: Exception) {
-                                                emptyList()
-                                            }
-                                        }
-                                        .distinctBy { it.displayName }
-                                        .takeIf { it.isNotEmpty() }
-                                for (doc in docs) {
+                            when (d) {
+                            Destination.LIBRARY -> LibraryScreen(
+                                sources = sources,
+                                // The toolbar's persisted sort + view state
+                                // (library toolbar redesign, 2026-11-16):
+                                // AppNav owns the store writes so the choices
+                                // survive restarts; the screen renders from
+                                // the passed values only — the
+                                // previewQuality/renderBackend wiring shape.
+                                sortKey = librarySortKey,
+                                sortAscending = librarySortAscending,
+                                viewMode = libraryViewMode,
+                                onSortKeyChange = { key ->
+                                    stores.libraryPrefs.putSortKey(key)
+                                    librarySortKey = key
+                                },
+                                onSortAscendingChange = { ascending ->
+                                    stores.libraryPrefs.putAscending(ascending)
+                                    librarySortAscending = ascending
+                                },
+                                onViewModeChange = { mode ->
+                                    stores.libraryPrefs.putViewMode(mode)
+                                    libraryViewMode = mode
+                                },
+                                onOpenClip = { sourceId -> editorSourceId = sourceId },
+                                onImport = { uri ->
+                                    // SAF pick landed: import through the repository
+                                    // (fingerprint dedupe keeps ids and grades stable),
+                                    // then generate the thumbnail + recorded stats
+                                    // asynchronously — the import never blocks on the
+                                    // develop (owner request 2026-11-11 §1). The gyro
+                                    // auto-match (G1) runs after the import succeeds;
+                                    // it is best-effort and never fails the import.
                                     try {
-                                        // The per-file persistable grant: the
-                                        // clip survives reboots even if the
-                                        // tree grant is later revoked. A
-                                        // SecurityException is non-fatal (the
-                                        // collection refresh surfaces a lost
-                                        // row if the grant really is needed) —
-                                        // the import attempt still runs.
-                                        try {
-                                            context.contentResolver.takePersistableUriPermission(
-                                                Uri.parse(doc.uri),
-                                                Intent.FLAG_GRANT_READ_URI_PERMISSION,
-                                            )
-                                        } catch (e: SecurityException) {
-                                            // Non-fatal: same contract as the
-                                            // single-file picker.
-                                        }
-                                        val imported = stores.sources.import(
-                                            doc.uri,
-                                            VideoTree.kindFor(doc.displayName),
-                                        )
-                                        // The success cleanup: the id-keyed
-                                        // icon supersedes the pre-import
-                                        // preview (no-op when none existed).
-                                        thumbnailStore.removeFolder(doc.uri)
+                                        val imported = stores.sources.import(uri)
                                         sources = stores.sources.all()
-                                        val docName = doc.displayName
                                         scope.launch {
-                                            val resolved = resolveGcsvOrientation(
-                                                imported,
-                                                docName,
-                                                prelistedLogs = batchGcsvLogs,
-                                            )
+                                            val resolved = resolveGcsvOrientation(imported, imported.displayName)
+                                            generateThumbnail(resolved)
+                                        }
+                                        // IN-13: the metadata probe runs after the
+                                        // import, alongside the thumbnail — it
+                                        // never blocks the import announcement and
+                                        // persists its own section.
+                                        scope.launch { probeMetadata(imported) }
+                                        // The auto-match runs AFTER the import
+                                        // returns: the import announcement never
+                                        // waits on the tree query + copy + probe.
+                                        // The scope is the main dispatcher, so
+                                        // the store access stays single-threaded
+                                        // like every other store call.
+                                        //
+                                        // Import success is a system TOAST, not
+                                        // a snackbar (owner request 2026-11-12):
+                                        // a plain confirmation needs no tap and
+                                        // no layout space, and firing it HERE —
+                                        // after the auto-match resolves — lets
+                                        // ONE combined message name the gyro
+                                        // data when it attached. The attach
+                                        // state is known at toast time in this
+                                        // flow; it is threaded out of
+                                        // autoMatchGyro's return.
+                                        scope.launch {
+                                            val withGyro = autoMatchGyro(imported)
+                                            Toast.makeText(
+                                                context,
+                                                if (withGyro) gyroImportedWithText else importDoneText,
+                                                Toast.LENGTH_SHORT,
+                                            ).show()
+                                        }
+                                        Result.success(imported)
+                                    } catch (e: Exception) {
+                                        Result.failure(e)
+                                    }
+                                },
+                                // Re-link (spec IN-16): the degraded row's SAF pick
+                                // lands here — the fingerprint-checked relink
+                                // rebinds the SAME id (grade, gyro, stats and
+                                // export history all survive), and a mismatch is
+                                // the honest error (the record changes nothing).
+                                // The refreshed list state updates the row in
+                                // place; the thumbnail the row never could
+                                // generate while missing retries through the
+                                // backfill on this same composition.
+                                onRelink = { sourceId, uri ->
+                                    try {
+                                        val relinked = stores.sources.relink(sourceId, uri)
+                                        sources = stores.sources.all()
+                                        scope.launch { generateThumbnail(relinked) }
+                                        // IN-13: a relink re-probes the metadata —
+                                        // the file may differ from what the old
+                                        // record described (the fingerprint check
+                                        // already guarantees it is the same clip).
+                                        scope.launch { probeMetadata(relinked) }
+                                        Result.success(relinked)
+                                    } catch (e: Exception) {
+                                        Result.failure(e)
+                                    }
+                                },
+                                // Manual full sweep (spec IN-12): pull-to-refresh
+                                // re-probes the WHOLE catalog — one cheap metadata
+                                // query per record, never an open. The cursor
+                                // stays put (the sweep covers everything). The
+                                // sweep also runs the M9 kind heal over every
+                                // record: one pull-to-refresh corrects the whole
+                                // library's badges at once.
+                                onRefresh = {
+                                    libraryRefreshing = true
+                                    sources = stores.sources.refreshStatus()
+                                    stores.sources.backfillRecords()
+                                    sources = stores.sources.all()
+                                    libraryRefreshing = false
+                                },
+                                refreshing = libraryRefreshing,
+                                // Bounded per-open pass (spec IN-12): all degraded
+                                // rows (few, cheap, recoverable — a re-granted or
+                                // re-linked clip returns to OK on the next open)
+                                // plus the rotating healthy slice. The cursor
+                                // advances by the slice actually taken. The same
+                                // slice carries the M9 kind heal (records
+                                // imported before the M1 import fix carry the
+                                // MCRAW default in project.json: the badge
+                                // corrects as the rotation covers the library,
+                                // one cheap metadata query per record — the
+                                // same class as the access probe, never an
+                                // open).
+                                onOpenRefresh = {
+                                    val batch = CollectionRefresh.batch(sources, refreshCursor)
+                                    if (batch.isNotEmpty()) {
+                                        stores.sources.refreshStatus(batch)
+                                        stores.sources.backfillRecords(batch)
+                                        sources = stores.sources.all()
+                                        refreshCursor = CollectionRefresh.nextCursor(
+                                            sources, refreshCursor,
+                                        )
+                                    }
+                                },
+                                thumbnailAt = { id ->
+                                    // The persisted PNG's path, or null: the row
+                                    // shows the placeholder while missing.
+                                    thumbnailStore.fileFor(id)?.absolutePath
+                                },
+                                // The generation revision above: the rows pin
+                                // their thumbnailAt read to it, so an icon the
+                                // pass just wrote swaps in on the CURRENT
+                                // visit (owner finding 2026-11-14).
+                                thumbnailRevision = thumbnailRevision,
+                                thumbnailBatchLimit = thumbnailBatchLimit,
+                                onGenerateThumbnails = { pending ->
+                                    // Bounded, cancellable backfill for records
+                                    // imported before this pass existed: the Library
+                                    // screen hands over the pending ids in list
+                                    // order, this runner generates them one by one
+                                    // (each on the preview engine thread) and stops
+                                    // when the composable leaves composition —
+                                    // cancelling the coroutine cancels the pass.
+                                    scope.launch {
+                                        for (id in pending) {
+                                            val source = stores.sources.get(id) ?: continue
+                                            generateThumbnail(source)
+                                        }
+                                    }
+                                },
+                                // E2 delete: the ONE composition of the store
+                                // removes (ClipDeletion documents the scope) —
+                                // record + grade + thumbnail PNG, never the
+                                // user's original SAF file, never export
+                                // history. Refresh through the same state the
+                                // import path uses, so the list (and the
+                                // empty-library state after deleting
+                                // everything) updates in place.
+                                onRenameClip = { id, name ->
+                                    // Display name only: the record's field.
+                                    // The file/URI is never touched.
+                                    val renamed = stores.sources.rename(id, name)
+                                    sources = stores.sources.all()
+                                    renamed != null
+                                },
+                                onDeleteClips = { ids ->
+                                    com.ritim.ritimcraw.data.ClipDeletion.delete(
+                                        ids = ids,
+                                        sources = stores.sources,
+                                        grades = stores.grades,
+                                        thumbnails = thumbnailStore,
+                                        imageStab = imageStabService,
+                                    )
+                                    sources = stores.sources.all()
+                                },
+                                // Folder-browser previews (owner request
+                                // 2026-11-15): the cells read the document-keyed
+                                // folder namespace, and a missing one generates
+                                // through the bounded pass — the fdProvider is
+                                // the same detachFd seam every import path uses.
+                                // The retention sweep rides the generation (the
+                                // only moment the namespace grows), so un-imported
+                                // browsing never accumulates past the cap without
+                                // a second scheduled pass.
+                                folderPreviewAt = { uri ->
+                                    thumbnailStore.folderFileFor(uri)?.absolutePath
+                                },
+                                onGenerateFolderPreview = { uri, displayName ->
+                                    folderThumbnails.preview(
+                                        uri = uri,
+                                        displayName = displayName,
+                                        fdProvider = {
+                                            try {
+                                                context.contentResolver
+                                                    .openFileDescriptor(Uri.parse(uri), "r")
+                                                    ?.detachFd() ?: -1
+                                            } catch (e: Exception) {
+                                                -1
+                                            }
+                                        },
+                                        gate = folderPreviewGate,
+                                    )
+                                    // The retention sweep rides the generation
+                                    // (the only moment the namespace grows) —
+                                    // a dir listing, off the main dispatcher.
+                                    withContext(Dispatchers.IO) {
+                                        thumbnailStore.trimFolder(folderPreviewRetention)
+                                    }
+                                },
+                                // Folder import (owner request 2026-11-15), single
+                                // file: the SAME per-file pipeline the SAF picker
+                                // rides, plus two folder-flow additions. (1) The
+                                // KIND routes on the FILE's extension (mp4/mov are
+                                // ENCODED, everything else MCRAW) — the picker path
+                                // always defaulted to MCRAW because its picker
+                                // filtered to pick-worthy types; a folder holds
+                                // both, so the kind must come from the name.
+                                // (2) The dialog's edited name lands as a rename
+                                // AFTER the import: the import's dedupe branch
+                                // refreshes displayName from the resolver, so the
+                                // user's name must land LAST to survive (pinned by
+                                // rename_survives_a_reimport_of_the_same_file).
+                                // The rename never changes the id, so the
+                                // in-flight thumbnail/probe/gyro work below is
+                                // unaffected. A null editedName (the bulk path)
+                                // keeps the file's own name. (3) The SUCCESS
+                                // cleanup: the per-import pipeline generates the
+                                // id-keyed icon, so the document-keyed pre-import
+                                // preview is redundant — deleted (a no-op when
+                                // none existed).
+                                onImportFromFolder = { uri, kind, editedName ->
+                                    try {
+                                        val imported = stores.sources.import(uri, kind)
+                                        val matchName = imported.displayName
+                                        thumbnailStore.removeFolder(uri)
+                                        if (editedName != null) {
+                                            stores.sources.rename(imported.id, editedName)
+                                        }
+                                        sources = stores.sources.all()
+                                        val current = stores.sources.get(imported.id) ?: imported
+                                        scope.launch {
+                                            val resolved = resolveGcsvOrientation(current, matchName)
                                             generateThumbnail(resolved)
                                         }
                                         scope.launch { probeMetadata(imported) }
-                                        // Quiet per-file: the gyro match still
-                                        // runs (it attaches whatever it finds
-                                        // without a toast); the browser's ONE
-                                        // summary names the batch's verdict.
-                                        scope.launch { autoMatchGyro(imported) }
-                                        importedCount++
+                                        scope.launch {
+                                            val withGyro = autoMatchGyro(imported)
+                                            Toast.makeText(
+                                                context,
+                                                if (withGyro) gyroImportedWithText else importDoneText,
+                                                Toast.LENGTH_SHORT,
+                                            ).show()
+                                        }
+                                        Result.success(imported)
                                     } catch (e: Exception) {
-                                        failedCount++
-                                        if (firstError == null) firstError = e
+                                        Result.failure(e)
                                     }
-                                }
-                                BulkImportOutcome(importedCount, failedCount, firstError)
-                            },
-                            // The remembered folder (owner request 2026-11-16):
-                            // the toolbar's folder button routes on this value —
-                            // non-null opens the browser on the remembered tree
-                            // DIRECTLY (no picker, no re-asking), null routes a
-                            // first-time user to the tree picker.
-                            rememberedFolder = importFolder,
-                            // Every landed folder pick (first-time OR change —
-                            // the SAME launcher serves both): persist the new
-                            // tree, refresh the state, and release the OLD
-                            // grant under FolderFlow's guard. The guard is
-                            // load-bearing: a persistable grant is ONE entry per
-                            // URI per app, and the import and gyro folders are
-                            // often the SAME tree on this device (one MotionCam
-                            // folder holds the videos AND their .gcsv logs) —
-                            // releasing the old import tree when the gyro folder
-                            // still points at it would silently kill the gyro
-                            // auto-match's access. A re-pick of the SAME tree
-                            // also releases nothing (the pick just refreshed
-                            // the grant; a release-then-retake gap could drop
-                            // it). The release itself is best-effort: a dead
-                            // grant (already revoked) throws, and runCatching
-                            // swallows exactly that.
-                            onFolderPicked = { oldUri, newUri ->
-                                FolderFlow.grantToRelease(oldUri, newUri, gyroFolder)
-                                    ?.let { uri ->
-                                        runCatching {
-                                            context.contentResolver
-                                                .releasePersistableUriPermission(
-                                                    Uri.parse(uri),
+                                },
+                                // Folder import, bulk: each document rides the
+                                // SAME per-file pipeline in sequence — its own
+                                // takePersistableUriPermission (the tree grant
+                                // alone would not survive its revocation), the
+                                // kind its FILE's extension routes to, the async
+                                // thumbnail + metadata probe + gyro auto-match,
+                                // and its OWN display name (no rename dialog per
+                                // file in bulk mode — the owner's request names
+                                // the dialog for the single-file flow). Failures
+                                // are per-file honest: one bad file never stops
+                                // the batch, and the browser's ONE summary
+                                // (N imported, M failed) carries the batch's
+                                // verdict. The imports run on the caller's thread
+                                // (the browser's confirm click); each file's
+                                // async work is already on the main scope.
+                                onImportManyFromFolder = { docs ->
+                                    var importedCount = 0
+                                    var failedCount = 0
+                                    var firstError: Throwable? = null
+                                    val batchGcsvLogs: List<GyroTree.GcsvDocument>? =
+                                        GcsvOrientation.candidateFolders(importFolder, gyroFolder)
+                                            .flatMap { folder ->
+                                                try {
+                                                    GyroTree.listGcsv(context, folder)
+                                                } catch (_: Exception) {
+                                                    emptyList()
+                                                }
+                                            }
+                                            .distinctBy { it.displayName }
+                                            .takeIf { it.isNotEmpty() }
+                                    for (doc in docs) {
+                                        try {
+                                            // The per-file persistable grant: the
+                                            // clip survives reboots even if the
+                                            // tree grant is later revoked. A
+                                            // SecurityException is non-fatal (the
+                                            // collection refresh surfaces a lost
+                                            // row if the grant really is needed) —
+                                            // the import attempt still runs.
+                                            try {
+                                                context.contentResolver.takePersistableUriPermission(
+                                                    Uri.parse(doc.uri),
                                                     Intent.FLAG_GRANT_READ_URI_PERMISSION,
                                                 )
+                                            } catch (e: SecurityException) {
+                                                // Non-fatal: same contract as the
+                                                // single-file picker.
+                                            }
+                                            val imported = stores.sources.import(
+                                                doc.uri,
+                                                VideoTree.kindFor(doc.displayName),
+                                            )
+                                            // The success cleanup: the id-keyed
+                                            // icon supersedes the pre-import
+                                            // preview (no-op when none existed).
+                                            thumbnailStore.removeFolder(doc.uri)
+                                            sources = stores.sources.all()
+                                            val docName = doc.displayName
+                                            scope.launch {
+                                                val resolved = resolveGcsvOrientation(
+                                                    imported,
+                                                    docName,
+                                                    prelistedLogs = batchGcsvLogs,
+                                                )
+                                                generateThumbnail(resolved)
+                                            }
+                                            scope.launch { probeMetadata(imported) }
+                                            // Quiet per-file: the gyro match still
+                                            // runs (it attaches whatever it finds
+                                            // without a toast); the browser's ONE
+                                            // summary names the batch's verdict.
+                                            scope.launch { autoMatchGyro(imported) }
+                                            importedCount++
+                                        } catch (e: Exception) {
+                                            failedCount++
+                                            if (firstError == null) firstError = e
                                         }
                                     }
-                                stores.importFolder.put(newUri)
-                                importFolder = newUri
-                            },
-                        )
-                        Destination.PROJECTS -> ProjectsScreen(
-                            onOpenTimeline = { timelineOpen = true },
-                        )
-                        Destination.EXPORTS -> ExportsScreen(
-                            jobs = exportJobs,
-                            // Rows show the clip's display name (§2b); the
-                            // id is the fallback for sources whose name the
-                            // resolver could not read. A timeline job's
-                            // synthetic "timeline" id maps to the localized
-                            // timeline title (TL-EX) so its row reads the
-                            // timeline's name, not the marker id.
-                            sourceNames = sources.associate { it.id to it.displayOrId } +
-                                ("timeline" to timelineTitleText),
-                            exportDir = exportDir,
-                            thumbnailStore = thumbnailStore,
-                            onRetry = { job ->
-                                // Retry re-queues with the same snapshot.
-                                stores.exports.retry(job.id)
-                                exportJobs = stores.exports.all()
-                                queueKick += 1
-                                enqueueFeedback()
-                            },
-                            onClear = {
-                                stores.exports.clear()
-                                exportJobs = stores.exports.all()
-                            },
-                            onOpen = ::openExport,
-                            // Cancel (owner request 2026-11-13): the queue
-                            // flips the row and stops the job itself — a
-                            // QUEUED job never starts, a RUNNING one stops
-                            // at the next frame boundary. No kick needed:
-                            // an active drain re-reads the store itself, and
-                            // the revision flow refreshes the rows.
-                            onCancel = { job ->
-                                queue.cancel(job.id)
-                                exportJobs = stores.exports.all()
-                            },
-                            // Delete (owner request 2026-11-26): the store
-                            // removes the job records only — same meaning as
-                            // Clear, per-id — and repeats the live-guard
-                            // under its own lock. No kick needed: nothing
-                            // runnable changed. The SECOND parameter (M8,
-                            // owner request 2026-11-27: "diskten de silsin")
-                            // is the dialog's delete-from-disk checkbox:
-                            // checked -> the published rows and internal
-                            // copies leave too. The disk pass resolves its
-                            // targets BEFORE the record delete (the rows'
-                            // URIs die with the records), then deletes
-                            // best-effort — the record leaves regardless,
-                            // the checkbox only widens it.
-                            onDelete = { ids, fromDisk ->
-                                if (fromDisk) deleteExportsFromDisk(ids)
-                                stores.exports.delete(ids)
-                                exportJobs = stores.exports.all()
-                            },
-                        )
-                        Destination.SETTINGS -> SettingsScreen(
-                            // The report's data source, hoisted above: the
-                            // row count and the report screen's list are
-                            // the SAME probe (spec: keep the existing data
-                            // source — only the container changed).
-                            reports = codecReports,
-                            // The hoisted scroll position: survives the
-                            // Device report navigation (the Crossfade
-                            // disposes this screen; the state lives here).
-                            scrollState = settingsScroll,
-                            // The Device report full screen (spec
-                            // device_report_screen): the row navigates,
-                            // AppNav owns the route flag.
-                            onOpenDeviceReport = { deviceReportOpen = true },
-                            onMeasure = if (BuildConfig.DEBUG) {
-                                {
-                                    if (!measuring) {
-                                        measuring = true
-                                        measureKick += 1
-                                    }
-                                }
-                            } else {
-                                null
-                            },
-                            onGradeSweep = if (BuildConfig.DEBUG) {
-                                {
-                                    if (!measuring) {
-                                        measuring = true
-                                        sweepKick += 1
-                                    }
-                                }
-                            } else {
-                                null
-                            },
-                            // Export A/B (guide §A7, 2026-11-23): the same
-                            // debug gate + one-at-a-time flag as the sweep
-                            // callback above — release passes null, the
-                            // button never composes there.
-                            onExportAb = if (BuildConfig.DEBUG) {
-                                {
-                                    if (!measuring) {
-                                        measuring = true
-                                        exportAbKick += 1
-                                    }
-                                }
-                            } else {
-                                null
-                            },
-                            // Codec measurement (E1e): the same debug gate;
-                            // the runner checks its own one-at-a-time flag
-                            // too, so a double tap degrades to the toast,
-                            // never a second concurrent session.
-                            onCodecMeasure = if (BuildConfig.DEBUG) {
-                                {
-                                    if (!measuring) {
-                                        measuring = true
-                                        onCodecMeasureRun()
-                                    }
-                                }
-                            } else {
-                                null
-                            },
-                            codecMeasureProgress = codecMeasureProgress,
-                            codecMeasuring = codecMeasureRunning,
-                            measuring = measuring,
-                            // The quality row persists immediately; the
-                            // editor picks the new level up on its next
-                            // render request (owner request 2026-11-11b §3).
-                            previewQuality = previewQuality,
-                            onPreviewQualityChange = { level ->
-                                stores.previewQuality.put(level)
-                                previewQuality = level
-                            },
-                            // The backend row persists immediately (owner
-                            // request 2026-11-12 §B): the REQUESTED axis.
-                            // The next render/export job reads the current
-                            // value and computes the effective backend from
-                            // the runtime gates — a change applies to the
-                            // next job, never to one already running (§14).
-                            renderBackend = renderBackend,
-                            onRenderBackendChange = { backend ->
-                                stores.renderBackend.put(backend)
-                                renderBackend = backend
-                            },
-                            // ---- Gyro folder grant (G1) ----
-                            // The durable entry point for the grant: the
-                            // row shows the current folder (or the not-set
-                            // wording) and re-picks on tap. This row is
-                            // what the import-time hint's action opens
-                            // too — one grant, one place to change it.
-                            gyroFolderLabel = gyroFolder?.let { GyroTree.folderLabel(it) },
-                            onPickGyroFolder = { gyroFolderPicker.launch(null) },
-                            // ---- Preview stats readback (debug A/B) ----
-                            // The row renders only inside the screen's
-                            // BuildConfig.DEBUG block (beside Measure);
-                            // the change callback persists + applies in
-                            // one step through the toggle's seam, then
-                            // refreshes the checked state.
-                            previewStats = previewStats,
-                            onPreviewStatsChange = { enabled ->
-                                stores.previewStats.change(enabled)
-                                previewStats = enabled
-                            },
-                            // ---- Theme (owner request 2026-11-14) ----
-                            // Pure pass-through: MainActivity owns the
-                            // store + the state (the theme wraps this
-                            // composable); the row's callback persists and
-                            // updates that state, and the recomposition
-                            // re-tints the whole app.
-                            themeMode = themeMode,
-                            autoHidePlayerBar = autoHidePlayerBar,
-                            onAutoHidePlayerBarChange = { on ->
-                                autoHidePlayerBarStore.put(on)
-                                autoHidePlayerBar = on
-                            },
-                            systemMonitorVisible = systemMonitorVisible,
-                            onSystemMonitorVisibleChange = { visible ->
-                                systemMonitorStore.put(visible)
-                                systemMonitorVisible = visible
-                            },
-                            // ---- Scrub frames (F2-C3 wiring) ----
-                            // Pure pass-through like the systemMonitor
-                            // row: the state above feeds the row, the
-                            // callback persists + refreshes it; the
-                            // editor reads the state at its own
-                            // composition.
-                            scrubFrames = scrubFramesEnabled,
-                            onScrubFramesChange = { enabled ->
-                                stores.scrubFrames.put(enabled)
-                                scrubFramesEnabled = enabled
-                            },
-                            // ---- Proxy storage section (G3) ----
-                            // The pure feed over the runtime's own cache and
-                            // queue; refreshed by the proxyStorageKick effect
-                            // (every state change of the queue bumps it).
-                            // While the feature flag is off the actions stay
-                            // null: the page is read-only by construction.
-                            proxyStorage = proxyStorageState,
-                            proxyNameFor = { fp ->
-                                sources.firstOrNull { it.fingerprint == fp }?.displayOrId
-                            },
-                            onDeleteProxyClip =
-                                if (com.ritim.ritimcraw.util.FeatureFlags.PROXY_PRODUCTION_ENABLED) {
-                                    { fp ->
-                                        proxyRuntime.cache.clearClip(fp)
-                                        proxyRuntime.cancel(fp)
-                                        proxyStorageKick += 1
-                                    }
-                                } else {
-                                    null
+                                    BulkImportOutcome(importedCount, failedCount, firstError)
                                 },
-                            onClearProxyAll =
-                                if (com.ritim.ritimcraw.util.FeatureFlags.PROXY_PRODUCTION_ENABLED) {
+                                // The remembered folder (owner request 2026-11-16):
+                                // the toolbar's folder button routes on this value —
+                                // non-null opens the browser on the remembered tree
+                                // DIRECTLY (no picker, no re-asking), null routes a
+                                // first-time user to the tree picker.
+                                rememberedFolder = importFolder,
+                                // Every landed folder pick (first-time OR change —
+                                // the SAME launcher serves both): persist the new
+                                // tree, refresh the state, and release the OLD
+                                // grant under FolderFlow's guard. The guard is
+                                // load-bearing: a persistable grant is ONE entry per
+                                // URI per app, and the import and gyro folders are
+                                // often the SAME tree on this device (one MotionCam
+                                // folder holds the videos AND their .gcsv logs) —
+                                // releasing the old import tree when the gyro folder
+                                // still points at it would silently kill the gyro
+                                // auto-match's access. A re-pick of the SAME tree
+                                // also releases nothing (the pick just refreshed
+                                // the grant; a release-then-retake gap could drop
+                                // it). The release itself is best-effort: a dead
+                                // grant (already revoked) throws, and runCatching
+                                // swallows exactly that.
+                                onFolderPicked = { oldUri, newUri ->
+                                    FolderFlow.grantToRelease(oldUri, newUri, gyroFolder)
+                                        ?.let { uri ->
+                                            runCatching {
+                                                context.contentResolver
+                                                    .releasePersistableUriPermission(
+                                                        Uri.parse(uri),
+                                                        Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                                                    )
+                                            }
+                                        }
+                                    stores.importFolder.put(newUri)
+                                    importFolder = newUri
+                                },
+                            )
+                            Destination.PROJECTS -> ProjectsScreen(
+                                onOpenTimeline = { timelineOpen = true },
+                            )
+                            Destination.EXPORTS -> ExportsScreen(
+                                jobs = exportJobs,
+                                // Rows show the clip's display name (§2b); the
+                                // id is the fallback for sources whose name the
+                                // resolver could not read. A timeline job's
+                                // synthetic "timeline" id maps to the localized
+                                // timeline title (TL-EX) so its row reads the
+                                // timeline's name, not the marker id.
+                                sourceNames = sources.associate { it.id to it.displayOrId } +
+                                    ("timeline" to timelineTitleText),
+                                exportDir = exportDir,
+                                thumbnailStore = thumbnailStore,
+                                onRetry = { job ->
+                                    // Retry re-queues with the same snapshot.
+                                    stores.exports.retry(job.id)
+                                    exportJobs = stores.exports.all()
+                                    queueKick += 1
+                                    enqueueFeedback()
+                                },
+                                onClear = {
+                                    stores.exports.clear()
+                                    exportJobs = stores.exports.all()
+                                },
+                                onOpen = ::openExport,
+                                // Cancel (owner request 2026-11-13): the queue
+                                // flips the row and stops the job itself — a
+                                // QUEUED job never starts, a RUNNING one stops
+                                // at the next frame boundary. No kick needed:
+                                // an active drain re-reads the store itself, and
+                                // the revision flow refreshes the rows.
+                                onCancel = { job ->
+                                    queue.cancel(job.id)
+                                    exportJobs = stores.exports.all()
+                                },
+                                // Delete (owner request 2026-11-26): the store
+                                // removes the job records only — same meaning as
+                                // Clear, per-id — and repeats the live-guard
+                                // under its own lock. No kick needed: nothing
+                                // runnable changed. The SECOND parameter (M8,
+                                // owner request 2026-11-27: "diskten de silsin")
+                                // is the dialog's delete-from-disk checkbox:
+                                // checked -> the published rows and internal
+                                // copies leave too. The disk pass resolves its
+                                // targets BEFORE the record delete (the rows'
+                                // URIs die with the records), then deletes
+                                // best-effort — the record leaves regardless,
+                                // the checkbox only widens it.
+                                onDelete = { ids, fromDisk ->
+                                    if (fromDisk) deleteExportsFromDisk(ids)
+                                    stores.exports.delete(ids)
+                                    exportJobs = stores.exports.all()
+                                },
+                            )
+                            Destination.SETTINGS -> SettingsScreen(
+                                // The report's data source, hoisted above: the
+                                // row count and the report screen's list are
+                                // the SAME probe (spec: keep the existing data
+                                // source — only the container changed).
+                                reports = codecReports,
+                                // The hoisted scroll position: survives the
+                                // Device report navigation (the Crossfade
+                                // disposes this screen; the state lives here).
+                                scrollState = settingsScroll,
+                                // The Device report full screen (spec
+                                // device_report_screen): the row navigates,
+                                // AppNav owns the route flag.
+                                onOpenDeviceReport = { deviceReportOpen = true },
+                                onMeasure = if (BuildConfig.DEBUG) {
                                     {
-                                        proxyRuntime.cache.clearAll()
-                                        proxyStorageKick += 1
+                                        if (!measuring) {
+                                            measuring = true
+                                            measureKick += 1
+                                        }
                                     }
                                 } else {
                                     null
                                 },
-                            onThemeModeChange = onThemeModeChange,
-                            customThemeId = customThemeId,
-                            onCustomThemePick = onCustomThemePick,
-                        )
-                    }
-                    }
+                                onGradeSweep = if (BuildConfig.DEBUG) {
+                                    {
+                                        if (!measuring) {
+                                            measuring = true
+                                            sweepKick += 1
+                                        }
+                                    }
+                                } else {
+                                    null
+                                },
+                                // Export A/B (guide §A7, 2026-11-23): the same
+                                // debug gate + one-at-a-time flag as the sweep
+                                // callback above — release passes null, the
+                                // button never composes there.
+                                onExportAb = if (BuildConfig.DEBUG) {
+                                    {
+                                        if (!measuring) {
+                                            measuring = true
+                                            exportAbKick += 1
+                                        }
+                                    }
+                                } else {
+                                    null
+                                },
+                                // Codec measurement (E1e): the same debug gate;
+                                // the runner checks its own one-at-a-time flag
+                                // too, so a double tap degrades to the toast,
+                                // never a second concurrent session.
+                                onCodecMeasure = if (BuildConfig.DEBUG) {
+                                    {
+                                        if (!measuring) {
+                                            measuring = true
+                                            onCodecMeasureRun()
+                                        }
+                                    }
+                                } else {
+                                    null
+                                },
+                                codecMeasureProgress = codecMeasureProgress,
+                                codecMeasuring = codecMeasureRunning,
+                                measuring = measuring,
+                                // The quality row persists immediately; the
+                                // editor picks the new level up on its next
+                                // render request (owner request 2026-11-11b §3).
+                                previewQuality = previewQuality,
+                                onPreviewQualityChange = { level ->
+                                    stores.previewQuality.put(level)
+                                    previewQuality = level
+                                },
+                                // The backend row persists immediately (owner
+                                // request 2026-11-12 §B): the REQUESTED axis.
+                                // The next render/export job reads the current
+                                // value and computes the effective backend from
+                                // the runtime gates — a change applies to the
+                                // next job, never to one already running (§14).
+                                renderBackend = renderBackend,
+                                onRenderBackendChange = { backend ->
+                                    stores.renderBackend.put(backend)
+                                    renderBackend = backend
+                                },
+                                // ---- Gyro folder grant (G1) ----
+                                // The durable entry point for the grant: the
+                                // row shows the current folder (or the not-set
+                                // wording) and re-picks on tap. This row is
+                                // what the import-time hint's action opens
+                                // too — one grant, one place to change it.
+                                gyroFolderLabel = gyroFolder?.let { GyroTree.folderLabel(it) },
+                                onPickGyroFolder = { gyroFolderPicker.launch(null) },
+                                // ---- Preview stats readback (debug A/B) ----
+                                // The row renders only inside the screen's
+                                // BuildConfig.DEBUG block (beside Measure);
+                                // the change callback persists + applies in
+                                // one step through the toggle's seam, then
+                                // refreshes the checked state.
+                                previewStats = previewStats,
+                                onPreviewStatsChange = { enabled ->
+                                    stores.previewStats.change(enabled)
+                                    previewStats = enabled
+                                },
+                                // ---- Theme (owner request 2026-11-14) ----
+                                // Pure pass-through: MainActivity owns the
+                                // store + the state (the theme wraps this
+                                // composable); the row's callback persists and
+                                // updates that state, and the recomposition
+                                // re-tints the whole app.
+                                themeMode = themeMode,
+                                autoHidePlayerBar = autoHidePlayerBar,
+                                onAutoHidePlayerBarChange = { on ->
+                                    autoHidePlayerBarStore.put(on)
+                                    autoHidePlayerBar = on
+                                },
+                                systemMonitorVisible = systemMonitorVisible,
+                                onSystemMonitorVisibleChange = { visible ->
+                                    systemMonitorStore.put(visible)
+                                    systemMonitorVisible = visible
+                                },
+                                // ---- Scrub frames (F2-C3 wiring) ----
+                                // Pure pass-through like the systemMonitor
+                                // row: the state above feeds the row, the
+                                // callback persists + refreshes it; the
+                                // editor reads the state at its own
+                                // composition.
+                                scrubFrames = scrubFramesEnabled,
+                                onScrubFramesChange = { enabled ->
+                                    stores.scrubFrames.put(enabled)
+                                    scrubFramesEnabled = enabled
+                                },
+                                // ---- Proxy storage section (G3) ----
+                                // The pure feed over the runtime's own cache and
+                                // queue; refreshed by the proxyStorageKick effect
+                                // (every state change of the queue bumps it).
+                                // While the feature flag is off the actions stay
+                                // null: the page is read-only by construction.
+                                proxyStorage = proxyStorageState,
+                                proxyNameFor = { fp ->
+                                    sources.firstOrNull { it.fingerprint == fp }?.displayOrId
+                                },
+                                onDeleteProxyClip =
+                                    if (com.ritim.ritimcraw.util.FeatureFlags.PROXY_PRODUCTION_ENABLED) {
+                                        { fp ->
+                                            proxyRuntime.cache.clearClip(fp)
+                                            proxyRuntime.cancel(fp)
+                                            proxyStorageKick += 1
+                                        }
+                                    } else {
+                                        null
+                                    },
+                                onClearProxyAll =
+                                    if (com.ritim.ritimcraw.util.FeatureFlags.PROXY_PRODUCTION_ENABLED) {
+                                        {
+                                            proxyRuntime.cache.clearAll()
+                                            proxyStorageKick += 1
+                                        }
+                                    } else {
+                                        null
+                                    },
+                                onThemeModeChange = onThemeModeChange,
+                                customThemeId = customThemeId,
+                                onCustomThemePick = onCustomThemePick,
+                            )
+                            }
+                        }
                     }
                 }
             }
@@ -3268,18 +3478,56 @@ fun AppNav(
 private const val WIDE_NAV_MIN_WIDTH_DP = 600
 
 /**
- * The tab-swipe drag-follow's release settle (owner request 2026-11-27,
- * "animasyon duruyor, sonra geçiliyor" — the release must not hard-stop):
- * a critically damped spring (no overshoot — the PanelSheet settle
+ * The tab-swipe release settle (owner request 2026-11-27, "animasyon
+ * duruyor, sonra geçiliyor" — the release must not hard-stop): a
+ * critically damped spring (no overshoot — the PanelSheet settle
  * precedent, dampingRatio 1f) at MEDIUM stiffness, so the page's 15%
- * nudge returns through a short visible ease while the flip's slide is
- * still running. A spring, not a tween: the gesture may end mid-motion,
- * and the spring inherits the Animatable's velocity — a release during
- * a fast drag settles proportionally faster instead of ignoring the
- * hand.
+ * nudge eases out while the flip's slide is still running. A spring,
+ * not a tween: the gesture may end mid-motion, and the spring takes the
+ * finger's real release velocity as initialVelocity (v2 —
+ * [TabSwipe.settleInitialVelocityDpPerS]; the v1 wiring relied on the
+ * Animatable's OWN velocity, which every snapTo delta had just reset,
+ * so a fast release settled no faster than a slow one — the page
+ * parked). StiffnessMedium (1500, critically damped) rather than
+ * MediumLow: the settle must FINISH inside the slide's 240ms — a
+ * slower spring would still be visibly travelling when the slide cut,
+ * which reads as a stutter — while 15% width at 1500/stiffness still
+ * shows ~8-10 frames of ease, enough to feel continuous, not instant.
  */
 private fun tabSwipeSettleSpec(): FiniteAnimationSpec<Float> =
     spring(dampingRatio = 1f, stiffness = Spring.StiffnessMedium)
+
+/**
+ * The flip slide's ENTER spec (v2): a 240ms tween with
+ * LinearOutSlowInEasing — the shared-axis-X standard curve. Why these
+ * values: LinearOutSlowInEasing starts at FULL velocity (the page is
+ * already moving the moment it appears — the "arrives late" feel of a
+ * spring's ease-in tail was the owner's "page duruyor" complaint) and
+ * decelerates into place; 240ms is M3's standard duration band for
+ * medium transitions, and paired with the settle's ~120ms spring the
+ * page departs while the slide still carries it. Type is IntOffset:
+ * slideInHorizontally animates pixel offsets.
+ */
+private fun tabSwipeSlideInSpec(): FiniteAnimationSpec<IntOffset> =
+    tween(240, easing = LinearOutSlowInEasing)
+
+/**
+ * The flip slide's EXIT spec (v2): 180ms with FastOutLinearInEasing —
+ * the leaving page accelerates away and the shared-axis fade takes it
+ * out fast. Shorter than the enter (180 < 240) so the old page is GONE
+ * before the new one finishes arriving: no two-page pile-up at the
+ * settle's clip edge, the exit never outlives the enter.
+ */
+private fun tabSwipeSlideOutSpec(): FiniteAnimationSpec<IntOffset> =
+    tween(180, easing = FastOutLinearInEasing)
+
+/** The entering page's fade: matched to the slide-in (240ms, same curve family, 0→1 alpha). */
+private fun tabSwipeFadeInSpec(): FiniteAnimationSpec<Float> =
+    tween(240, easing = LinearOutSlowInEasing)
+
+/** The exiting page's fade: matched to the slide-out (180ms, 1→0 alpha). */
+private fun tabSwipeFadeOutSpec(): FiniteAnimationSpec<Float> =
+    tween(180, easing = FastOutLinearInEasing)
 
 private class Stores(
     val sources: SourceRepository,

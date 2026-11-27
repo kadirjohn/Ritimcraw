@@ -157,4 +157,93 @@ internal object TabSwipe {
      * answer either way, so one rule covers both.
      */
     fun isReleaseReset(dxDp: Float): Boolean = dxDp == 0f
+
+    /**
+     * (v2, owner request 2026-11-27 second round: "biraz daha smooth
+     * olabilir") The release velocity (dp/s, signed) the wiring must hand
+     * the settle spring as its INITIAL VELOCITY.
+     *
+     * ROOT CAUSE this pins: the v1 wiring's spec comment claimed "the
+     * spring inherits the Animatable's velocity — a release during a fast
+     * drag settles proportionally faster". That never happened: every
+     * LIVE finger delta went through [Animatable.snapTo], which calls
+     * `endAnimation()` → `velocityVector.reset()` (verified against
+     * Compose animation-core 1.7.6). The Animatable's velocity was ALWAYS
+     * zero at the release, so the settle spring always started from a
+     * standstill and the page parked before easing — the remaining
+     * "duruyor" feel the owner reported. The fix is wiring-side (the
+     * gesture's release signal must carry the velocity); this pure rule
+     * exists so the contract is pinned by a JVM test: the velocity passes
+     * through RAW, sign included, never filtered by the drag position.
+     * The pager convention again: a fling-back release settles in the
+     * VELOCITY's direction, exactly like the flip decision itself.
+     *
+     * [releaseVelocityX] is the release's horizontal velocity in dp/s
+     * (signed, exactly what the gesture's VelocityTracker measured);
+     * [dxDp] is the gesture's total horizontal travel (present only so
+     * the signature states the rule it must NOT use).
+     */
+    fun settleInitialVelocityDpPerS(releaseVelocityX: Float, dxDp: Float): Float =
+        releaseVelocityX
+
+    /**
+     * (v2) The direction the EXITING page travels in a flip's slide
+     * (shared axis X, DESIGN.md Motion): the new page enters from the
+     * side it lives on in DISPLAY ORDER, so the old page exits toward the
+     * OPPOSITE side — a flip to a LATER tab (rightward in display order,
+     * a leftward drag) slides the old page out to the LEFT (-1); a flip
+     * to an EARLIER tab slides it out to the RIGHT (+1); no flip (null
+     * target) is 0 — no exit, no travel.
+     *
+     * This is the direction the flip-release settle must depart in: the
+     * settle and the slide must push the page the SAME way. In the
+     * drag-driven case it equals the NUDGE's direction (dragged left →
+     * forward flip → exits left); in the FLING-BACK case it equals the
+     * FLING's direction — the same velocity-decides convention
+     * [target] itself uses — so the page follows the hand's reversal
+     * instead of fighting the slide that already reversed with it.
+     *
+     * [current] is the tab the gesture started on; [target] is
+     * [target]'s verdict for the same gesture (null = no flip).
+     */
+    fun exitTravelSign(current: Destination, target: Destination?): Float {
+        if (target == null) return 0f
+        val from = Destination.entries.indexOf(current)
+        val to = Destination.entries.indexOf(target)
+        if (from < 0 || to < 0) return 0f
+        // Later tab = forward flip = old page exits LEFT.
+        return if (to > from) -1f else 1f
+    }
+
+    /**
+     * (v2) The offset (fraction of the container width, signed) a
+     * release settle targets — the direction the nudged page departs in
+     * while the AnimatedContent slide carries the flip.
+     *
+     * ROOT CAUSE this pins: v1's settle always targeted 0f. On a flip,
+     * the page had been dragged, say, LEFT (-15%), and the slide was
+     * sending it further LEFT — but the spring yanked it back toward 0
+     * (+), a visible reversal into the slide (the "duruyor, sonra
+     * geçiliyor" jerk). The v2 rule: the settle departs in the SLIDE's
+     * exit direction ([exitTravelSign] — toward the side the flip is
+     * already sending the page), so the nudge hand-off and the slide
+     * push the page the SAME way; a no-flip release (sign 0) settles to
+     * 0 — the page was not going anywhere, it returns home.
+     *
+     * The fraction itself is [FOLLOW_DEPART_FRACTION] (beyond the 15%
+     * follow cap, under the slide's full travel): big enough that the
+     * page visibly LEAVES during the slide's fade-out, small enough it
+     * never drags across the nav bar.
+     */
+    fun settleTargetFraction(exitTravelSign: Float): Float =
+        exitTravelSign * FOLLOW_DEPART_FRACTION
+
+    /**
+     * (v2) The flip-release settle's depart target: 60% of the container
+     * width. Beyond the 15% follow cap (the page clearly departs, not
+     * twitches), under the slide's full 1/3-width travel (no nav-bar
+     * crossing). A constant, not a lambda, so tests can pin the
+     * relationship to [FOLLOW_MAX_FRACTION].
+     */
+    const val FOLLOW_DEPART_FRACTION = 0.6f
 }
