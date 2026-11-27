@@ -1,5 +1,5 @@
 ritiMCRAW
-Copyright [yyyy] [name of copyright owner]
+Copyright 2026 ritiMCRAW contributors
 
 This product includes software developed by third parties:
 
@@ -67,6 +67,24 @@ This product includes software developed by third parties:
    (the OpenDRT precedent: NOTICE + a provenance header in the port).
    Unwired in these packages: no production code path calls the audio
    DSP core yet.
+
+7. nlohmann/json 3.11.3 (MIT License, Copyright (c) 2013-2022 Niels Lohmann)
+   Upstream: https://github.com/nlohmann/json
+
+8. tinydng (MIT License, Syoyo Fujita and contributors)
+   Upstream: https://github.com/syoyo/tinydng
+
+9. AudioFile (MIT License, Copyright (c) 2017 Adam Stark)
+   Upstream: https://github.com/adamstark/AudioFile
+
+10. simde (MIT License, SIMDe contributors)
+    Upstream: https://github.com/simd-everywhere/simde
+
+11. Inter typeface (SIL Open Font License 1.1, Copyright The Inter Project Authors)
+    Upstream: https://github.com/rsms/inter
+
+12. Material Symbols (Apache License 2.0, Google)
+    Upstream: https://github.com/google/material-design-icons
 
 Display-rate matching (app/src/main/java/com/ritim/ritimcraw/engine/DisplayRate.kt): written
 for this project from the arithmetic of refresh intervals (whole multiples, otherwise least
