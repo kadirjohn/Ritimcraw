@@ -331,30 +331,27 @@ class TabSwipeTest {
     fun the_flip_release_settle_flies_toward_the_slide_not_back_to_zero() {
         // ROOT CAUSE 2 (v1): on a flip, the spring pulled the nudged page
         // BACK toward offset 0 (opposite the slide's travel) — a visible
-        // jerk into the slide, the "duruyor, sonra geçiliyor" feel. The v2
-        // rule: a flip release settles toward the target page's EDGE (a
-        // fraction of the width, SAME sign as the drag), so the nudged
-        // page departs in the direction it was already travelling — the
-        // slide's own pixels carry the arrival. A NO-flip release (drag
-        // too small, wrong direction, end-clamped) still settles to zero
-        // (the page returns home).
-        // Finger dragged LEFT past the threshold on PROJECTS: flips, the
-        // settle target goes LEFT (negative fraction).
+        // jerk into the slide, the "duruyor, sonra geçiliyor" feel. The
+        // v2 rule: the settle departs in the SLIDE's exit direction
+        // (exitTravelSign), so the nudge hand-off and the slide push the
+        // page the SAME way — the slide's own pixels carry the arrival.
+        // A NO-flip release still settles to zero (the page returns
+        // home).
+        // Dragged LEFT past the threshold on PROJECTS: forward flip, the
+        // old page exits LEFT — settle target LEFT (negative fraction).
         assertEquals(
             -TabSwipe.FOLLOW_DEPART_FRACTION,
             TabSwipe.settleTargetFraction(
-                willFlip = true,
-                dxDp = -80f,
+                TabSwipe.exitTravelSign(Destination.PROJECTS, Destination.EXPORTS),
             ),
             0f,
         )
-        // Finger dragged RIGHT (flips toward the left tab): settle target
-        // is positive.
+        // Dragged RIGHT on PROJECTS (flips back to LIBRARY): backward
+        // flip, the old page exits RIGHT — settle target positive.
         assertEquals(
             TabSwipe.FOLLOW_DEPART_FRACTION,
             TabSwipe.settleTargetFraction(
-                willFlip = true,
-                dxDp = 80f,
+                TabSwipe.exitTravelSign(Destination.PROJECTS, Destination.LIBRARY),
             ),
             0f,
         )
@@ -362,20 +359,30 @@ class TabSwipeTest {
         assertEquals(
             0f,
             TabSwipe.settleTargetFraction(
-                willFlip = false,
-                dxDp = -80f,
+                TabSwipe.exitTravelSign(Destination.PROJECTS, null),
             ),
             0f,
         )
-        // Degenerate: a flip signal with zero travel (cannot happen from
-        // the wiring — the flip rule needs |dx| or velocity) must not
-        // invent a direction; zero it is.
+    }
+
+    @Test
+    fun the_fling_back_flip_settles_with_the_fling_not_against_the_slide() {
+        // The edge case the drag-sign rule got wrong: the finger dragged
+        // LEFT 50dp on PROJECTS but flung back RIGHT at release —
+        // [target] follows the VELOCITY (the pager convention), flipping
+        // BACK to LIBRARY: a BACKWARD flip whose slide exits the old page
+        // to the RIGHT. The settle must depart RIGHT (with the fling and
+        // the slide), not LEFT (with the stale nudge sign).
         assertEquals(
+            1f,
+            TabSwipe.exitTravelSign(Destination.PROJECTS, Destination.LIBRARY),
             0f,
-            TabSwipe.settleTargetFraction(
-                willFlip = true,
-                dxDp = 0f,
-            ),
+        )
+        // And the ordinary drag-driven case: flung LEFT on LIBRARY flips
+        // forward to PROJECTS, exit travel LEFT.
+        assertEquals(
+            -1f,
+            TabSwipe.exitTravelSign(Destination.LIBRARY, Destination.PROJECTS),
             0f,
         )
     }

@@ -2449,23 +2449,35 @@ fun AppNav(
                             onRelease = { velocityX, willFlip ->
                                 // The finger's LIFT (v2): the settle
                                 // inherits the finger's velocity (a)
-                                // and, on a flip, departs toward the
-                                // drag's side instead of reversing
+                                // and, on a flip, departs in the slide's
+                                // exit direction instead of reversing
                                 // (b). The pure halves are pinned in
-                                // TabSwipeTest; the drag sign comes from
-                                // the live Animatable (the finger's last
-                                // position, snapped frame-by-frame).
+                                // TabSwipeTest; the nudge hand-off value
+                                // comes from the live Animatable (the
+                                // finger's last position, snapped
+                                // frame-by-frame).
                                 val dxDp = tabFollowDp.value
                                 val settleVelocity =
                                     TabSwipe.settleInitialVelocityDpPerS(velocityX, dxDp)
                                 if (willFlip) {
-                                    // Hand the nudge to the DEPART
-                                    // Animatable (the exiting page's
-                                    // layer) and aim it past the follow
-                                    // cap toward the side it leaves.
+                                    // Depart in the SLIDE's exit
+                                    // direction: the gesture's flip
+                                    // target decides it (the same
+                                    // velocity-decides convention the
+                                    // flip itself uses, so a fling-back
+                                    // flip departs with the fling — the
+                                    // slide already reversed with it).
+                                    val departSign = TabSwipe.exitTravelSign(
+                                        current = destination,
+                                        target = TabSwipe.target(
+                                            current = destination,
+                                            dxDp = dxDp,
+                                            dyDp = 0f,
+                                            velocityX = velocityX,
+                                        ),
+                                    )
                                     val targetDp =
-                                        TabSwipe.settleTargetFraction(true, dxDp) *
-                                            tabWidthDp
+                                        TabSwipe.settleTargetFraction(departSign) * tabWidthDp
                                     scope.launch {
                                         tabDepartDp.snapTo(dxDp)
                                         tabDepartDp.animateTo(
