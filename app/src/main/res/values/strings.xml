@@ -750,4 +750,20 @@
     <string name="library_selection_rename">Rename clip</string>
     <string name="editor_rename_clip">Rename clip</string>
     <string name="editor_rename_clip_detail">Change the name shown for this clip</string>
+    <!-- G5: .cube LUT export of the current grade (Look tab) -->
+    <string name="cube_export_title">Export as LUT (.cube)</string>
+    <string name="cube_export_grid">Grid points</string>
+    <string name="cube_export_grid_33">33</string>
+    <string name="cube_export_grid_65">65</string>
+    <string name="cube_export_input_label">Input: linear Rec.709</string>
+    <string name="cube_export_size">≈ %1$s</string>
+    <string name="cube_export_order_note">The exported LUT carries the current grade\'s colour chain (tone stages, node chain, output transform). Denoise, sharpening and geometry cannot travel in a 3D LUT and are left out.</string>
+    <string name="cube_export_save">Save .cube file</string>
+    <string name="cube_export_state_idle">Choose a grid and tap Save.</string>
+    <string name="cube_export_state_working">Baking the LUT…</string>
+    <string name="cube_export_state_done">Saved (%1$s).</string>
+    <string name="cube_export_state_engine">The render engine is not available. Reopen the clip and try again.</string>
+    <string name="cube_export_state_chain">The grade\'s node chain could not be baked (%1$s).</string>
+    <string name="cube_export_state_write">Could not write the file (%1$s). Pick another location and try again.</string>
+    <string name="cube_export_state_bake">The bake was refused (%1$s). Cap the chain at 8 nodes and try again.</string>
 </resources>

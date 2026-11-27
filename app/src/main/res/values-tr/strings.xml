@@ -741,4 +741,20 @@
     <string name="library_selection_rename">Klibi yeniden adlandır</string>
     <string name="editor_rename_clip">Klibi yeniden adlandır</string>
     <string name="editor_rename_clip_detail">Bu klip için gösterilen adı değiştir</string>
+    <!-- G5: mevcut grade'in .cube LUT dışa aktarımı (Görünüm sekmesi; Türkçe metinler sahibin gözden geçirmesine açık) -->
+    <string name="cube_export_title">LUT olarak dışa aktar (.cube)</string>
+    <string name="cube_export_grid">Izgara noktası</string>
+    <string name="cube_export_grid_33">33</string>
+    <string name="cube_export_grid_65">65</string>
+    <string name="cube_export_input_label">Giriş: lineer Rec.709</string>
+    <string name="cube_export_size">≈ %1$s</string>
+    <string name="cube_export_order_note">Dışa aktarılan LUT, mevcut grade\'in renk zincirini taşır (ton aşamaları, node zinciri, çıkış dönüşümü). Gürültü giderme, keskinleştirme ve geometri bir 3B LUT\'a sığmaz, dahil edilmez.</string>
+    <string name="cube_export_save">.cube dosyasını kaydet</string>
+    <string name="cube_export_state_idle">Bir ızgara seçin ve Kaydet\'e dokunun.</string>
+    <string name="cube_export_state_working">LUT pişiriliyor…</string>
+    <string name="cube_export_state_done">Kaydedildi (%1$s).</string>
+    <string name="cube_export_state_engine">Render motoru kullanılamıyor. Klibi yeniden açıp tekrar deneyin.</string>
+    <string name="cube_export_state_chain">Grade\'in node zinciri pişirilemedi (%1$s).</string>
+    <string name="cube_export_state_write">Dosya yazılamadı (%1$s). Başka bir konum seçip tekrar deneyin.</string>
+    <string name="cube_export_state_bake">Pişirme reddedildi (%1$s). Zinciri 8 node ile sınırlayıp tekrar deneyin.</string>
 </resources>
