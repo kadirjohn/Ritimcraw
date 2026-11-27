@@ -393,6 +393,12 @@
     <string name="cinema_dng_estimate">Tahmin: %1$s</string>
     <string name="cinema_dng_time_unknown">Süre tahmini bilinmiyor (henüz kare başı yazım ölçülmedi)</string>
     <string name="cinema_dng_action">CinemaDNG dizisini dışa aktar</string>
+    <!-- (I5 gecesi) Kuyruğa alma anındaki depolama kapısının durum satırları; bölüm
+         açıldığında seçili klasör ölçülür. Sahibin gözden geçirmesine açık. -->
+    <string name="cinema_dng_no_folder_hint">Diziyi dışa aktarmak için bir çıktı klasörü seçin.</string>
+    <string name="cinema_dng_storage_locked">Boş alan yetersiz: %2$s boş, %1$s gerekli. Aralığı kısaltın ya da yer açın.</string>
+    <string name="cinema_dng_storage_warn">Boş alan dar: %2$s boş, %1$s gerekli. Alan biterse dışa aktarım yarıda kesilebilir.</string>
+    <string name="cinema_dng_free_space_unknown">Seçili klasörün boş alanı bilinmiyor; dışa aktarım çalışırken alanı kendisi denetler.</string>
     <string name="exports_format_cinema_dng">CinemaDNG dizisi (RAW)</string>
     <string name="export_resolution_field">Çözünürlük</string>
     <string name="export_custom_dialog_title">Özel çözünürlük</string>
