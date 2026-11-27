@@ -177,6 +177,11 @@ echo "== building tests =="
 # Run by hand (`record` a baseline, `verify` it after the change); not a self-contained test.
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/hr_equivalence.cpp" \
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/hr_equivalence"
+# hr_joint_estimate pairs|support|m1 [drift] — D8 research (research-recovery-joint-estimate branch
+# ONLY, 2026-11-27): the M1 band's pixel-type counts, the per-pair ratio-support W and scale
+# histogram, and the Neutral-vs-Recovery M1 tables. Run by hand, not a test.
+"$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/hr_joint_estimate.cpp" \
+  "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/hr_joint_estimate"
 # p5_compare <clip.mcraw> <frame> <maxDim> <outPrefix> — P5 old-vs-binned preview reduction on a real frame
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/p5_compare.cpp" \
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/p5_compare"
