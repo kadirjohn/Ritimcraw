@@ -59,7 +59,7 @@ namespace rawedit {
 // DngSequenceMeta produces a file byte-identical to the writer without
 // it (pinned by test_dng "dng_sequence_meta_default_is_byte_identical").
 //   - TimeCodes (51043): 8 raw bytes, the DNG 1.4 SMPTE timecode layout
-//     (see smpteTimeCodes): hour/min/sec/frame plus the two flag bytes.
+//     (see smpteTimeCodes): BCD frames/seconds/minutes/hours + user bytes.
 //     The caller passes the START code of frame 0; per-frame codes are
 //     derived by DngSequence, which owns the fps-based arithmetic.
 //   - FrameRate (51044): one RATIONAL. Written as the exact rational the
@@ -74,29 +74,21 @@ struct DngSequenceMeta {
     uint32_t frameRateDen = 0;    // rational denominator (e.g. 1001)
 };
 
-// The DNG 1.4 TimeCodes (51043) byte layout, SMPTE 12M: 8 bytes =
-//   [0] hours (bits 0-5) + bgf8 flag (bit 7, 1 when 24 fps)
-//   [1] minutes + colorFrame flag (bit 7)
-//   [2] seconds + field flag (bit 7)
-//   [3] frame + fhf flag (bit 7, 1 for interlaced field 1)
-//   [4] dropped-frame flag (bit 0, 1 when fps uses drop-frame: 29.97)
-//   [5] user-bits binary group flags
-//   [6] user bits
-//   [7] user bits
-// The fps flag bits follow the convention the tinydng reference writer
-// and the DNG SDK both write for a base rate of 24/25/30 fps
-// (TIFFTAG_TIMECODE is a BYTE[8] in both). Writes the code for frame
+// The DNG TimeCodes (51043) byte layout, SMPTE 331M-2004 8.3 (the SMPTE
+// 12M linear time code word in BCD, frames byte FIRST), 8 bytes =
+//   [0] frames: units bits 0-3, tens bits 4-5, bit 6 drop-frame
+//       (set for the 29.97 family), bit 7 colour-frame (0)
+//   [1] seconds: units bits 0-3, tens bits 4-6, bit 7 field phase (0)
+//   [2] minutes: units bits 0-3, tens bits 4-6, bit 7 binary group (0)
+//   [3] hours: units bits 0-3, tens bits 4-5, bits 6-7 binary group (0)
+//   [4..7] user bytes (carried from the raw input, 0 otherwise)
+// Writes the code for frame
 // number frameOffset at fps into out (the caller derives a per-frame
 // code from the sequence's start code, which this helper decodes:
 // hours/min/sec/frame carry over and the FRAME field advances by
 // frameOffset under the fps's frame-per-second rollover).
-//   - fps 24 (exact or 23.976): bgf8 = 1, df = 0
-//   - fps 25: bgf8 = 0, df = 0
-//   - fps 30 (exact or 29.97): bgf8 = 0, df = 1 only for 29.97-style
-//     drop-frame rates (df=0 for exact 30)
-//   - anything else: flags 0 (reported, never guessed — the caller
-//     passes a rate this helper classifies honestly; the classification
-//     itself is tested).
+// Drop-frame is set only for 29.97-style rates (smpteFpsFlags); every
+// other rate leaves it clear.
 void smpteTimeCodes(int hour, int minute, int second, int frame,
                     int frameOffset, double fps, uint8_t out[8]);
 
