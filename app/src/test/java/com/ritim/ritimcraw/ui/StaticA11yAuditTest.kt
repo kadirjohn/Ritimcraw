@@ -628,8 +628,17 @@ class StaticA11yAuditTest {
         // card's texts into the row focus (the reviewer-probed same
         // pattern), so the node is labelled at runtime; the entries keep
         // the LIVE scan honest about the two shapes it sees.
-        "ExportsScreen.kt:539" to "DONE export card, select-mode toggle branch: the card's filename headline Text (content lambda) labels the merged row focus",
-        "ExportsScreen.kt:541" to "DONE export card, open branch: the card's filename headline Text (content lambda) labels the merged row focus",
+        // (merged M3+F+I5) the DONE export card's tap wirings moved with
+        // the merged file (539/541 → 635/637) and the LIVE + ARCHIVE card
+        // shapes (761/763, 1100) carry the same reviewed pattern: the
+        // clickable rides the CARD modifier while the label — the row's
+        // filename headline Text — sits in the card's content lambda past
+        // the window; TalkBack merges the card's texts into the row focus.
+        "ExportsScreen.kt:635" to "DONE export card, select-mode toggle branch: the card's filename headline Text (content lambda) labels the merged row focus",
+        "ExportsScreen.kt:637" to "DONE export card, open branch: the card's filename headline Text (content lambda) labels the merged row focus",
+        "ExportsScreen.kt:761" to "LIVE export card, select-mode toggle branch: the card's filename headline Text labels the merged row focus (same reviewed pattern as the DONE card)",
+        "ExportsScreen.kt:763" to "LIVE export card, open branch: the card's filename headline Text labels the merged row focus (same reviewed pattern as the DONE card)",
+        "ExportsScreen.kt:1100" to "ARCHIVE export card, select-mode toggle branch: the card's filename headline Text labels the merged row focus (same reviewed pattern)",
     )
 
     @Test
@@ -668,6 +677,9 @@ class StaticA11yAuditTest {
 
     companion object {
         /** Audited on the test-static-a11y-audit tree (main fb0f80d6): 50. */
-        const val DECORATIVE_NULL_COUNT = 50
+        // (merged F+I5) CinemaDngSection's two decorative icons (folder
+        // glyph beside the folder-ROW's own Text; warning glyph whose
+        // verdict text follows in the same line) — reviewed, decorative.
+        const val DECORATIVE_NULL_COUNT = 52
     }
 }
