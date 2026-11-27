@@ -81,19 +81,29 @@ object ExportReportWire {
         if (r.hardware != null) sb.append(",\"hardware\":").append(r.hardware)
         sb.append(",\"mime\":").append(ProjectJson.quote(r.mime))
             .append(",\"width\":").append(r.width).append(",\"height\":").append(r.height)
-            .append(",\"fps\":").append(r.fps)
+            // E1 resilience: the Double fields guard with num() — a
+            // non-finite value (a hand-edited file's 1e999, a zero-
+            // duration division) renders as 0, never as a bare NaN/
+            // Infinity token this build's own parser would reject.
+            .append(",\"fps\":").append(num(r.fps))
             .append(",\"bitDepth\":").append(r.bitDepth)
             .append(",\"rateMode\":").append(ProjectJson.quote(r.rateMode))
         if (r.profile != null) sb.append(",\"profile\":").append(r.profile)
-        sb.append(",\"keyframeSec\":").append(r.keyframeSec)
+        sb.append(",\"keyframeSec\":").append(num(r.keyframeSec))
             .append(",\"requestedBps\":").append(r.requestedBps)
             .append(",\"audioKbps\":").append(r.audioKbps)
         if (r.fileBytes != null) sb.append(",\"fileBytes\":").append(r.fileBytes)
-        if (r.durationSec != null) sb.append(",\"durationSec\":").append(r.durationSec)
+        if (r.durationSec != null) sb.append(",\"durationSec\":").append(num(r.durationSec))
         if (r.wallMs != null) sb.append(",\"wallMs\":").append(r.wallMs)
         sb.append(",\"steps\":").append(strings(r.steps)).append(",\"issues\":").append(strings(r.issues)).append('}')
         return sb.toString()
     }
+
+    /** E1 resilience: 0 for a non-finite value (finite values unchanged). */
+    private fun num(v: Double): String = if (v.isFinite()) v.toString() else "0"
+
+    /** E1 resilience: 0 for a non-finite value (finite values unchanged). */
+    private fun num(v: Float): String = if (v.isFinite()) v.toString() else "0"
 
     private fun strings(l: List<String>) = l.joinToString(",", "[", "]") { ProjectJson.quote(it) }
 

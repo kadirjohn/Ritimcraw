@@ -186,7 +186,13 @@ object ExportSettingsWire {
             .append(",\"dynamicRange\":\"").append(s.dynamicRange.name).append('"')
             .append(",\"rateMode\":\"").append(s.rateMode.name).append('"')
             .append(",\"bitrateLevel\":\"").append(s.bitrateLevel.name).append('"')
-        if (s.customMbps != null) sb.append(",\"customMbps\":").append(s.customMbps)
+        if (s.customMbps != null && s.customMbps.isFinite()) {
+            // E1 resilience: the isFinite guard omits a non-finite value
+            // (a hand-edited 1e999 in the file parses to Infinity and
+            // would re-render as a bare token this build cannot read
+            // back); parse reads the absent key as null = AUTO.
+            sb.append(",\"customMbps\":").append(s.customMbps)
+        }
         sb.append(",\"uncapped\":").append(s.uncapped)
             .append(",\"keyframe\":\"").append(s.keyframe.name).append('"')
         if (s.profile != null) sb.append(",\"profile\":").append(s.profile)

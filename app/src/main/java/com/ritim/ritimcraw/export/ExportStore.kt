@@ -262,7 +262,13 @@ class ExportStore(private val file: File) {
          */
         private fun renderSnapshot(g: GradeK): String = GradeStore.renderGradeWire(g)
 
-        private fun num(v: Float): String = v.toString()
+        /**
+         * E1 resilience: a non-finite float renders as 0 (the same guard
+         * the grade wire's num() carries), never as a bare NaN/Infinity
+         * token that would make project.json unreadable to this build.
+         * Finite values render byte-identically.
+         */
+        private fun num(v: Float): String = if (v.isFinite()) v.toString() else "0"
 
         // ---- reader ----
 

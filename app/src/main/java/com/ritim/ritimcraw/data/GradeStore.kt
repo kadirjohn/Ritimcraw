@@ -440,6 +440,13 @@ class GradeStore(private val file: File) {
     fun getV2(sourceId: String): com.ritim.ritimcraw.data.grade2.ClipGradeV2? {
         return synchronized(lock) {
             load()
+            // TooNew guard (the store's own documented contract): a file
+            // written by a NEWER build is never reinterpreted — get()
+            // returns defaults, getV2() returns null — the same verdict
+            // put()/remove() already hold. Without this, the lenient
+            // fallback in get() would read the newer file's records
+            // (values this build may misread under a future schema).
+            if (rejectedNewerVersion != null) return null
             @Suppress("UNCHECKED_CAST")
             val m = loadRoot()?.get("grades")
                 ?.let { it as? Map<String, Any?> }
@@ -790,11 +797,15 @@ class GradeStore(private val file: File) {
 
         private fun num(v: Float): String = trimFloat(v)
 
-        internal fun trimFloat(v: Float): String {
-            val s = v.toString()
-            // Kotlin Float.toString always carries a '.' or 'E'; keep as-is.
-            return s
-        }
+        /**
+         * RESILIENCE (E1): a NON-FINITE value renders as 0, never as the
+         * bare `NaN`/`Infinity` token (not JSON — the file would become
+         * unreadable to this build's own parser). Finite values render
+         * byte-identically; the read side's per-field fallbacks already
+         * treat a missing/invalid value as the neutral default, so the
+         * round trip stays honest.
+         */
+        internal fun trimFloat(v: Float): String = if (v.isFinite()) v.toString() else "0"
 
         private fun quote(s: String): String {
             val sb = StringBuilder(s.length + 2)
@@ -1062,6 +1073,12 @@ internal class JsonParser(private val s: String) {
                 '"' -> { i++; return sb.toString() }
                 '\\' -> {
                     i++
+                    // An escape cut by end-of-input is a TRUNCATED string:
+                    // fail as the contract type (IllegalArgumentException),
+                    // never an unchecked bounds error that skips every
+                    // store's corrupt-file fallback (the resilience rule:
+                    // a torn file degrades to defaults, it never crashes).
+                    if (i >= s.length) throw IllegalArgumentException("unterminated escape")
                     when (val e = s[i]) {
                         '"' -> sb.append('"')
                         '\\' -> sb.append('\\')
@@ -1072,8 +1089,16 @@ internal class JsonParser(private val s: String) {
                         'r' -> sb.append('\r')
                         't' -> sb.append('\t')
                         'u' -> {
+                            if (i + 5 > s.length) {
+                                throw IllegalArgumentException("truncated unicode escape")
+                            }
                             val hex = s.substring(i + 1, i + 5)
-                            sb.append(hex.toInt(16).toChar())
+                            val code = try {
+                                hex.toInt(16)
+                            } catch (e: NumberFormatException) {
+                                throw IllegalArgumentException("bad unicode escape at $i")
+                            }
+                            sb.append(code.toChar())
                             i += 4
                         }
                         else -> throw IllegalArgumentException("bad escape at $i")

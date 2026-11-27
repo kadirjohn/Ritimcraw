@@ -5,8 +5,20 @@ import com.ritim.ritimcraw.data.LutInterpK
 import com.ritim.ritimcraw.data.ProjectJson
 import com.ritim.ritimcraw.data.RawLevels
 
-/** One float as the wire writes it (the v1 renderer's own rule). */
-internal fun num(v: Float): String = v.toString()
+/**
+ * One float as the wire writes it (the v1 renderer's own rule).
+ *
+ * RESILIENCE (E1): a NON-FINITE value (NaN/±Infinity — whatever computed
+ * it upstream) renders as 0, never as the bare `NaN`/`Infinity` token:
+ * those are not JSON, so a file carrying one becomes unreadable to this
+ * build's own parser on the NEXT load (self-corruption: the next store
+ * write's merge re-parse then fails and drops every other section). The
+ * 0 matches the read side's own honest fallback (highlightKneeRef's
+ * "non-finite -> 0 = unmeasured", pan's "NaN -> center"): the value is
+ * reported as unset, never guessed. FINITE values render byte-identically
+ * — no format change rides with this guard.
+ */
+internal fun num(v: Float): String = if (v.isFinite()) v.toString() else "0"
 
 /**
  * The schema-2 per-clip grade (color model v2 F1-3, docs/COLOR_MODEL_V2_PLAN.md
