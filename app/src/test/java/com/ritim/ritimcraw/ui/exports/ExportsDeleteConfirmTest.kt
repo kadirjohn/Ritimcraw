@@ -20,10 +20,18 @@ import org.junit.Test
  * clip). JVM-only, no Compose — the [ExportsSelectionTest] shape.
  *
  * M8 (owner request 2026-11-27, the same pass: "delete from disk
- * box'u da olsun"): the checkbox rules are here too — the arm reset
- * (a new dialog never inherits the last one's disk choice) and the
+ * box'u da olsun"): the checkbox rules are here too — and the
  * visibility rule (only a DONE row with a published file shows the
  * checkbox at all).
+ *
+ * M10 (owner request 2026-11-27, the same day: "user'ın tıkladığı en
+ * son seçenek saklanmalı, eğer delete from the disk seçerse diğer
+ * silme isteklerinde de bu seçili gelmeli"): the ARM rule changed from
+ * reset-to-unchecked to the REMEMBERED value — the persisted store
+ * value routes through [ExportsDeleteConfirm.armCheckbox] unchanged.
+ * The old tests pinned the M8 reset (every arm false); the owner's
+ * request replaced that behavior, so the tests now pin the pass-through
+ * (the store's own tests pin the default-false first-dialog side).
  */
 class ExportsDeleteConfirmTest {
 
@@ -140,12 +148,17 @@ class ExportsDeleteConfirmTest {
     // ---- the delete-from-disk checkbox (M8, owner request 2026-11-27) ----
 
     @Test
-    fun the_checkbox_resets_to_unchecked_at_every_arm() {
-        // The box is the user's opt-in for THIS dialog: whatever the last
-        // dialog left checked, the new arm starts unchecked (the safe
-        // side — the M3 meaning is the default).
-        assertEquals(false, ExportsDeleteConfirm.armCheckbox(checked = true))
-        assertEquals(false, ExportsDeleteConfirm.armCheckbox(checked = false))
+    fun the_checkbox_opens_with_the_remembered_choice() {
+        // M10 (owner request 2026-11-27: "user'ın tıkladığı en son seçenek
+        // saklanmalı, eğer delete from the disk seçerse diğer silme
+        // isteklerinde de bu seçili gelmeli"): the arm routes the PERSISTED
+        // value through unchanged — a remembered true opens the next
+        // dialog checked, a remembered false (also the first dialog's
+        // store default, the M8 safe start) opens it unchecked. The old
+        // M8 rule (every arm resets to false) was replaced by this
+        // pass-through at the owner's own request.
+        assertEquals(true, ExportsDeleteConfirm.armCheckbox(persisted = true))
+        assertEquals(false, ExportsDeleteConfirm.armCheckbox(persisted = false))
     }
 
     @Test

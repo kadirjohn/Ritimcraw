@@ -87,6 +87,7 @@ import com.ritim.ritimcraw.data.GyroStore
 import com.ritim.ritimcraw.data.GyroTree
 import com.ritim.ritimcraw.data.ImportFolderStore
 import com.ritim.ritimcraw.data.LibraryPrefsStore
+import com.ritim.ritimcraw.data.ExportsDeletePrefsStore
 import com.ritim.ritimcraw.data.LutStore
 import com.ritim.ritimcraw.data.MediaSource
 import com.ritim.ritimcraw.data.PresetStore
@@ -319,6 +320,7 @@ fun AppNav(
             // own top-level "scrubFrames" boolean scalar,
             // omit-when-default(false), the SystemMonitorStore pattern.
             scrubFrames = ScrubFramesStore(project),
+            exportsDeletePrefs = ExportsDeletePrefsStore(project),
         )
     }
     // Image-based stabilization analysis service (S4, ships dark behind
@@ -3174,6 +3176,13 @@ fun AppNav(
                             )
                             Destination.EXPORTS -> ExportsScreen(
                                 jobs = exportJobs,
+                                // M10 (owner request 2026-11-27): the
+                                // delete-from-disk checkbox's memory — the
+                                // screen reads the remembered choice for
+                                // every delete dialog it arms and writes
+                                // each toggle back (the previewQuality/
+                                // scrubFrames store-passing pattern).
+                                deletePrefs = stores.exportsDeletePrefs,
                                 // Rows show the clip's display name (§2b); the
                                 // id is the fallback for sources whose name the
                                 // resolver could not read. A timeline job's
@@ -3584,4 +3593,11 @@ private class Stores(
     // same shared project.json, own top-level "scrubFrames" boolean
     // scalar, omit-when-default(false). The SystemMonitorStore pattern.
     val scrubFrames: ScrubFramesStore,
+    // The delete-from-disk checkbox's remembered choice (owner request
+    // 2026-11-27, M10: "user'ın tıkladığı en son seçenek saklanmalı"):
+    // same shared project.json, own top-level "exportsDeleteFromDisk"
+    // boolean scalar, omit-when-default(false) — the ScrubFramesStore
+    // pattern. The Exports screen reads the first dialog's value from it
+    // and writes every toggle back.
+    val exportsDeletePrefs: ExportsDeletePrefsStore,
 )

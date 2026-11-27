@@ -45,9 +45,15 @@ import com.ritim.ritimcraw.export.State
  * also carries a "Delete from disk" checkbox, default UNCHECKED): the
  * decision of WHICH files a checked box removes is the pure
  * [ExportDelete] rule (this package's own object — see its doc); the
- * checkbox STATE itself is one boolean the composable holds, reset to
- * unchecked whenever a new row arms, so one dialog can never inherit
- * the last one's disk choice.
+ * checkbox STATE itself is one boolean the composable holds. M10 (the
+ * owner's same-day follow-up: "user'ın tıkladığı en son seçenek
+ * saklanmalı, eğer delete from the disk seçerse diğer silme
+ * isteklerinde de bu seçili gelmeli") replaced the M8 reset-to-unchecked
+ * rule with REMEMBERED: the boolean starts from the persisted
+ * [com.ritim.ritimcraw.data.ExportsDeletePrefsStore] value (still
+ * default false — the safe start for a first dialog) and every toggle
+ * persists immediately, so the next dialog — swipe or selection-mode —
+ * opens with the user's LAST choice.
  */
 object ExportsDeleteConfirm {
 
@@ -61,14 +67,22 @@ object ExportsDeleteConfirm {
         if (ExportRowModel.isDeletable(job.state)) job.id else pendingId
 
     /**
-     * The checkbox's state when a row arms: UNCHECKED every time (the
-     * owner's safe side — the box is the user's opt-in for THIS dialog,
-     * never inherited from the last one; [ExportDelete.DEFAULT_DELETE_FROM_DISK]
-     * is the same rule from the export package's own side). The
-     * composable calls this at the arm so one dialog can never start
-     * with the previous row's disk choice.
+     * The checkbox's state when a dialog arms: the PERSISTED value (M10,
+     * owner request 2026-11-27: "user'ın tıkladığı en son seçenek
+     * saklanmalı, eğer delete from the disk seçerse diğer silme
+     * isteklerinde de bu seçili gelmeli") — the caller passes what the
+     * [com.ritim.ritimcraw.data.ExportsDeletePrefsStore] read, and it
+     * routes through unchanged. The M8 rule this replaces (unchecked at
+     * every arm — one dialog never inherits the last one's choice) was
+     * the safe-side default while the box had no memory; the owner then
+     * asked for exactly that inheritance, so the rule became "the
+     * remembered value": a first dialog (nothing persisted) still reads
+     * [ExportDelete.DEFAULT_DELETE_FROM_DISK]'s own default — false —
+     * through the store's identical default, and once the user checks
+     * the box, every later dialog (swipe and selection-mode both) opens
+     * checked until they uncheck it.
      */
-    fun armCheckbox(checked: Boolean): Boolean = ExportDelete.DEFAULT_DELETE_FROM_DISK
+    fun armCheckbox(persisted: Boolean): Boolean = persisted
 
     /**
      * The dialog's confirm button: the ids the store's delete receives.

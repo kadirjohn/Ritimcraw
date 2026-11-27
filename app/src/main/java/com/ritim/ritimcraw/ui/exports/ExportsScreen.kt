@@ -71,6 +71,8 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.ritim.ritimcraw.R
+import com.ritim.ritimcraw.data.ExportsDeletePrefsStore
+import com.ritim.ritimcraw.export.ExportDelete
 import com.ritim.ritimcraw.export.ExportEta
 import com.ritim.ritimcraw.export.ExportJob
 import com.ritim.ritimcraw.export.ExportReport
@@ -128,9 +130,13 @@ import com.ritim.ritimcraw.util.Format
  * Clear-all — UNLESS the dialog's delete-from-disk checkbox is checked
  * (owner request 2026-11-27, M8: "delete from disk box'u da olsun ve
  * bunu işaretlerse diskten de silsin"): the checkbox (default
- * UNCHECKED, the safe side) routes the checked state beside the ids,
- * and the shell's adapter removes the DONE rows' published media-store
- * rows and internal copies best-effort through the pure
+ * UNCHECKED, the safe side; M10, the owner's same-day follow-up:
+ * "user'ın tıkladığı en son seçenek saklanmalı, eğer delete from the
+ * disk seçerse diğer silme isteklerinde de bu seçili gelmeli" — the
+ * last choice is REMEMBERED through [ExportsDeletePrefsStore], still
+ * default unchecked for a first dialog) routes the checked state beside
+ * the ids, and the shell's adapter removes the DONE rows' published
+ * media-store rows and internal copies best-effort through the pure
  * [com.ritim.ritimcraw.export.ExportDelete] rule. Deletion is
  * irreversible; NO undo snackbar was added — a true undo needs
  * position-true re-insertion this append-only store cannot do, and the
@@ -160,6 +166,15 @@ fun ExportsScreen(
     // sourceId -> display name (owner request §2b): rows show the clip's
     // real file name; the id is the fallback for unknown/missing sources.
     sourceNames: Map<String, String> = emptyMap(),
+    // The delete-from-disk checkbox's persistence (owner request
+    // 2026-11-27, M10: "user'ın tıkladığı en son seçenek saklanmalı"):
+    // the shell's ExportsDeletePrefsStore over files/project.json. The
+    // checkbox's first value reads from it and every toggle writes back
+    // (see the deleteFromDisk state note below). Nullable with a null
+    // default so previews and tests compose the screen unchanged — a
+    // null store means no memory, the value stays whatever the pure
+    // default is (false, the M8 safe side).
+    deletePrefs: ExportsDeletePrefsStore? = null,
     // Thumbnail inputs (owner request 2026-11-24): the exports directory
     // (finished MP4 frames) and the library's thumbnail store (DNG/photo).
     exportDir: File? = null,
@@ -195,10 +210,31 @@ fun ExportsScreen(
     val pendingDeleteJob = pendingDeleteId?.let { id -> jobs.firstOrNull { it.id == id } }
 
     // The dialog's delete-from-disk checkbox (owner request 2026-11-27,
-    // M8: "diskten de silsin"): UNCHECKED at every arm (the pure
-    // [ExportsDeleteConfirm.armCheckbox] rule — the box is the user's
-    // opt-in for THIS dialog, never the last dialog's choice).
-    var deleteFromDisk by remember { mutableStateOf(ExportsDeleteConfirm.armCheckbox(false)) }
+    // M8: "diskten de silsin"; M10: "user'ın tıkladığı en son seçenek
+    // saklanmalı"): the REMEMBERED choice, read once at composition from
+    // the [ExportsDeletePrefsStore] the shell injects, refreshed at
+    // every arm through the pure [ExportsDeleteConfirm.armCheckbox] rule
+    // (the value routes through unchanged — the arm call exists so the
+    // rule owns the "what the dialog opens with" question, not the
+    // composable's inline arithmetic), and every toggle WRITES BACK to
+    // the store immediately (the exact reading of the owner's
+    // "seçerse diğer silme isteklerinde de bu seçili gelmeli": a
+    // checked-then-cancelled dialog still remembers the check — the
+    // memory is the TOGGLE, not the delete press).
+    var deleteFromDisk by remember {
+        mutableStateOf(ExportsDeleteConfirm.armCheckbox(deletePrefs?.get() ?: ExportDelete.DEFAULT_DELETE_FROM_DISK))
+    }
+
+    // The toggle handler BOTH dialogs share (M10): the state flips AND
+    // the choice persists in the same breath — the owner's "seçerse
+    // diğer silme isteklerinde de bu seçili gelmeli" is about the
+    // checkbox's own touch, not the delete press, so a check followed
+    // by Cancel still remembers. A null store (previews, tests) only
+    // flips the in-memory state.
+    val toggleDeleteFromDisk: (Boolean) -> Unit = { checked ->
+        deleteFromDisk = checked
+        deletePrefs?.put(checked)
+    }
 
     // Selection-mode delete confirmation (owner request 2026-11-27, M8 —
     // the Library's E2 confirm-dialog precedent): the trash in the
@@ -254,8 +290,10 @@ fun ExportsScreen(
                     // M8 (owner request 2026-11-27): the trash ASKS first —
                     // the Library's E2 confirm dialog — and its own checkbox
                     // carries the delete-from-disk choice; the delete itself
-                    // lands at the dialog's confirm, not here.
-                    deleteFromDisk = ExportsDeleteConfirm.armCheckbox(deleteFromDisk)
+                    // lands at the dialog's confirm, not here. M10: the
+                    // checkbox opens with the REMEMBERED choice (the store
+                    // re-read at the arm — the pure rule routes it through).
+                    deleteFromDisk = ExportsDeleteConfirm.armCheckbox(deletePrefs?.get() ?: deleteFromDisk)
                     confirmSelectionDelete = true
                 }) {
                     Icon(
@@ -363,10 +401,11 @@ fun ExportsScreen(
                             onDelete = onDelete,
                             onSwipeArm = {
                                 pendingDeleteId = ExportsDeleteConfirm.arm(pendingDeleteId, job)
-                                // The checkbox resets with every arm (M8): the
-                                // new dialog never inherits the last one's
-                                // disk choice — the pure rule, applied here.
-                                deleteFromDisk = ExportsDeleteConfirm.armCheckbox(deleteFromDisk)
+                                // The checkbox re-reads the REMEMBERED choice
+                                // at every arm (M10): the new dialog opens
+                                // with the user's LAST disk choice — the
+                                // store read routed through the pure rule.
+                                deleteFromDisk = ExportsDeleteConfirm.armCheckbox(deletePrefs?.get() ?: deleteFromDisk)
                             },
                             exportDir = exportDir,
                             thumbnailStore = thumbnailStore,
@@ -433,6 +472,9 @@ fun ExportsScreen(
                         // a checkbox that does nothing would be a lie).
                         // Default UNCHECKED: the safe side keeps the M3
                         // meaning; the user opts the FILE out by checking.
+                        // M10: the box opens with the REMEMBERED choice
+                        // and every toggle persists immediately (the
+                        // toggleDeleteFromDisk note above).
                         if (ExportsDeleteConfirm.showsDiskCheckbox(pendingDeleteJob)) {
                             Row(
                                 Modifier
@@ -442,7 +484,7 @@ fun ExportsScreen(
                             ) {
                                 Checkbox(
                                     checked = deleteFromDisk,
-                                    onCheckedChange = { deleteFromDisk = it },
+                                    onCheckedChange = toggleDeleteFromDisk,
                                 )
                                 Text(
                                     stringResource(R.string.exports_delete_from_disk),
@@ -500,7 +542,9 @@ fun ExportsScreen(
                         // The SAME delete-from-disk opt-in (M8): shown only
                         // when at least one checked row has a published
                         // file — the same pure rule the swipe dialog
-                        // applies, mapped over the checked set.
+                        // applies, mapped over the checked set. M10: the
+                        // SAME remembered choice and the same
+                        // persist-on-toggle handler as the swipe dialog.
                         if (jobs.any {
                                 it.id in selection &&
                                     ExportsDeleteConfirm.showsDiskCheckbox(it)
@@ -514,7 +558,7 @@ fun ExportsScreen(
                             ) {
                                 Checkbox(
                                     checked = deleteFromDisk,
-                                    onCheckedChange = { deleteFromDisk = it },
+                                    onCheckedChange = toggleDeleteFromDisk,
                                 )
                                 Text(
                                     stringResource(R.string.exports_delete_from_disk),
