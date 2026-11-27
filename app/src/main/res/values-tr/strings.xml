@@ -365,6 +365,9 @@
     <string name="exports_report_bitrate_asked">Video bit hızı: istenen %1$s Mbps</string>
     <string name="exports_report_fixed">Kodlayıcı ilk ayarı reddetti. Dışa aktarma bir kez ayarlanmış değerlerle yeniden denendi.</string>
     <string name="exports_report_cpu">GPU yolu kullanılamadı; bu dışa aktarma CPU yolunu kullandı.</string>
+    <string name="exports_report_loudness_capped">Ses seviyesi hedefine ulaşılamadı: kazanç +12 dB ile sınırlı. Sonuç %1$s LUFS, gerçek tepe %2$s dBTP.</string>
+    <string name="exports_report_loudness_ceiling">Ses seviyesi hedefine ulaşılamadı: gerçek tepe tavanı sınırlıyor. Sonuç %1$s LUFS, gerçek tepe %2$s dBTP.</string>
+    <string name="exports_report_tp_over">Gerçek tepe tavanın üzerinde: %1$s dBTP.</string>
     <!-- Export sheet: MP4 settings (E1c) -->
     <string name="export_settings_title">MP4 ayarları</string>
     <string name="export_preset_compatible">Uyumlu</string>

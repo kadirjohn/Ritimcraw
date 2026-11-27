@@ -89,7 +89,7 @@ object ExportRowModel {
     }
 
     /** Technical report notes that live behind the details control. */
-    enum class DetailLine { ENCODER, FIXED, CPU }
+    enum class DetailLine { ENCODER, FIXED, CPU, LOUDNESS_CAPPED, LOUDNESS_CEILING, TRUE_PEAK_OVER }
 
     /**
      * Details-only lines of a report (not resolution/fps/codec/bitrate/size,
@@ -101,5 +101,13 @@ object ExportRowModel {
         add(DetailLine.ENCODER)
         if (ExportText.wasFixed(r)) add(DetailLine.FIXED)
         if (ExportText.fellBackToCpu(r)) add(DetailLine.CPU)
+        // Loudness outcome lines only when a final measurement exists.
+        if (r.audioLufs != null && r.audioDbtp != null) {
+            when (r.audioTargetNotReached) {
+                "gain-cap" -> add(DetailLine.LOUDNESS_CAPPED)
+                "ceiling" -> add(DetailLine.LOUDNESS_CEILING)
+            }
+            if (r.audioCeilingExceeded) add(DetailLine.TRUE_PEAK_OVER)
+        }
     }
 }

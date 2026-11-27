@@ -6474,16 +6474,20 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeAudioNormalize(
 JNIEXPORT jdoubleArray JNICALL
 Java_com_ritim_ritimcraw_engine_NativeSource_nativeAudioNormalizeReport(
         JNIEnv* env, jclass) {
-    jdouble out[7] = {
+    // [7] = shortfall (0 none, 1 gain capped at +12 dB, 2 ceiling),
+    // [8] = 1 when the final true peak is above the ceiling.
+    jdouble out[9] = {
         gLastNormalize.measured_lufs, gLastNormalize.measured_dbtp,
         gLastNormalize.final_lufs, gLastNormalize.final_dbtp,
         gLastNormalize.applied_gain_db,
         static_cast<jdouble>(gLastNormalize.iterations),
         static_cast<jdouble>(static_cast<int>(gLastNormalize.skipped)),
+        static_cast<jdouble>(static_cast<int>(gLastNormalize.shortfall)),
+        gLastNormalize.ceiling_exceeded ? 1.0 : 0.0,
     };
-    jdoubleArray arr = env->NewDoubleArray(7);
+    jdoubleArray arr = env->NewDoubleArray(9);
     if (arr == nullptr) return nullptr;
-    env->SetDoubleArrayRegion(arr, 0, 7, out);
+    env->SetDoubleArrayRegion(arr, 0, 9, out);
     return arr;
 }
 

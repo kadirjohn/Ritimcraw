@@ -1771,6 +1771,15 @@ class ExportPipeline(
                 // a target that could not be applied says WHY, never a
                 // guessed measurement.
                 plan.audioSkippedReason = if (r.skipped != AudioNormalizeSkips.NONE) skipName(r.skipped) else null
+                plan.audioTargetNotReached = AudioNormalizeShortfalls.name(r.shortfall)
+                plan.audioCeilingExceeded = r.ceilingExceeded
+                if (r.shortfall != AudioNormalizeShortfalls.NONE || r.ceilingExceeded) {
+                    plan.note(
+                        "loudness: target not reached (${AudioNormalizeShortfalls.name(r.shortfall)}) " +
+                            "finalI=${fmtLufs(r.finalLufs)} finalTP=${fmtLufs(r.finalDbtp)} " +
+                            "ceilingExceeded=${r.ceilingExceeded}"
+                    )
+                }
             }
             blocks = chunk(pcm, channels)
             audioPts = (0 until blocks.size).map {

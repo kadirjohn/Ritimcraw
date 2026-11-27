@@ -10,10 +10,8 @@ import com.ritim.ritimcraw.engine.NativeSource
  * through NativeSource's JNI bridge): measure -> gain -> true-peak
  * ceiling -> verify, at most 2 iterations.
  *
- * The ceiling is a SIMPLE HARD CLIP in this branch: D1's look-ahead
- * limiter lives on feat-audio-dsp-core (a sibling branch from the same
- * main; no cross-branch dependency) and is wired to this seam when the
- * two merge — the seam's signature does not change.
+ * The ceiling is D1's look-ahead Limiter (latency compensated), gain
+ * capped at +12 dB; the report says when the target was not reached.
  */
 fun interface AudioNormalizer {
 
@@ -33,6 +31,10 @@ fun interface AudioNormalizer {
         val iterations: Int,
         /** 0 = gain applied, 1 = too short, 2 = silent / gated-invalid. */
         val skipped: Int,
+        /** 0 = target reached, 1 = gain capped at +12 dB, 2 = the ceiling limited it. */
+        val shortfall: Int = 0,
+        /** True when the measured final true peak is above the ceiling. */
+        val ceilingExceeded: Boolean = false,
     )
 
     /** The normalized PCM plus the honest report. */
@@ -58,6 +60,20 @@ internal object AudioNormalizeSkips {
     const val NONE = 0
     const val TOO_SHORT = 1
     const val SILENT = 2
+}
+
+/** The target-not-reached codes, mirrored from rawedit::NormalizeShortfall. */
+internal object AudioNormalizeShortfalls {
+    const val NONE = 0
+    const val GAIN_CAPPED = 1
+    const val CEILING = 2
+
+    /** The report vocabulary: "gain-cap" / "ceiling"; null when reached. */
+    fun name(code: Int): String? = when (code) {
+        GAIN_CAPPED -> "gain-cap"
+        CEILING -> "ceiling"
+        else -> null
+    }
 }
 
 /**
@@ -100,6 +116,8 @@ internal object NativeAudioNormalizer : AudioNormalizer {
             appliedGainDb = raw.getOrElse(4) { 0.0 },
             iterations = raw.getOrElse(5) { 0.0 }.toInt(),
             skipped = raw.getOrElse(6) { 0.0 }.toInt(),
+            shortfall = raw.getOrElse(7) { 0.0 }.toInt(),
+            ceilingExceeded = raw.getOrElse(8) { 0.0 } != 0.0,
         )
         return AudioNormalizer.Result(out, report)
     }

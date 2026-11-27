@@ -71,6 +71,15 @@ data class ExportReport(
      * Omitted from the wire when null.
      */
     val audioSkipped: String? = null,
+    /**
+     * Why the loudness target was not reached: "gain-cap" (the +12 dB
+     * limit) or "ceiling" (the true-peak ceiling); null when reached or
+     * the chain did not run. [audioLufs]/[audioDbtp] hold the real final
+     * values. Omitted from the wire when null.
+     */
+    val audioTargetNotReached: String? = null,
+    /** True when the final true peak is above the ceiling; omitted when false. */
+    val audioCeilingExceeded: Boolean = false,
 ) {
     /** The whole file's real bit rate (video + audio + container), or null without size/duration. */
     val actualTotalBps: Long?
@@ -109,6 +118,8 @@ data class ExportReport(
             audioSampleRateHz = run.audioOutSampleRateHz,
             audioChannels = run.audioOutChannels,
             audioSkipped = run.audioSkippedReason,
+            audioTargetNotReached = run.audioTargetNotReached,
+            audioCeilingExceeded = run.audioCeilingExceeded,
         )
 
         const val MAX_STEPS = 12
@@ -145,6 +156,10 @@ object ExportReportWire {
         // always did.
         if (r.audioGainDb != null) sb.append(",\"audioGainDb\":").append(r.audioGainDb)
         if (r.audioSkipped != null) sb.append(",\"audioSkipped\":").append(ProjectJson.quote(r.audioSkipped))
+        if (r.audioTargetNotReached != null) {
+            sb.append(",\"audioTargetNotReached\":").append(ProjectJson.quote(r.audioTargetNotReached))
+        }
+        if (r.audioCeilingExceeded) sb.append(",\"audioCeilingExceeded\":true")
         // (E5-B, night G1) The output audio shape the export really
         // encoded, omit-when-absent (video-only exports and old rows).
         if (r.audioSampleRateHz != null) sb.append(",\"audioSampleRateHz\":").append(r.audioSampleRateHz)
@@ -189,6 +204,8 @@ object ExportReportWire {
             audioDbtp = d("audioDbtp"),
             audioGainDb = d("audioGainDb"),
             audioSkipped = m["audioSkipped"] as? String,
+            audioTargetNotReached = m["audioTargetNotReached"] as? String,
+            audioCeilingExceeded = m["audioCeilingExceeded"] as? Boolean ?: false,
             audioSampleRateHz = d("audioSampleRateHz")?.toInt(),
             audioChannels = d("audioChannels")?.toInt(),
         )
@@ -217,6 +234,9 @@ object ExportText {
     fun fps(fps: Double): String =
         if (kotlin.math.abs(fps - Math.round(fps)) < 1e-6) Math.round(fps).toString()
         else java.lang.String.format(java.util.Locale.ROOT, "%.3f", fps).trimEnd('0')
+
+    /** One-decimal dB/LUFS value ("-28.3"), Locale.ROOT. */
+    fun db1(v: Double): String = java.lang.String.format(java.util.Locale.ROOT, "%.1f", v)
 
     fun mbps(bps: Long): String = java.lang.String.format(java.util.Locale.ROOT, "%.1f", bps / 1_000_000.0)
 
