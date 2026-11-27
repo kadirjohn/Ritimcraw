@@ -1850,19 +1850,17 @@ fun ClipEditorScreen(
                 val bytes = withContext(Dispatchers.Default) {
                     try {
                         // The grade the bake samples. ENCODED clips run NO
-                        // tone-band stage in their render (Transfer.h's
-                        // own record), so their cube neutralizes the 9-20
-                        // fields here — the bake mirrors what the encoded
-                        // path actually renders (E7's source-kind caveat,
-                        // the wiring layer's decision the core header
-                        // records). MCRAW keeps the grade verbatim: its
-                        // render IS the full 9-20 chain.
+                        // tone-band stage 9-20 in their render (Transfer.h's
+                        // own record), so their cube neutralizes those fields
+                        // here — the bake mirrors what the encoded path
+                        // actually renders (E7's source-kind caveat, the
+                        // wiring layer's decision the core header records).
+                        // MCRAW keeps the grade verbatim: its render IS the
+                        // full 9-20 chain.
                         val bakeGrade = if (sourcePath == SourcePath.ENCODED) {
                             grade.copy(
-                                highlights = 0f,
                                 blackPoint = 0f,
                                 whitePoint = 0f,
-                                shadows = 0f,
                                 midtones = 0f,
                                 contrast = 0f,
                                 saturation = 0f,
@@ -1883,7 +1881,7 @@ fun ClipEditorScreen(
                         // uses (the trimmed chain's wire for a NODES/DRT
                         // grade, null for a LEGACY one): the cube carries
                         // the node chain and the output the user sees.
-                        val chainWire = runCatching {
+                        val rawChainWire = runCatching {
                             val v2 = currentGradeV2()
                             val active = v2?.let { GradeV2Usage.activeNodes(it) }
                                 ?: return@runCatching null
@@ -1894,6 +1892,22 @@ fun ClipEditorScreen(
                             }
                             NodeChainWire.encode(v2, active)
                         }.getOrNull()
+                        // ENCODED highlights/shadows ride the node chain's
+                        // log wheels (EncodedToneBridge, owner decision
+                        // 2026-11-25), NOT the tone-band stages — so the
+                        // ENCODED bake applies the SAME bridge the render
+                        // applies (EncodedSource.renderFrame's own line).
+                        // The neutralized highlights/shadows above stay:
+                        // the bake must not run stage 15/11 on them again.
+                        // A chain at the N1 cap keeps the sliders a no-op
+                        // here exactly as they are in the render.
+                        val chainWire = if (sourcePath == SourcePath.ENCODED) {
+                            com.ritim.ritimcraw.engine.EncodedToneBridge.apply(
+                                grade.highlights, grade.shadows, rawChainWire,
+                            )
+                        } else {
+                            rawChainWire
+                        }
                         // The stage-24 LUT pair, the render site's own
                         // resolution (percent -> 0..1, the ordinals by
                         // value, -1 the legacy path).
