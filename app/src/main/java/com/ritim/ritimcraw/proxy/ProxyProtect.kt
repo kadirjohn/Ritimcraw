@@ -25,7 +25,7 @@ fun interface ProxyProtectSource {
  * [release]s it on close (two sessions on one proxy need two releases). Pure and thread-safe;
  * this is the ready-made source P3 wires to the preview session lifecycle.
  */
-class ProxyInUse : ProxyProtectSource {
+open class ProxyInUse : ProxyProtectSource {
     private val lock = Any()
     private val counts = HashMap<ProxyKey, Int>()
 
