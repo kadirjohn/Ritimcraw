@@ -80,6 +80,21 @@ class ExportPlanRun(
     /** The encoded duration in seconds (set by the pipeline once pts are known). */
     var durationSec: Double = 0.0
 
+    /**
+     * (E5, night D2) The loudness the export REALLY produced, written by
+     * the pipeline's normalization hook when the chain ran (the honest
+     * final measurement, not the target); null when the chain did not
+     * run — a settings row without a target, an audio-less export, or a
+     * skipped measurement. The report shows them as measured values,
+     * never as the requested target.
+     */
+    var audioMeasuredLufs: Double? = null
+        internal set
+
+    /** [audioMeasuredLufs]'s true-peak pair, dBTP; null together with it. */
+    var audioMeasuredDbtp: Double? = null
+        internal set
+
     var fixUsed: Boolean = false
         private set
 

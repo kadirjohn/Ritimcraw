@@ -758,6 +758,8 @@ class Mp4ExporterTest {
         var sawPts = ArrayList<Long>()
         var startArgs: Array<Any>? = null
         var lastVideoFrame: ByteArray? = null
+        /** Every audio sample the writer received, in order (the loudness OFF proof). */
+        val audioSamples = ArrayList<Short>()
         var outPath: String? = null
 
         override fun start(
@@ -791,6 +793,7 @@ class Mp4ExporterTest {
         override fun writeAudioBlock(ptsUs: Long, pcm: ShortArray) {
             audioBlocks++
             sawPts.add(ptsUs)
+            pcm.forEach { audioSamples.add(it) }
         }
 
         override fun finish(): Boolean {
@@ -928,6 +931,110 @@ class Mp4ExporterTest {
         assertEquals(47, writer.audioBlocks)
         assertEquals(48000, writer.startArgs!![4])
         assertEquals(2, writer.startArgs!![5])
+    }
+
+    // ---- (E5, night D2) the loudness normalization hook ----
+
+    /** A normalizer fake that counts calls and returns a marked PCM. */
+    private class CountingNormalizer : AudioNormalizer {
+        var calls = 0
+        var lastTarget: Float? = null
+        var lastTp: Float? = null
+        var sawPcm: ShortArray? = null
+
+        override fun normalize(
+            pcm: ShortArray,
+            sampleRate: Int,
+            channels: Int,
+            targetLufs: Float,
+            tpDbtp: Float,
+        ): AudioNormalizer.Result {
+            calls++
+            lastTarget = targetLufs
+            lastTp = tpDbtp
+            sawPcm = pcm.copyOf()
+            // A visible change: every sample becomes 7 (the chain's shape
+            // and length are the seam's contract).
+            return AudioNormalizer.Result(
+                ShortArray(pcm.size) { 7 },
+                AudioNormalizer.Report(
+                    measuredLufs = -20.0, measuredDbtp = -3.5,
+                    finalLufs = -14.02, finalDbtp = -1.0,
+                    appliedGainDb = 5.98, iterations = 1,
+                    skipped = AudioNormalizeSkips.NONE,
+                ),
+            )
+        }
+    }
+
+    @Test
+    fun pipeline_null_loudness_target_never_calls_the_normalizer() {
+        // The acceptance proof (task D2): with the default settings (the
+        // target null = OFF), the normalization code path NEVER runs —
+        // zero calls — and the writer receives BIT-IDENTICAL samples.
+        val session = FakeSession(frames = 2, audio = true)
+        val normalizer = CountingNormalizer()
+        // No planRun at all (a pre-E5 job): nothing to read a target from.
+        val withHook = FakeWriter()
+        ExportPipeline(session, withHook, normalizer = normalizer)
+            .run(7, GradeK(), "/tmp/out.partial")
+        assertEquals(0, normalizer.calls)
+        // A planRun whose settings carry the DEFAULT (null target): still
+        // zero calls — the null IS the OFF switch, not a "measure only".
+        val run = ExportPlanRun(ExportSettings(), { emptyList() })
+        val withRun = FakeWriter()
+        ExportPipeline(session, withRun, planRun = run, normalizer = normalizer)
+            .run(7, GradeK(), "/tmp/out.partial")
+        assertEquals(0, normalizer.calls)
+        // And the audio bytes are bit-identical to a pipeline with no hook.
+        val reference = FakeWriter()
+        ExportPipeline(session, reference).run(7, GradeK(), "/tmp/out.partial")
+        assertTrue(withRun.audioSamples == reference.audioSamples)
+        assertTrue(withHook.audioSamples == reference.audioSamples)
+    }
+
+    @Test
+    fun pipeline_loudness_target_runs_the_chain_and_feeds_its_output() {
+        // A target in the settings: the chain runs ONCE on the whole PCM
+        // (the source's samples, the source's rate/channels), the writer
+        // receives the chain's samples, and the run's report fields carry
+        // the chain's honest measurement.
+        val session = FakeSession(frames = 2, audio = true)
+        val normalizer = CountingNormalizer()
+        val run = ExportPlanRun(ExportSettings(loudnessTargetLufs = -14f, truePeakDbtp = -1f), { emptyList() })
+        val writer = FakeWriter()
+        ExportPipeline(session, writer, planRun = run, normalizer = normalizer)
+            .run(7, GradeK(), "/tmp/out.partial")
+        assertEquals(1, normalizer.calls)
+        assertEquals(-14f, normalizer.lastTarget)
+        assertEquals(-1f, normalizer.lastTp)
+        // The chain saw the WHOLE clip PCM (FakeSession: 48000 stereo
+        // frames = 96000 samples) — the pre-chunk interleaved buffer.
+        assertEquals(48000 * 2, normalizer.sawPcm!!.size)
+        // Every sample the writer received is the chain's marker output.
+        assertTrue(writer.audioSamples.all { it == 7.toShort() })
+        assertEquals(47, writer.audioBlocks) // the block count (and pts) never change
+        // The report carries the chain's measured pair, never the target.
+        assertEquals(-14.02, run.audioMeasuredLufs!!, 1e-9)
+        assertEquals(-1.0, run.audioMeasuredDbtp!!, 1e-9)
+        // And the trail says what ran.
+        assertTrue(run.steps.any { it.startsWith("loudness:") })
+    }
+
+    @Test
+    fun pipeline_loudness_target_without_audio_never_calls_the_normalizer() {
+        // A targeted job on a clip with NO audio track: nothing to
+        // normalize — the chain never runs and the export is video-only
+        // exactly as before.
+        val session = FakeSession(frames = 2, audio = false)
+        val normalizer = CountingNormalizer()
+        val run = ExportPlanRun(ExportSettings(loudnessTargetLufs = -14f), { emptyList() })
+        val writer = FakeWriter()
+        ExportPipeline(session, writer, planRun = run, normalizer = normalizer)
+            .run(7, GradeK(), "/tmp/out.partial")
+        assertEquals(0, normalizer.calls)
+        assertEquals(0, writer.audioBlocks)
+        assertNull(run.audioMeasuredLufs)
     }
 
     @Test

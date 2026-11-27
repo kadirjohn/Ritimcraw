@@ -34,7 +34,7 @@ class ExportStoreSettingsTest {
         val back = roundTrip(job(s))
         assertEquals(s, back.settings)
         assertEquals(State.QUEUED, back.state)
-        assertTrue(ExportStore.renderExports(listOf(job(s))).contains("\"settings\":{\"v\":1,"))
+        assertTrue(ExportStore.renderExports(listOf(job(s))).contains("\"settings\":{\"v\":2,"))
     }
 
     @Test
@@ -45,12 +45,33 @@ class ExportStoreSettingsTest {
 
     @Test
     fun a_queued_job_with_settings_a_newer_app_wrote_is_failed_not_run_as_legacy() {
-        val text = ExportStore.renderExports(listOf(job(ExportSettings()))).replace("\"v\":1", "\"v\":2")
+        // The unknown-version case is now v3 (this build writes and reads
+        // v2 since the E5 loudness fields landed).
+        val text = ExportStore.renderExports(listOf(job(ExportSettings()))).replace("\"v\":2", "\"v\":3")
         val back = ExportStore.parseExports("{\"exports\":$text}").single()
         assertNull(back.settings)
         assertEquals(State.FAILED, back.state)
-        assertTrue(back.detail!!, back.detail!!.contains("settings version 2"))
+        assertTrue(back.detail!!, back.detail!!.contains("settings version 3"))
         assertTrue(back.detail!!.contains("recovery"))
+    }
+
+    @Test
+    fun a_queued_job_with_v1_settings_keeps_running_its_exact_old_settings() {
+        // A row this app's v1-writing build produced: parses (the reader
+        // accepts 1..2), keeps every field, and the E5 loudness chain
+        // stays OFF — the v1 behavior, exactly.
+        val v1 = "\"settings\":{" +
+            "\"v\":1,\"codec\":\"AVC\",\"bitDepth\":8," +
+            "\"dynamicRange\":\"SDR\",\"rateMode\":\"VBR\"," +
+            "\"bitrateLevel\":\"STANDARD\",\"uncapped\":false," +
+            "\"keyframe\":\"AUTO\",\"audioKbps\":192}"
+        val row = ExportStore.renderExports(listOf(job(ExportSettings())))
+            .replace(Regex("\"settings\":\\{[^}]*\\}"), v1)
+        assertTrue(row, row.contains("\"v\":1"))
+        val back = ExportStore.parseExports("{\"exports\":$row}").single()
+        assertEquals(State.QUEUED, back.state)
+        assertEquals(ExportSettings(codec = ExportCodec.AVC, audioKbps = 192), back.settings)
+        assertNull(back.settings!!.loudnessTargetLufs)
     }
 
     @Test

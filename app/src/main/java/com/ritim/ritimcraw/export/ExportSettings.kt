@@ -97,6 +97,37 @@ data class ExportSettings(
     val profile: Int? = null,
     /** AAC bitrate: 128, 192, 256 or 320. */
     val audioKbps: Int = 128,
+    /**
+     * (E5, night D2) The loudness normalization target in LUFS — the
+     * two-pass measure->gain->verify chain runs over the clip's PCM
+     * before the AAC blocks are cut. NULL (the default) = OFF: today's
+     * behavior, bit-identical (the chain never runs; the settings row
+     * reads "Off"). The SOCIAL preset sets −14; the sheet's target row
+     * also offers −16 and −23.
+     */
+    val loudnessTargetLufs: Float? = null,
+    /**
+     * (E5, night D2) The true-peak ceiling in dBTP the normalization
+     * keeps (the plan §4.1 rule: a target the ceiling cannot reach
+     * sacrifices loudness, never the peak). Only meaningful while
+     * [loudnessTargetLufs] is set. Default −1 (the plan's Social row).
+     */
+    val truePeakDbtp: Float = -1f,
+    /**
+     * (E5, night D2) The Social preset's vertical OUTPUT bound, in the
+     * EXPORT SETTINGS (not the job's [ExportJob.resolutionW] pair): the
+     * preset is "−14 LUFS, −1 dBTP, vertical 1080×1920", so the preset's
+     * identity needs the pair to travel with the settings. Null (the
+     * default) = no bound carried — the sheet's own ladder choice keeps
+     * deciding the encode size exactly as before, and a job without a
+     * settings pair exports at its own bound (or Original). This field
+     * is APPLIED only by the sheet's UI wiring (the target row); until
+     * that lands nothing writes a non-null value here, so no queued job
+     * can silently change size.
+     */
+    val resolutionW: Int? = null,
+    /** [resolutionW]'s pair; both null or both set, never half a pair. */
+    val resolutionH: Int? = null,
 ) {
     companion object {
         val AUDIO_KBPS = listOf(128, 192, 256, 320)
@@ -119,6 +150,16 @@ enum class ExportPreset {
      */
     QUALITY,
 
+    /**
+     * (E5, night D2) The plan's Social row (docs/E5_AUDIO_PORT_PLAN.md §4.2
+     * / §5): AVC 8-bit (plays everywhere a social app shares to), the
+     * STANDARD level, 192 kbps AAC, and the loudness target −14 LUFS-I
+     * with a −1 dBTP true-peak ceiling, vertical 1080×1920. The target
+     * wording is the APP's own ("optimized for social video"), never a
+     * platform compliance claim (the plan §5 naming rule).
+     */
+    SOCIAL,
+
     CUSTOM;
 
     /**
@@ -128,6 +169,11 @@ enum class ExportPreset {
      */
     fun apply(s: ExportSettings, hevcAvailable: Boolean = true, tenBitAvailable: Boolean = false): ExportSettings {
         val hevc = if (hevcAvailable) ExportCodec.HEVC else ExportCodec.AVC
+        // The base resets everything a preset OWNS: the video shape (range/
+        // rate/custom/uncapped/keyframe/profile), the audio shape, and the
+        // E5 loudness + resolution pair — so every preset application
+        // starts from the same neutral base (a preset never inherits a
+        // stale loudness target or bound from whatever was set before).
         val base = s.copy(
             dynamicRange = ExportDynamicRange.SDR,
             rateMode = ExportRateMode.VBR,
@@ -135,6 +181,10 @@ enum class ExportPreset {
             uncapped = false,
             keyframe = KeyframeInterval.AUTO,
             profile = null,
+            loudnessTargetLufs = null,
+            truePeakDbtp = -1f,
+            resolutionW = null,
+            resolutionH = null,
         )
         return when (this) {
             COMPATIBLE -> base.copy(codec = ExportCodec.AVC, bitDepth = 8, bitrateLevel = BitrateLevel.STANDARD, audioKbps = 192)
@@ -144,6 +194,16 @@ enum class ExportPreset {
                 bitDepth = if (tenBitAvailable && hevcAvailable) 10 else 8,
                 bitrateLevel = if (hevcAvailable) BitrateLevel.QUALITY else BitrateLevel.MAX,
                 audioKbps = 320,
+            )
+            SOCIAL -> base.copy(
+                codec = ExportCodec.AVC,
+                bitDepth = 8,
+                bitrateLevel = BitrateLevel.STANDARD,
+                audioKbps = 192,
+                loudnessTargetLufs = -14f,
+                truePeakDbtp = -1f,
+                resolutionW = 1080,
+                resolutionH = 1920,
             )
             CUSTOM -> s
         }
@@ -165,13 +225,22 @@ enum class ExportPreset {
 
 /**
  * The persisted form of [ExportSettings] (ExportJob.settings), one nested
- * object `"settings":{"v":1,...}` written only when the job has settings.
+ * object `"settings":{"v":2,...}` written only when the job has settings.
  * Enums travel by NAME. A reader that meets a version or a value it does
  * not know reports [Parsed.Unsupported]: the caller must NOT fall back to
  * the legacy behavior silently (honest-about-the-device).
+ *
+ * VERSION 2 (E5, night D2) appends four optional fields —
+ * `loudnessTargetLufs` (absent = null = OFF, exactly the v1 behavior),
+ * `truePeakDbtp` (absent = −1), `resolutionW`/`resolutionH` (absent =
+ * null = the sheet's own ladder decides, exactly the v1 behavior). A v1
+ * row parses with those defaults, so every pre-v2 job keeps its exact
+ * old settings and old behavior; a version NEWER than this build still
+ * refuses (reported, never guessed).
  */
 object ExportSettingsWire {
-    const val VERSION = 1
+    const val VERSION = 2
+    private const val READS = 2
 
     sealed class Parsed {
         data class Ok(val settings: ExportSettings) : Parsed()
@@ -190,7 +259,21 @@ object ExportSettingsWire {
         sb.append(",\"uncapped\":").append(s.uncapped)
             .append(",\"keyframe\":\"").append(s.keyframe.name).append('"')
         if (s.profile != null) sb.append(",\"profile\":").append(s.profile)
-        sb.append(",\"audioKbps\":").append(s.audioKbps).append('}')
+        sb.append(",\"audioKbps\":").append(s.audioKbps)
+        // v2 fields, omit-when-default (v1 rows keep their exact bytes):
+        // loudnessTargetLufs null = OFF; truePeakDbtp −1 = the default;
+        // the resolution pair null = the sheet's own ladder.
+        if (s.loudnessTargetLufs != null) {
+            sb.append(",\"loudnessTargetLufs\":").append(s.loudnessTargetLufs)
+            sb.append(",\"truePeakDbtp\":").append(s.truePeakDbtp)
+        } else if (s.truePeakDbtp != -1f) {
+            // A ceiling without a target is inert, but it is still the
+            // user's value: keep it so the round trip is lossless.
+            sb.append(",\"truePeakDbtp\":").append(s.truePeakDbtp)
+        }
+        if (s.resolutionW != null) sb.append(",\"resolutionW\":").append(s.resolutionW)
+        if (s.resolutionH != null) sb.append(",\"resolutionH\":").append(s.resolutionH)
+        sb.append('}')
         return sb.toString()
     }
 
@@ -198,7 +281,7 @@ object ExportSettingsWire {
     fun parse(raw: Any?): Parsed {
         val m = raw as? Map<*, *> ?: return Parsed.Unsupported("settings is not an object")
         val v = (m["v"] as? Double)?.toInt() ?: return Parsed.Unsupported("settings has no version")
-        if (v != VERSION) return Parsed.Unsupported("settings version $v (this app reads $VERSION)")
+        if (v > READS) return Parsed.Unsupported("settings version $v (this app reads $READS)")
         fun <E : Enum<E>> enumOf(key: String, all: List<E>): E? =
             (m[key] as? String)?.let { w -> all.firstOrNull { it.name == w } }
         val codec = enumOf("codec", ExportCodec.entries) ?: return Parsed.Unsupported("unknown codec ${m["codec"]}")
@@ -212,6 +295,13 @@ object ExportSettingsWire {
             ?: return Parsed.Unsupported("unknown keyframe interval ${m["keyframe"]}")
         val depth = (m["bitDepth"] as? Double)?.toInt() ?: return Parsed.Unsupported("no bit depth")
         val audio = (m["audioKbps"] as? Double)?.toInt() ?: return Parsed.Unsupported("no audio bitrate")
+        // v2's optional fields: absent (a v1 row, or a v2 row with the
+        // defaults) parses as the v1-behavior defaults — a v1 row reads
+        // as EXACTLY what it always meant.
+        val loudness = (m["loudnessTargetLufs"] as? Double)?.toFloat()
+        val tp = (m["truePeakDbtp"] as? Double)?.toFloat() ?: -1f
+        val resW = (m["resolutionW"] as? Double)?.toInt()
+        val resH = (m["resolutionH"] as? Double)?.toInt()
         return Parsed.Ok(
             ExportSettings(
                 codec = codec,
@@ -224,6 +314,10 @@ object ExportSettingsWire {
                 keyframe = key,
                 profile = (m["profile"] as? Double)?.toInt(),
                 audioKbps = audio,
+                loudnessTargetLufs = loudness,
+                truePeakDbtp = tp,
+                resolutionW = resW,
+                resolutionH = resH,
             )
         )
     }

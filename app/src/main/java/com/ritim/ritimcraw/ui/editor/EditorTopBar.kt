@@ -43,6 +43,7 @@ import androidx.compose.material3.TextButton
 import androidx.activity.compose.BackHandler
 import androidx.compose.material3.ModalBottomSheetProperties
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.rememberCoroutineScope
 import kotlinx.coroutines.launch
 import androidx.compose.runtime.getValue
@@ -339,6 +340,10 @@ private fun ExportSheet(
     // The selection state lives here, not in the caller: the sheet is the
     // only consumer, and a dismissal forgets the choice (a reopen starts
     // at Original, the recommended default — never a stale pick).
+    // (E5, night D2) — with one exception: the saved settings' own
+    // resolution pair (the SOCIAL preset's 1080×1920) is restored on
+    // open, so a Social export reopens showing Social's bound, not a
+    // stale Original beside a Social preset row.
     var selectedKind by remember { mutableStateOf(ExportResolution.Kind.ORIGINAL) }
     var customWidthText by remember { mutableStateOf("") }
     var customHeightText by remember { mutableStateOf("") }
@@ -348,6 +353,14 @@ private fun ExportSheet(
     // own copy at queue time.
     val context = LocalContext.current
     var settings by remember { mutableStateOf(ExportSettingsPrefs.load(context)) }
+    LaunchedEffect(Unit) {
+        val s = settings
+        if (s.resolutionW != null && s.resolutionH != null) {
+            selectedKind = ExportResolution.Kind.CUSTOM
+            customWidthText = s.resolutionW.toString()
+            customHeightText = s.resolutionH.toString()
+        }
+    }
     // The device's encoder facts load off the UI thread; until they arrive
     // the plan is by MIME (no encoder named) and nothing is claimed.
     val facts by produceState(emptyList<EncoderFacts>()) {
@@ -359,6 +372,21 @@ private fun ExportSheet(
         resolvedBound(clipInfo, grade, manualRotationDeg, selectedKind, customWidthText, customHeightText)
     } else {
         null
+    }
+    // (E5, night D2) The settings' resolution pair mirrors the ladder's
+    // resolved bound, so the SOCIAL preset's identity stays honest: a
+    // bound that resolves to 1080×1920 keeps SOCIAL listed as Social, a
+    // bound that resolves to anything else (or Original) drops it to
+    // Custom. One source of truth per direction, never a loop: a preset
+    // application drives the ladder, the user's own ladder pick drives
+    // the settings.
+    fun syncResolutionToSettings(kind: ExportResolution.Kind) {
+        val b = if (dimsKnown && kind != ExportResolution.Kind.ORIGINAL) {
+            resolvedBound(clipInfo, grade, manualRotationDeg, kind, customWidthText, customHeightText)
+        } else {
+            null
+        }
+        settings = settings.copy(resolutionW = b?.first, resolutionH = b?.second)
     }
     val subject = if (dimsKnown) {
         val size = bound ?: ExportResolution.effectiveSourceSize(
@@ -451,19 +479,40 @@ private fun ExportSheet(
                     onTab = { tab = it },
                     encodedSource = encodedSource,
                     settings = settings,
-                    onSettings = { settings = it },
+                    onSettings = { s ->
+                        settings = s
+                        // (E5, night D2) The SOCIAL preset carries its
+                        // vertical 1080×1920 pair IN the settings; the
+                        // sheet's own resolution state follows it so the
+                        // two never disagree (the preset identity needs
+                        // the pair, the encode needs the sheet's bound —
+                        // one source of truth, shown twice). A settings
+                        // pair that cleared (any other preset) returns
+                        // the ladder to Original.
+                        if (s.resolutionW != null && s.resolutionH != null) {
+                            selectedKind = ExportResolution.Kind.CUSTOM
+                            customWidthText = s.resolutionW.toString()
+                            customHeightText = s.resolutionH.toString()
+                        } else if (selectedKind == ExportResolution.Kind.CUSTOM) {
+                            selectedKind = ExportResolution.Kind.ORIGINAL
+                        }
+                    },
                     plan = plan,
                     subject = subject,
                     facts = facts,
                     rate = exportRate,
                     tenBitAvailable = exportContext.tenBitPathAvailable,
                     resolution = resolutionUi,
-                    onPickResolution = { kind -> selectedKind = kind },
+                    onPickResolution = { kind ->
+                        selectedKind = kind
+                        syncResolutionToSettings(kind)
+                    },
                     onCustomResolution = { customDialog = true },
                     onUseResolution = { w, h ->
                         selectedKind = ExportResolution.Kind.CUSTOM
                         customWidthText = w.toString()
                         customHeightText = h.toString()
+                        syncResolutionToSettings(ExportResolution.Kind.CUSTOM)
                     },
                     page = page,
                     onPage = { page = it },
@@ -498,6 +547,7 @@ private fun ExportSheet(
                             selectedKind = ExportResolution.Kind.CUSTOM
                             customWidthText = w
                             customHeightText = h
+                            syncResolutionToSettings(ExportResolution.Kind.CUSTOM)
                         },
                     )
                 }

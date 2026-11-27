@@ -77,7 +77,7 @@ internal object ExportSheetState {
     // ---- the settings list (P2) ----
 
     /** The settings-list rows; each is one 56dp line, the tappable ones open a sub-page. */
-    enum class Row { FORMAT, PRESET, RESOLUTION, FRAME_RATE, CODEC, BIT_DEPTH, BITRATE, RATE_MODE, KEYFRAME, PROFILE, AUDIO, AUDIO_FORMAT }
+    enum class Row { FORMAT, PRESET, RESOLUTION, FRAME_RATE, CODEC, BIT_DEPTH, BITRATE, RATE_MODE, KEYFRAME, PROFILE, AUDIO, LOUDNESS, AUDIO_FORMAT }
 
     /**
      * The always-visible rows, in order. An encoded clip offers MP4 only, so
@@ -95,7 +95,16 @@ internal object ExportSheetState {
 
     /** The rows under the collapsed Advanced section, in order. */
     fun advancedRows(): List<Row> =
-        listOf(Row.BITRATE, Row.RATE_MODE, Row.KEYFRAME, Row.PROFILE, Row.AUDIO, Row.AUDIO_FORMAT)
+        listOf(Row.BITRATE, Row.RATE_MODE, Row.KEYFRAME, Row.PROFILE, Row.AUDIO, Row.LOUDNESS, Row.AUDIO_FORMAT)
+
+    /**
+     * (E5, night D2) The loudness row's value number: null for a null
+     * target (Off), else the target rounded to whole LUFS ("−14").
+     * Plain numbers, Locale.ROOT; the row composable pairs it with the
+     * localized "Off"/"LUFS" words.
+     */
+    fun loudnessValue(targetLufs: Float?): String? =
+        targetLufs?.let { String.format(Locale.ROOT, "%.0f", it) }
 
     /** Read-only rows show a value but have no chevron and open nothing. */
     fun isReadOnly(row: Row): Boolean = row == Row.FRAME_RATE || row == Row.AUDIO_FORMAT
