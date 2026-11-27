@@ -212,4 +212,105 @@ class ExportSheetModelTest {
         assertTrue(BitrateLevel.QUALITY in ExportSheetModel.offeredBitrateLevels(plan, hevcFacts, BitrateLevel.QUALITY))
         assertTrue(BitrateLevel.QUALITY !in ExportSheetModel.offeredBitrateLevels(plan, hevcFacts, BitrateLevel.STANDARD))
     }
+
+    // ---- E1f-2 (G2): the plan's output fps, the output count/duration ----
+
+    @Test
+    fun the_plan_resolves_at_the_target_fps_when_converting() {
+        // §3.4: a converting export plans at the TARGET's EXACT rate — the
+        // bitrate table and the capability queries model the stream the
+        // encoder really makes. The 29.97 label is a display string; the
+        // plan's rate is the rational 30000/1001.
+        val converting = ExportSettings(targetFps = TargetFps.FPS_29_97)
+        val p = ExportSheetModel.plan(converting, subject, hevcFacts)
+        assertEquals(30_000.0 / 1001.0, p.fps, 1e-9)
+        // SOURCE keeps the subject's measured fps, untouched.
+        val source = ExportSheetModel.plan(ExportSettings(targetFps = TargetFps.SOURCE), subject, hevcFacts)
+        assertEquals(30.0, source.fps, 0.0)
+        assertEquals(30.0, ExportSheetModel.planFps(subject, TargetFps.SOURCE), 0.0)
+        for (t in TargetFps.entries.filter { it != TargetFps.SOURCE }) {
+            assertEquals(t.num.toDouble() / t.den, ExportSheetModel.planFps(subject, t), 0.0)
+        }
+    }
+
+    @Test
+    fun the_converted_subject_carries_the_output_count_and_duration() {
+        // The worker note's framesTotal/durationSec table, on the
+        // production mapping (no inline copy): a 60 s 30 fps clip (1800
+        // real frames, span 59.97 s) at each target answers the OUTPUT's
+        // own facts. 30->24: lastJ = floor(59_970_000*24/1e6) = 1439 ->
+        // 1440 output frames; duration = 1439*41_667/1e6 + 1/24 s.
+        val src = ExportSheetModel.Subject(1920, 1080, 30.0, 59.97, frames = 1800)
+        val table = listOf(
+            // target -> (fps, outputFrames, durationSec)
+            TargetFps.FPS_24 to 1440,
+            TargetFps.FPS_25 to 1500, // floor(59.97*25)=1499 -> 1500
+            TargetFps.FPS_30 to 1800, // identity count at an exact 30 span
+            TargetFps.FPS_50 to 2999, // floor(59.97*50)=2998 -> 2999
+            TargetFps.FPS_60 to 3599, // floor(59.97*60)=3598 -> 3599
+        )
+        for ((target, frames) in table) {
+            val out = ExportSheetModel.converted(src, target)
+            assertEquals("frames $target", frames, FrameRateMap.map(target, 30.0, 1800, 59_970_000L).outputFrames)
+            assertEquals("fps $target", target.num.toDouble() / target.den, out.fps, 0.0)
+            // duration = last grid pts + one target period — the exporter's
+            // own durationSec rule, on the target's exact grid.
+            val lastPts = FrameRateMap.gridPtsUs(frames - 1, target)
+            assertEquals(
+                "duration $target",
+                lastPts / 1_000_000.0 + 1.0 / (target.num.toDouble() / target.den),
+                out.durationSec,
+                1e-9,
+            )
+            // The source's own facts never leak into the converted subject.
+            assertTrue("duration $target", kotlin.math.abs(out.durationSec - 59.97) < 0.05)
+        }
+    }
+
+    @Test
+    fun the_converted_subject_never_guesss_an_unknown_frame_count() {
+        // frames 0 (unknown): NO conversion facts — the subject comes back
+        // untouched (the sheet then estimates from the source's own facts,
+        // the honest fallback), and SOURCE never converts at all.
+        val noFrames = ExportSheetModel.Subject(1920, 1080, 30.0, 59.97, frames = 0)
+        assertEquals(noFrames, ExportSheetModel.converted(noFrames, TargetFps.FPS_24))
+        assertEquals(subject, ExportSheetModel.converted(subject, TargetFps.SOURCE))
+        // A zero-span MULTI-frame subject is the §4.2 rule's own answer,
+        // never a guess: zero span is a single instant, so the conversion
+        // says one output frame at one target period.
+        val zeroSpan = ExportSheetModel.Subject(1920, 1080, 30.0, 0.0, frames = 1800)
+        val out = ExportSheetModel.converted(zeroSpan, TargetFps.FPS_24)
+        assertEquals(24.0, out.fps, 0.0)
+        assertEquals(1.0 / 24.0, out.durationSec, 1e-12)
+    }
+
+    @Test
+    fun a_single_frame_clip_converts_to_one_frame_at_one_target_period() {
+        // span 0: floor+1 gives 1 output frame (the §4.2 corrected count
+        // — ceil would drop the ONLY frame), duration = 1/target.
+        val one = ExportSheetModel.Subject(1920, 1080, 30.0, 0.0, frames = 1)
+        val out = ExportSheetModel.converted(one, TargetFps.FPS_60)
+        assertEquals(60.0, out.fps, 0.0)
+        assertEquals(1.0 / 60.0, out.durationSec, 1e-12)
+    }
+
+    @Test
+    fun the_size_estimate_uses_the_converted_duration() {
+        // The summary's size line answers the MOVIE the encode makes: with
+        // a conversion the estimatedBytes run over the OUTPUT duration
+        // (the converted subject), never the source's — pinned on the 60 s
+        // 30 fps clip converting to 24 (1440 frames, 60.000 - ish s: the
+        // grid's last point + 1/24).
+        val s = ExportSheetModel.defaultSettings()
+        val src = ExportSheetModel.Subject(1920, 1080, 30.0, 59.97, frames = 1800)
+        val out = ExportSheetModel.converted(src, TargetFps.FPS_24)
+        val plan = ExportSheetModel.plan(s.copy(targetFps = TargetFps.FPS_24), src, hevcFacts)
+        assertEquals(
+            plan.estimatedBytes(out.durationSec),
+            ((plan.bitrateBps + 192_000L) * out.durationSec / 8).toLong(),
+        )
+        // And the two durations really differ (the grid answer is not the
+        // source's wall span).
+        assertTrue(kotlin.math.abs(out.durationSec - src.durationSec) > 0.0)
+    }
 }

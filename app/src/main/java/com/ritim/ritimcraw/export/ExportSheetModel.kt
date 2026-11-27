@@ -14,10 +14,59 @@ object ExportSheetModel {
         val height: Int,
         val fps: Double,
         val durationSec: Double,
+        /**
+         * The source's REAL frame count (E1f-2): the frame-nearest count
+         * rule needs it — the output frame count is floor(span * rate) + 1
+         * against the SOURCE's frames clamped, never a wall-time guess.
+         * 0 = unknown: [converted] then refuses to convert (the honest
+         * "cannot compute" — never a guessed count).
+         */
+        val frames: Int = 0,
     )
 
     /** How fast this device exported last time: output pixels per wall-clock second. */
     data class Rate(val pixelsPerSecond: Double)
+
+    /**
+     * The fps a plan resolves at (E1f-2, plan §3.4): a ladder target's
+     * EXACT rational rate when converting — the bitrate table and the
+     * encoder capability queries model the stream the encoder will really
+     * produce — else the subject's own (measured, source) fps. Pure: the
+     * sheet, the summary and the encode all read the SAME value.
+     */
+    fun planFps(subject: Subject, target: TargetFps): Double =
+        if (target == TargetFps.SOURCE) subject.fps else target.num.toDouble() / target.den
+
+    /**
+     * The OUTPUT subject of a conversion (E1f-2, the worker note's
+     * framesTotal/durationSec rule): the §4.2 count rule over the source's
+     * real frames and measured span, on the production mapping itself
+     * (FrameRateConvertPlan — no inline copy). The returned subject carries
+     * the TARGET's exact fps and the OUTPUT's true wall duration (the last
+     * grid point + one target period, the durationSec rule the exporter
+     * reports), so the size estimate and the time estimate answer the
+     * movie the encode will really make. [target] SOURCE or an unknown
+     * frame count (frames 0) returns [subject] UNTOUCHED — never a guessed
+     * conversion. A zero span is NOT a refusal: it is the honest single
+     * frame clip (one output frame, one target period — the §4.2 rule
+     * floor+1, where ceil's 0 would drop the only frame).
+     */
+    fun converted(subject: Subject, target: TargetFps): Subject {
+        if (target == TargetFps.SOURCE) return subject
+        if (subject.frames <= 0 || subject.fps <= 0.0) return subject
+        val spanUs = Math.round(subject.durationSec * 1_000_000.0)
+        val plan = FrameRateConvertPlan.plan(
+            FrameRateConvertPlan.Source(
+                fps = subject.fps,
+                frames = subject.frames,
+                spanUs = spanUs,
+            ),
+            target,
+        )
+        val targetFps = target.num.toDouble() / target.den
+        val durationSec = plan.mapping.ptsUs.last() / 1_000_000.0 + 1.0 / targetFps
+        return subject.copy(fps = targetFps, durationSec = durationSec)
+    }
 
     /** The plan for [settings]; a device with no facts plans by MIME (no encoder named). */
     fun plan(
@@ -26,7 +75,7 @@ object ExportSheetModel {
         facts: List<EncoderFacts>,
         context: ExportContext = ExportContext(),
     ): ExportPlan {
-        val input = ExportInput(subject.width, subject.height, subject.fps)
+        val input = ExportInput(subject.width, subject.height, planFps(subject, settings.targetFps))
         return if (facts.isEmpty()) {
             ExportPlanner.resolveWithoutFacts(settings, input, context)
         } else {
