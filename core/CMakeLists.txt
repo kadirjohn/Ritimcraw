@@ -69,6 +69,8 @@ add_library(rawedit STATIC
     src/ImageStabPlan.cpp
     src/Loudness.cpp
     src/Resample.cpp
+    src/Dynamics.cpp
+    src/Ducking.cpp
     src/Yuv.cpp)
 # Yuv.cpp is the byte-exact twin of export/YuvConverter.kt: its chroma
 # multiply-add chain must round exactly where the Kotlin float ops round,
@@ -96,6 +98,15 @@ set_source_files_properties(src/ImageStabPlan.cpp PROPERTIES
 set_source_files_properties(src/Loudness.cpp PROPERTIES
     COMPILE_OPTIONS "-ffp-contract=off")
 set_source_files_properties(src/Resample.cpp PROPERTIES
+    COMPILE_OPTIONS "-ffp-contract=off")
+# Dynamics.cpp + Ducking.cpp (E5-C core, unwired): same reasoning — the
+# dynamics gain laws (one-pole envelopes, the sliding-min limiter, the
+# moving average, the envelope prefix sums) chain multiplies into adds
+# that fp-contract may fuse per target, and the block-size invariance
+# tests pin bit-identical output across block cuts.
+set_source_files_properties(src/Dynamics.cpp PROPERTIES
+    COMPILE_OPTIONS "-ffp-contract=off")
+set_source_files_properties(src/Ducking.cpp PROPERTIES
     COMPILE_OPTIONS "-ffp-contract=off")
 target_include_directories(rawedit PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(rawedit PUBLIC motioncam_decoder vqf)
@@ -188,6 +199,26 @@ if(PROJECT_NAME STREQUAL "rawedit" AND RAWEDIT_TESTS)
     add_executable(test_resample tests/test_resample.cpp)
     target_include_directories(test_resample PRIVATE ${DOCTEST_DIR})
     target_link_libraries(test_resample PRIVATE rawedit)
+    # test_dynamics: E5-C compressor/gate/limiter port (unwired; filmcraft
+    # audio-dsp vectors) — the crate's dynamics.rs suite plus the port's
+    # block-size invariance, NaN/silence safety and ceiling vectors.
+    # -ffp-contract=off matches the Dynamics.cpp build (Yuv.cpp precedent).
+    add_executable(test_dynamics tests/test_dynamics.cpp)
+    target_include_directories(test_dynamics PRIVATE ${DOCTEST_DIR})
+    target_link_libraries(test_dynamics PRIVATE rawedit)
+    target_compile_options(test_dynamics PRIVATE -ffp-contract=off)
+    # test_ducking: E5-C offline ducking analysis port (unwired;
+    # filmcraft audio-dsp vectors) — envelope/activity/keyframes.
+    add_executable(test_ducking tests/test_ducking.cpp)
+    target_include_directories(test_ducking PRIVATE ${DOCTEST_DIR})
+    target_link_libraries(test_ducking PRIVATE rawedit)
+    target_compile_options(test_ducking PRIVATE -ffp-contract=off)
+    # test_audio_fx: the E5-C skeleton (ParamSpec/ParamValues/Smoothed) —
+    # the crate's smooth.rs suite plus sanitize semantics vectors.
+    add_executable(test_audio_fx tests/test_audio_fx.cpp)
+    target_include_directories(test_audio_fx PRIVATE ${DOCTEST_DIR})
+    target_link_libraries(test_audio_fx PRIVATE rawedit)
+    target_compile_options(test_audio_fx PRIVATE -ffp-contract=off)
     # bench_develop: M1 developCpu serial-vs-parallel measurement on the
     # real clip (RAWEDIT_REALCLIP-gated, mirrors tools/build-desktop.sh);
     # asserts byte-exactness, reports (never asserts) the speedup.
@@ -217,5 +248,8 @@ if(PROJECT_NAME STREQUAL "rawedit" AND RAWEDIT_TESTS)
     add_test(NAME opendrt_async COMMAND test_opendrt_async)
     add_test(NAME loudness COMMAND test_loudness)
     add_test(NAME resample COMMAND test_resample)
+    add_test(NAME dynamics COMMAND test_dynamics)
+    add_test(NAME ducking COMMAND test_ducking)
+    add_test(NAME audio_fx COMMAND test_audio_fx)
     add_test(NAME bench_develop COMMAND bench_develop)
 endif()

@@ -43,20 +43,30 @@ This product includes software developed by third parties:
    project (~/projects/filmcraft-android, workspace main c41b58467e read
    2026-11-24; license per its Cargo.toml)
    Used in: core/src/Loudness.cpp, core/include/rawedit/Loudness.h — a
-   line-by-line C++ port (E5-A first half, owner decision D1: "the needed
-   audio-dsp modules are ported to pure C++; the test vectors move into
-   doctest") of crates/audio-dsp/src/loudness.rs, biquad.rs and
-   oversample.rs: the BS.1770-4/EBU R128 loudness meter, K-weighting
+   line-by-line C++ port (owner decision D1: "the needed audio-dsp
+   modules are ported to pure C++; the test vectors move into doctest")
+   of crates/audio-dsp/src/loudness.rs, biquad.rs and oversample.rs
+   (E5-A first half: the BS.1770-4/EBU R128 loudness meter, K-weighting
    derivation, the fixed-memory gating histogram, the polyphase
-   true-peak interpolator and the RBJ biquad core. The crate states it
-   is clean-room ("written from the public standards"); this port
-   carries that status over unchanged. The crate's unit-test vectors
-   (loudness.rs 14, biquad.rs 6, oversample.rs 1) are ported to
-   core/tests/test_loudness.cpp with the crate's own tolerances. Nothing
+   true-peak interpolator and the RBJ biquad core) and, with the E5-C
+   core (night D1, 2026-11-27), of crates/audio-dsp/src/effects/
+   dynamics.rs (compressor, gate, look-ahead limiter — the limiter
+   reuses the E5-A PolyphaseBank/Interpolator for its optional
+   true-peak detector), src/ducking.rs (envelope/activity/keyframes
+   auto-ducking analysis), src/smooth.rs (Smoothed, in full) and the
+   lib.rs selections behind core/include/rawedit/AudioFx.h (Unit,
+   ParamSpec, ParamValues, db helpers, the AudioEffect base). The crate
+   states it is clean-room ("written from the public standards"); this
+   port carries that status over unchanged. The crate's unit-test
+   vectors (loudness.rs 14, biquad.rs 6, oversample.rs 1, dynamics.rs
+   7, ducking.rs 5, smooth.rs 3) are ported to core/tests/
+   test_loudness.cpp, test_dynamics.cpp, test_ducking.cpp and
+   test_audio_fx.cpp with the crate's own tolerances. Nothing
    from the crate is vendored: no files are copied verbatim, only the
    algorithm is carried over, so third_party/MANIFEST.md has no entry
    (the OpenDRT precedent: NOTICE + a provenance header in the port).
-   Unwired in this package: no production code path calls the meter yet.
+   Unwired in these packages: no production code path calls the audio
+   DSP core yet.
 
 Display-rate matching (app/src/main/java/com/ritim/ritimcraw/engine/DisplayRate.kt): written
 for this project from the arithmetic of refresh intervals (whole multiples, otherwise least
