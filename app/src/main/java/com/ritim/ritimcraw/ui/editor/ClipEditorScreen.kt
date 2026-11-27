@@ -142,6 +142,7 @@ import com.ritim.ritimcraw.engine.NativeGpuPreviewDevelop
 import com.ritim.ritimcraw.engine.NativeSource
 import com.ritim.ritimcraw.engine.NodeChainWire
 import com.ritim.ritimcraw.export.Target
+import com.ritim.ritimcraw.export.CubeExportPlan
 import com.ritim.ritimcraw.engine.PreviewFrame
 import com.ritim.ritimcraw.engine.PreviewRenderer
 import com.ritim.ritimcraw.engine.PreviewSessions
@@ -1844,6 +1845,136 @@ fun ClipEditorScreen(
         // remember(sourceId)-keyed from AppNav, so the path is stable for
         // the clip's whole editor lifetime).
         val sourcePath = SourcePathDecision.decide(sourceKind, sourceMime)
+
+        // ---- .cube LUT export (G5 over the E7 core) ----
+        // The Look tab's "Export as LUT" section's state, LOCAL to the
+        // section (the lutImportError discipline: an export failure never
+        // yanks the preview's error surface). The grid choice is
+        // rememberSaveable so a rotation keeps it; the export state resets
+        // per clip (a stale "Saved" line on a clip switch would lie).
+        val cubeContext = androidx.compose.ui.platform.LocalContext.current
+        val cubeUriContext = cubeContext.applicationContext
+        var cubeGrid by rememberSaveable {
+            mutableStateOf(
+                CubeExportPlan.Grid.entries[CubeExportPlan.Grid.DEFAULT_ORDINAL],
+            )
+        }
+        var cubeExportState by remember(sourceId) {
+            mutableStateOf<CubeExportPlan.State>(CubeExportPlan.State.Idle)
+        }
+        // The bake + write itself. Runs OFF the UI thread (the 65³ bake
+        // with a node chain is sub-second but not frame-class; the SAF
+        // stream write blocks on the provider), the histogram effect's own
+        // Dispatchers.Default discipline. ONE call, no queue: a cube
+        // export is a one-shot action, and the Working state disables the
+        // Save button so a double-tap cannot start a second one.
+        fun exportGradeCubeTo(uriString: String) {
+            if (cubeExportState is CubeExportPlan.State.Working) return
+            if (!NativeSource.nativeAvailable) {
+                cubeExportState = CubeExportPlan.State.Refused(
+                    CubeExportPlan.Refusal.EngineUnavailable,
+                )
+                return
+            }
+            cubeExportState = CubeExportPlan.State.Working
+            scope.launch {
+                val refused = { r: CubeExportPlan.Refusal ->
+                    cubeExportState = CubeExportPlan.State.Refused(r)
+                }
+                val bytes = withContext(Dispatchers.Default) {
+                    try {
+                        // The grade + wire the bake samples. Both are the
+                        // render's own composition, made testable in one
+                        // place: CubeExportPlan.bakeGrade neutralizes the
+                        // tone-band 9-20 fields for an ENCODED clip (its
+                        // render skips those stages; the bake core runs
+                        // them unconditionally, so the parcel must carry
+                        // zeros), and CubeExportPlan.bakeChainWire rides
+                        // highlights/shadows on the node chain's log wheels
+                        // instead — the EncodedToneBridge call the render
+                        // itself makes. MCRAW keeps both verbatim.
+                        val bakeGrade = CubeExportPlan.bakeGrade(
+                            grade, sourcePath == SourcePath.ENCODED,
+                        )
+                        // The v2 chain — the SAME routing the render site
+                        // uses (the trimmed chain's wire for a NODES/DRT
+                        // grade, null for a LEGACY one): the cube carries
+                        // the node chain and the output the user sees.
+                        val rawChainWire = runCatching {
+                            val v2 = currentGradeV2()
+                            val active = v2?.let { GradeV2Usage.activeNodes(it) }
+                                ?: return@runCatching null
+                            if (active.isEmpty() &&
+                                v2.output.mode != com.ritim.ritimcraw.data.grade2.OutputTransformV2.MODE_OPENDRT
+                            ) {
+                                return@runCatching null
+                            }
+                            NodeChainWire.encode(v2, active)
+                        }.getOrNull()
+                        val chainWire = CubeExportPlan.bakeChainWire(
+                            grade, sourcePath == SourcePath.ENCODED, rawChainWire,
+                        )
+                        // The stage-24 LUT pair, the render site's own
+                        // resolution (percent -> 0..1, the ordinals by
+                        // value, -1 the legacy path).
+                        NativeSource.jniExportGradeCube(
+                            GradeParcel.encode(bakeGrade),
+                            cubeGrid.n,
+                            /* inputMode = */ 0, // linear Rec.709 (the E7 default)
+                            chainWire,
+                            lutPathFor(grade.lutId),
+                            grade.lutStrength / 100f,
+                            grade.lutInterp?.role?.value ?: -1,
+                            grade.lutInterp?.input?.gamut?.value ?: -1,
+                            grade.lutInterp?.input?.transfer?.value ?: -1,
+                            grade.lutInterp?.output?.gamut?.value ?: -1,
+                            grade.lutInterp?.output?.transfer?.value ?: -1,
+                            CubeExportPlan.title(sourceName ?: sourceId).ifEmpty { null },
+                        )
+                    } catch (e: IllegalStateException) {
+                        // The wire's refusal (a node LUT that cannot
+                        // resolve, the N1 cap) — surfaced as the reason,
+                        // never a silent empty file.
+                        refused(
+                            CubeExportPlan.Refusal.ChainRefused(
+                                e.message ?: "the node chain could not be encoded",
+                            ),
+                        )
+                        null
+                    }
+                }
+                if (bytes == null) return@launch // refusal already written
+                // The SAF write: the picked document's stream, whole
+                // bytes, closed on completion. A write failure is the
+                // WriteFailed refusal with the stream's own message.
+                try {
+                    cubeUriContext.contentResolver
+                        .openOutputStream(android.net.Uri.parse(uriString))?.use { out ->
+                            out.write(bytes)
+                            out.flush()
+                        } ?: throw java.io.IOException("the provider returned no stream")
+                    cubeExportState = CubeExportPlan.State.Done(bytes.size.toLong())
+                } catch (e: Exception) {
+                    refused(
+                        CubeExportPlan.Refusal.WriteFailed(
+                            e.message ?: "the document could not be written",
+                        ),
+                    )
+                }
+            }
+        }
+        // The SAF save picker: CreateDocument with the plan's pre-filled
+        // name (the clip's own name + the grid, the .cube mime the system
+        // sheet displays). A single document needs NO persistent grant
+        // (the write happens in the same callback, the gyroFolderPicker's
+        // takePersistableUriPermission is a tree-scoped concern, not
+        // this one).
+        val cubeSaver = androidx.activity.compose.rememberLauncherForActivityResult(
+            androidx.activity.result.contract.ActivityResultContracts.CreateDocument("application/octet-stream")
+        ) { uri ->
+            if (uri == null) return@rememberLauncherForActivityResult // user backed out: no state change
+            exportGradeCubeTo(uri.toString())
+        }
         // ---- Crop overlay mode (owner request 2026-11-13 §2) ----
         // Derived, not remembered: the value is a pure function of tab +
         // frameSubTab + the clip kind's stabilization gate (+ fullscreen
@@ -5245,6 +5376,16 @@ fun ClipEditorScreen(
                         // history step (null cause, feature N7).
                         applyGradeEdit(g)
                     },
+                    // ---- G5: the .cube export section's state + actions
+                    // (ADDITIVE wiring; the section lives at the Look
+                    // body's bottom, nothing above it moved) ----
+                    cubeExportGrid = cubeGrid,
+                    cubeExportState = cubeExportState,
+                    cubeClipName = clipInfo.name,
+                    onCubeGridSelect = { cubeGrid = it },
+                    onCubeExport = {
+                        cubeSaver.launch(CubeExportPlan.fileName(clipInfo.name, cubeGrid))
+                    },
                 )
                 EditorCategories.DETAIL -> DetailPanel(
                     grade = grade,
@@ -6439,6 +6580,18 @@ private fun ColorPanel(
     // the exact routes they had in DetailPanel.
     onLutSelect: (GradeK) -> Unit = {},
     onTonemapChange: (GradeK) -> Unit = {},
+    // ---- G5: the .cube export section's state + actions (ADDITIVE
+    // parameters; the defaults keep the preview harness and any other
+    // caller working) ----
+    cubeExportGrid: com.ritim.ritimcraw.export.CubeExportPlan.Grid =
+        com.ritim.ritimcraw.export.CubeExportPlan.Grid.entries[
+            com.ritim.ritimcraw.export.CubeExportPlan.Grid.DEFAULT_ORDINAL
+        ],
+    cubeExportState: com.ritim.ritimcraw.export.CubeExportPlan.State =
+        com.ritim.ritimcraw.export.CubeExportPlan.State.Idle,
+    cubeClipName: String = "",
+    onCubeGridSelect: (com.ritim.ritimcraw.export.CubeExportPlan.Grid) -> Unit = {},
+    onCubeExport: () -> Unit = {},
 ) {
     when (subTab) {
         // Balance: the WB family (plan: "Balance: WB, temp, tint,
@@ -6500,6 +6653,14 @@ private fun ColorPanel(
             onRemoveLut = onRemoveLut,
             onEditLut = onEditLut,
             onLutSelect = onLutSelect,
+            // G5: the .cube export section's state + actions (ADDITIVE —
+            // the section renders after the LUT section, the tab's own
+            // bottom-append rhythm; no existing row moved).
+            cubeExportGrid = cubeExportGrid,
+            cubeExportState = cubeExportState,
+            clipName = cubeClipName,
+            onCubeGridSelect = onCubeGridSelect,
+            onCubeExport = onCubeExport,
         )
     }
 }
@@ -6656,6 +6817,17 @@ private fun ColorLookBody(
     onRemoveLut: (LutInfo) -> Unit = {},
     onEditLut: (LutInfo) -> Unit = {},
     onLutSelect: (GradeK) -> Unit = {},
+    // ---- G5: the .cube export section (ADDITIVE parameters; the defaults
+    // keep any other caller — the preview test harness — working) ----
+    cubeExportGrid: com.ritim.ritimcraw.export.CubeExportPlan.Grid =
+        com.ritim.ritimcraw.export.CubeExportPlan.Grid.entries[
+            com.ritim.ritimcraw.export.CubeExportPlan.Grid.DEFAULT_ORDINAL,
+        ],
+    cubeExportState: com.ritim.ritimcraw.export.CubeExportPlan.State =
+        com.ritim.ritimcraw.export.CubeExportPlan.State.Idle,
+    clipName: String = "",
+    onCubeGridSelect: (com.ritim.ritimcraw.export.CubeExportPlan.Grid) -> Unit = {},
+    onCubeExport: () -> Unit = {},
 ) {
     Column(
         Modifier
@@ -6812,6 +6984,18 @@ private fun ColorLookBody(
                 onDragActiveChange = onDragActiveChange,
             )
         }
+        // ---- G5: the .cube LUT export section (ADDITIVE; the tab's
+        // bottom-append rhythm — after the LUT section, nothing above it
+        // moved). The section carries the honest contract lines: the
+        // input space (linear Rec.709), the size estimate, and what the
+        // bake carries vs. what it cannot (denoise/sharpen/geometry).
+        CubeExportSection(
+            grid = cubeExportGrid,
+            state = cubeExportState,
+            clipName = clipName,
+            onSave = onCubeExport,
+            onGridSelect = onCubeGridSelect,
+        )
     }
 }
 

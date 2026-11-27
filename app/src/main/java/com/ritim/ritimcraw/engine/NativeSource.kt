@@ -620,6 +620,56 @@ class NativeSource private constructor(
         @JvmStatic private external fun nativeFramePtsUs(handle: Long, index: Int): Long
 
         /**
+         * G5 (.cube export): bakes the grade's COLOR chain into an
+         * n x n x n .cube text and returns the file's BYTES (the whole
+         * .cube as one UTF-8/ASCII byte array — the Kotlin adapter writes
+         * them to the picked SAF document; the bake itself never touches
+         * a file, so a write failure costs no partial file). The bake is
+         * the E7 core (rawedit::exportGradeCube) — the SAME chain the
+         * render runs: stages 9-20 via applyToneColorStagesCpu, the node
+         * chain via applyNodes, the output as LegacyTonemapLut or OpenDRT.
+         *
+         * WHAT CROSSES (the nativeExportFrameParcel discipline, minus the
+         * per-frame machinery — a cube bake needs no handle, no CFA, no
+         * warp):
+         *   gradeParcel  the GradeK scalar packet (GradeParcel.encode);
+         *                the bake zeroes denoise/sharpen itself (they
+         *                cannot ride a LUT — CubeExport.h's exclusion);
+         *   n            the lattice size (33 or 65; 2..128 accepted);
+         *   inputMode    0 = scene-referred LINEAR Rec.709 (the DEFAULT,
+         *                the honest grid over the chain's real input
+         *                space, E7's owner decision), 1 = display-encoded
+         *                Rec.709 (the core's CubeExportInput::Rec709Code
+         *                for consumers expecting the video convention);
+         *   chainWire    the v2 node chain wire (null = a legacy grade's
+         *                fast path; the wire's outputMode picks the bake's
+         *                output flavor, its tail block carries the DRT);
+         *   lutPath, lutStrength, lutRole..lutOutTransfer the legacy
+         *                stage-24 LUT + its managed binding (the wire's
+         *                outputMode = 0 legs read them, the DRT leg
+         *                ignores them — the GPU tail-drt rule);
+         *   title        the .cube TITLE line (null/empty = none).
+         *
+         * Returns null on any refusal (the error accessors name it from
+         * the same thread): a bad grid, a refused chain wire, an
+         * unparseable LUT. NEVER a silent empty bake.
+         */
+        @JvmStatic private external fun nativeExportGradeCube(
+            gradeParcel: FloatArray,
+            n: Int,
+            inputMode: Int,
+            chainWire: FloatArray?,
+            lutPath: String?,
+            lutStrength: Float,
+            lutRole: Int,
+            lutInGamut: Int,
+            lutInTransfer: Int,
+            lutOutGamut: Int,
+            lutOutTransfer: Int,
+            title: String?,
+        ): ByteArray?
+
+        /**
          * [sampleRate, channels] of the clip's audio, or null when the clip
          * has no audio / on failure (read the error accessors). 0/0 means no
          * audio track should be written.
@@ -1897,6 +1947,33 @@ class NativeSource private constructor(
 
         /** JNI bridge: ptsUs of frame [index] (-1 on a bad handle). */
         internal fun jniFramePtsUs(handle: Long, index: Int): Long = nativeFramePtsUs(handle, index)
+
+        /**
+         * JNI bridge: see nativeExportGradeCube. The G5 ".cube export"
+         * adapter's door — the CALLER owns the nativeAvailable gate and
+         * the SAF write; this wrapper never throws (the jniExportFrameParcel
+         * convention: the caller's requireNative() first, the error
+         * readback through [previewLastError] on a null).
+         */
+        internal fun jniExportGradeCube(
+            gradeParcel: FloatArray,
+            n: Int,
+            inputMode: Int,
+            chainWire: FloatArray?,
+            lutPath: String?,
+            lutStrength: Float,
+            lutRole: Int,
+            lutInGamut: Int,
+            lutInTransfer: Int,
+            lutOutGamut: Int,
+            lutOutTransfer: Int,
+            title: String?,
+        ): ByteArray? = nativeExportGradeCube(
+            gradeParcel, n, inputMode, chainWire,
+            lutPath, lutStrength,
+            lutRole, lutInGamut, lutInTransfer, lutOutGamut, lutOutTransfer,
+            title,
+        )
 
         /** JNI bridge: [sampleRate, channels] or null. */
         internal fun jniAudioInfo(handle: Long): IntArray? = nativeAudioInfo(handle)
