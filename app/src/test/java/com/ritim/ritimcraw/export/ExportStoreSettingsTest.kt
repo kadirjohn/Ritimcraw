@@ -34,7 +34,7 @@ class ExportStoreSettingsTest {
         val back = roundTrip(job(s))
         assertEquals(s, back.settings)
         assertEquals(State.QUEUED, back.state)
-        assertTrue(ExportStore.renderExports(listOf(job(s))).contains("\"settings\":{\"v\":2,"))
+        assertTrue(ExportStore.renderExports(listOf(job(s))).contains("\"settings\":{\"v\":3,"))
     }
 
     @Test
@@ -45,21 +45,22 @@ class ExportStoreSettingsTest {
 
     @Test
     fun a_queued_job_with_settings_a_newer_app_wrote_is_failed_not_run_as_legacy() {
-        // The unknown-version case is now v3 (this build writes and reads
-        // v2 since the E5 loudness fields landed).
-        val text = ExportStore.renderExports(listOf(job(ExportSettings()))).replace("\"v\":2", "\"v\":3")
+        // The unknown-version case is now v4 (this build writes and reads
+        // v3 since the E5 loudness and E1f target fps fields both landed).
+        val text = ExportStore.renderExports(listOf(job(ExportSettings()))).replace("\"v\":3", "\"v\":4")
         val back = ExportStore.parseExports("{\"exports\":$text}").single()
         assertNull(back.settings)
         assertEquals(State.FAILED, back.state)
-        assertTrue(back.detail!!, back.detail!!.contains("settings version 3"))
+        assertTrue(back.detail!!, back.detail!!.contains("settings version 4"))
         assertTrue(back.detail!!.contains("recovery"))
     }
 
     @Test
     fun a_queued_job_with_v1_settings_keeps_running_its_exact_old_settings() {
         // A row this app's v1-writing build produced: parses (the reader
-        // accepts 1..2), keeps every field, and the E5 loudness chain
-        // stays OFF — the v1 behavior, exactly.
+        // accepts 1..3), keeps every field, and the E5 loudness chain and
+        // the fps conversion both stay OFF — the v1 behavior, exactly
+        // (plan E1F §3.2).
         val v1 = "\"settings\":{" +
             "\"v\":1,\"codec\":\"AVC\",\"bitDepth\":8," +
             "\"dynamicRange\":\"SDR\",\"rateMode\":\"VBR\"," +
@@ -72,6 +73,7 @@ class ExportStoreSettingsTest {
         assertEquals(State.QUEUED, back.state)
         assertEquals(ExportSettings(codec = ExportCodec.AVC, audioKbps = 192), back.settings)
         assertNull(back.settings!!.loudnessTargetLufs)
+        assertEquals(TargetFps.SOURCE, back.settings!!.targetFps)
     }
 
     @Test
