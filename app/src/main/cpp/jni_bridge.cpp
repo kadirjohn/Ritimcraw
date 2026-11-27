@@ -6811,6 +6811,169 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeLinearDngExport(
     return JNI_TRUE;
 }
 
+// CinemaDNG sequence frame export ------------------------------------------------
+//
+// (docs/CINEMADNG_EXPORT_PLAN.md R1-2/R1-3, night E-F 2026-11-27): the
+// sequence exporter writes each frame's DNG straight into the user's SAF
+// folder — ContentResolver.openFileDescriptor(childUri, "w") hands a RAW
+// POSIX fd, and this door writes the frame to it. No byte[] ever crosses
+// the seam (a 4K CFA frame is ~16-17 MB; a Java byte copy per frame would
+// double the allocation churn for nothing).
+//
+// THE CONTRACT (one call = one sequence frame, the Kotlin CinemaDngExporter
+// owns the loop):
+//   - sourceFd: the clip's read-only fd (dup'd by Source::open — the
+//     caller's fd is untouched; the whole call is one-shot, no handle
+//     registry, safe from the single export engine thread);
+//   - frameIndex: the CLIP-relative frame index (the caller derived the
+//     output index already);
+//   - fpsNum/fpsDen: the sequence's EXACT fps rational (30000/1001 for
+//     29.97 — never a 1e6 approximation; the FrameRate tag and the SMPTE
+//     arithmetic share the one value);
+//   - tcHour/tcMinute/tcSecond/tcFrame: the sequence's START timecode
+//     (frame 0's SMPTE code; default 00:00:00:00 — the owner's open
+//     question, a parameter, never a guess);
+//   - frameOffset: how many frames THIS output frame sits after frame 0
+//     (the caller's output index; the per-frame code derives here);
+//   - outFd: the SAF child document's WRITE fd, owned and closed by the
+//     caller (writeCfaDngToFd never dups or closes it).
+//
+// True on success. On false the thread-local error accessors say why
+// (stage 0 open, 1 frame read, 3 dng write); whatever was written to outFd
+// stays — the CALLER deletes the SAF document (the sequence's
+// partial-result rule: written frames are preserved, never silently
+// deleted).
+//
+// NO GRADE (the feature's own scope note): the CFA is the raw mosaic —
+// grade/develop/NR/geometry are NOT applied, by owner decision ("çıktı ham
+// CFA; arayüzde bir satırla anlatılır").
+
+JNIEXPORT jboolean JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativeCinemaDngExportFrame(
+        JNIEnv* env, jclass, jint sourceFd, jint frameIndex,
+        jint fpsNum, jint fpsDen,
+        jint tcHour, jint tcMinute, jint tcSecond, jint tcFrame,
+        jint frameOffset, jint outFd) {
+    gLastErrorCode = 0;
+    gLastErrorStage = kStageOpen;
+
+    // 1. Open the clip from the SAF fd (the bridge dups it).
+    auto opened = rawedit::Source::open(static_cast<int>(sourceFd));
+    if (!opened.isOk()) {
+        setError(static_cast<int>(opened.code), kStageOpen,
+                 std::string("open: ") + rawedit::errorName(opened.code) +
+                     " — " + opened.detail);
+        return JNI_FALSE;
+    }
+    std::unique_ptr<rawedit::Source> src = std::move(*opened.value);
+
+    // 2. Decode the frame (the expensive step — seconds on a 4K frame).
+    //    No grade: the CFA is the raw mosaic.
+    gLastErrorStage = kStageFrameRead;
+    auto frame = src->readFrame(static_cast<size_t>(frameIndex));
+    if (!frame.isOk()) {
+        setError(static_cast<int>(frame.code), kStageFrameRead,
+                 std::string("frame read: ") + rawedit::errorName(frame.code) +
+                     " — " + frame.detail);
+        return JNI_FALSE;
+    }
+    const rawedit::FrameInfo info = src->frameInfo(static_cast<size_t>(frameIndex));
+    const rawedit::RawMeta& meta = src->rawMeta();
+
+    // 3. The per-frame sequence meta: this frame's SMPTE code (start +
+    //    frameOffset under the exact fps) and the exact FrameRate rational.
+    //    A zero/invalid rational is a caller bug — refuse honestly before
+    //    the write, never a guessed tag.
+    if (fpsNum <= 0 || fpsDen <= 0) {
+        setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageDngWrite,
+                 "cinema dng: fps rational must be positive "
+                 "(recovery: re-queue the export)");
+        return JNI_FALSE;
+    }
+    rawedit::DngSequenceMeta seq;
+    seq.hasTimeCodes = true;
+    rawedit::smpteTimeCodes(tcHour, tcMinute, tcSecond, tcFrame, frameOffset,
+                            static_cast<double>(fpsNum) / static_cast<double>(fpsDen),
+                            seq.timeCodes);
+    seq.hasFrameRate = true;
+    seq.frameRateNum = static_cast<uint32_t>(fpsNum);
+    seq.frameRateDen = static_cast<uint32_t>(fpsDen);
+
+    // 4. Write the DNG bytes straight to the SAF write fd (no path, no
+    //    byte[] copy — writeCfaDngToFd). Whatever was written stays on a
+    //    failure; the caller deletes the document.
+    gLastErrorStage = kStageDngWrite;
+    const rawedit::Result<void> written = rawedit::writeCfaDngToFd(
+        static_cast<int>(outFd), frame.value->data(), info, meta,
+        rawedit::DngExtraMeta{}, seq);
+    if (!written.isOk()) {
+        setError(static_cast<int>(written.code), kStageDngWrite,
+                 std::string("dng write: ") + rawedit::errorName(written.code) +
+                     " — " + written.detail);
+        return JNI_FALSE;
+    }
+    return JNI_TRUE;
+}
+
+// CinemaDNG sequence audio (night E-F): the sequence exporter writes the
+// WAV itself (CinemaDngWav on the Kotlin side frames the PCM bytes), but
+// the PCM still comes from the decoder — and unlike the MP4 exporter the
+// sequence path is ONE-SHOT (a raw fd, no session handle), so these two
+// doors open their own throwaway Source per call. The fd is dup'd by
+// Source::open (the caller's copy is untouched), and each call is
+// self-contained — safe from the single export engine thread.
+
+JNIEXPORT jintArray JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativeAudioInfoForFd(
+        JNIEnv* env, jclass, jint fd) {
+    gLastErrorCode = 0;
+    gLastErrorStage = kStageOpen;
+    auto opened = rawedit::Source::open(static_cast<int>(fd));
+    if (!opened.isOk()) {
+        setError(static_cast<int>(opened.code), kStageOpen,
+                 std::string("open: ") + rawedit::errorName(opened.code) +
+                     " — " + opened.detail);
+        return nullptr;
+    }
+    std::unique_ptr<rawedit::Source> src = std::move(*opened.value);
+    const auto infoResult = src->audioInfo();
+    const rawedit::AudioInfo info = infoResult.isOk()
+        ? *infoResult.value : rawedit::AudioInfo{};
+    jint out[2] = {info.sampleRate, info.channels};
+    jintArray arr = env->NewIntArray(2);
+    if (arr == nullptr) return nullptr;
+    env->SetIntArrayRegion(arr, 0, 2, out);
+    return arr;
+}
+
+JNIEXPORT jshortArray JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativeReadAudioForFd(
+        JNIEnv* env, jclass, jint fd) {
+    gLastErrorCode = 0;
+    gLastErrorStage = kStageFrameRead;
+    auto opened = rawedit::Source::open(static_cast<int>(fd));
+    if (!opened.isOk()) {
+        setError(static_cast<int>(opened.code), kStageOpen,
+                 std::string("open: ") + rawedit::errorName(opened.code) +
+                     " — " + opened.detail);
+        return nullptr;
+    }
+    std::unique_ptr<rawedit::Source> src = std::move(*opened.value);
+    auto result = src->readAudio();
+    if (!result.isOk()) {
+        setError(static_cast<int>(result.code), kStageFrameRead,
+                 std::string("readAudio: ") + rawedit::errorName(result.code) +
+                     " — " + result.detail);
+        return nullptr;
+    }
+    const std::vector<int16_t>& audio = *result.value;
+    const jsize n = static_cast<jsize>(audio.size());
+    jshortArray out = env->NewShortArray(n);
+    if (out == nullptr) return nullptr;
+    env->SetShortArrayRegion(out, 0, n, audio.data());
+    return out;
+}
+
 // Encoded (Mi-Log MP4) develop ---------------------------------------------------
 //
 // The encoded decode path (sprint plan Task 6): the Kotlin EncodedSource
