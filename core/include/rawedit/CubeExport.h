@@ -62,6 +62,28 @@
 // DETERMINISM: the bake is a pure function of (spec, grade, chain, n).
 // The row split below is the bakeOpenDrtLut pattern: each (g, b) row owns
 // its own outputs, so the parallel split never changes a value.
+//
+// ORDER AND SOURCE-KIND CAVEATS (verified against the render paths, E7):
+//   * The bake's stage order is the v2 MODEL's documented render order
+//     (ClipGradeV2: "develop, legacy, nodes, output") and the GPU
+//     pipeline's own pass order (POST 9-20 -> unsharp -> warp -> NODES ->
+//     TAIL 23/24+OETF; GpuDevelopPipeline draw 5/10.5/11). The CPU export
+//     leg runs the 23/24 pair INSIDE developCpu, i.e. BEFORE the node
+//     chain — an existing CPU/GPU ordering divergence for a
+//     tonemap+nodes grade; the bake follows the GPU/v2-model order (the
+//     GPU is the primary render path for NODES grades, the CPU arm the
+//     fallback). The G5 wiring can compose either by calling the pieces
+//     differently if byte-parity with the CPU leg is ever wanted.
+//   * Stages 9-20 are the MCRAW develop path's semantics. The ENCODED
+//     (Mi-Log) path applies temp/tint/exposure in its own WB loop and
+//     runs NO tone-band stage (Transfer.h's own record); its node chain
+//     and output are the same as MCRAW's. The bake evaluates what it is
+//     handed — G5 decides per source kind which Grade fields to pass
+//     (for an encoded clip the tone-band fields do not match its render).
+//   * With output = OpenDrt the legacy tonemap/LUT pair NEVER runs (the
+//     DRT replaces the output — the GPU tail-drt rule: "tonemap/LUT/OETF
+//     all skipped"); grade.tonemap/grade.lutStrength are read only in
+//     the LegacyTonemapLut flavor.
 
 #pragma once
 
