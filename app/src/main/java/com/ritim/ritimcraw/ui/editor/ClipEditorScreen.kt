@@ -997,6 +997,16 @@ fun ClipEditorScreen(
     // develop (the clip's own grade is untouched). Default no-op keeps
     // every existing caller working.
     onDevelopPhoto: (frameIndex: Int, separate: Boolean) -> Unit = { _, _ -> },
+    /**
+     * (E5-B, night G1) The clip's own audio description from the import
+     * metadata ([sampleRate, channels], 0/0 when unknown), read through a
+     * seam so the screen stays store-free (the lutEntries precedent).
+     * The export sheet's sample-rate row shows this as the Source value;
+     * the EXPORTER never uses it — it reads the real description from the
+     * native session at run time, so this display fact can never steer
+     * the encode. Default 0/0 keeps every existing caller unchanged.
+     */
+    sourceAudioFacts: () -> IntArray = { intArrayOf() },
     // ---- Presets (owner request 2026-11-11 §4) ----
     // The saved named grades (AppNav: PresetStore.all(), refreshed after
     // every save/delete). The screen owns no store; the clip-info sheet
@@ -3880,6 +3890,11 @@ fun ClipEditorScreen(
             // stay 0 on both counts).
             rawSampleFormat = if (sourcePath == SourcePath.MCRAW) "raw16" else null,
             rawWhiteLevel = session?.rawWhiteLevel ?: 0,
+            // (E5-B, night G1) The clip's own audio description for the
+            // export sheet's Source row — display fact only (the exporter
+            // reads the real one from the native session at run time).
+            audioSampleRateHz = sourceAudioFacts().getOrNull(0) ?: 0,
+            audioChannels = sourceAudioFacts().getOrNull(1) ?: 0,
         )
 
         // P3 (2026-11-25): match the display refresh rate to the clip while it

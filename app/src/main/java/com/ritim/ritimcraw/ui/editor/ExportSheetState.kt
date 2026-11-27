@@ -106,8 +106,50 @@ internal object ExportSheetState {
     fun loudnessValue(targetLufs: Float?): String? =
         targetLufs?.let { String.format(Locale.ROOT, "%.0f", it) }
 
+    /**
+     * (E5-B, night G1) The audio-format row's value: the source pair
+     * ("48 kHz · Stereo"), the choice pair, or the honest mix ("Source →
+     * 44.1 kHz"). [sourceRate]/[sourceChannels] 0 = unknown (the clip has
+     * no audio, or the metadata carries no facts): the value says what it
+     * can, never a guessed number.
+     */
+    fun audioFormatValue(
+        sourceRate: Int,
+        sourceChannels: Int,
+        chosenRate: Int?,
+        chosenChannels: Int?,
+    ): String {
+        val src = sourceText(sourceRate, sourceChannels)
+        // Both SOURCE (or unknown): the one honest word, nothing else.
+        if (chosenRate == null && chosenChannels == null) return src
+        val rate = chosenRate?.let { rateText(it) } ?: rateText(sourceRate)
+        val ch = chosenChannels?.let { channelText(it) } ?: channelText(sourceChannels)
+        val picked = "$rate · $ch"
+        // A choice that lands on the clip's own shape is SOURCE in
+        // effect: show the plain value, not a fake conversion.
+        if (chosenRate == sourceRate && chosenChannels == sourceChannels) return picked
+        if (chosenRate == null || chosenChannels == null) {
+            // Half a choice: show the source's other side beside the pick.
+            return "$src → $picked"
+        }
+        return picked
+    }
+
+    /** "48 kHz" / "44.1 kHz"; "unknown" never appears — the caller omits. */
+    fun rateText(hz: Int): String =
+        if (hz == 44100) "44.1 kHz" else String.format(Locale.ROOT, "%d kHz", hz / 1000)
+
+    /** "Mono" / "Stereo" — the words are the same in en and tr. */
+    fun channelText(ch: Int): String = if (ch == 1) "Mono" else "Stereo"
+
+    /** The row's Source value: the clip's own pair, or the honest unknown. */
+    fun sourceText(sourceRate: Int, sourceChannels: Int): String = when {
+        sourceRate <= 0 || sourceChannels <= 0 -> "Source"
+        else -> "${rateText(sourceRate)} · ${channelText(sourceChannels)}"
+    }
+
     /** Read-only rows show a value but have no chevron and open nothing. */
-    fun isReadOnly(row: Row): Boolean = row == Row.FRAME_RATE || row == Row.AUDIO_FORMAT
+    fun isReadOnly(row: Row): Boolean = row == Row.FRAME_RATE
 
     /**
      * The summary's first line: "MP4 · 3840×2160 · 30 fps · HEVC 10-bit · ≈ 420 MB".

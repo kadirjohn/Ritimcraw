@@ -1822,6 +1822,14 @@ fun AppNav(
                         sourceHeight = sourceDims.second,
                         sourceKind = sourceKind,
                         sourceMime = sourceMime,
+                        // (E5-B, night G1) The clip's own audio description
+                        // from the import metadata — the export sheet's
+                        // Source row display fact (the exporter reads the
+                        // real description from the native session).
+                        sourceAudioFacts = {
+                            val audio = stores.metadata.get(r.sourceId)?.audio?.value
+                            intArrayOf(audio?.sampleRateHz ?: 0, audio?.channels ?: 0)
+                        },
                         // The top bar's clip name (§2b): display name with
                         // the id as fallback — displayOrId never blank.
                         sourceName = sourceName,

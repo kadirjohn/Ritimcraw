@@ -416,7 +416,15 @@
     <string name="export_frame_rate">Frame rate</string>
     <string name="export_frame_rate_value">%1$s fps (from the clip)</string>
     <string name="export_audio_format">Audio sample rate and channels</string>
-    <string name="export_audio_format_value">Same as the clip</string>
+    <string name="export_help_audio_format">The AAC track\'s sample rate and channel count. Source keeps the clip\'s own audio exactly; a pick resamples and remixes the whole clip before the encode.</string>
+    <string name="export_audio_source">Source</string>
+    <string name="export_audio_source_known_hint">The clip\'s own audio (%1$s) is exported unchanged</string>
+    <string name="export_audio_source_unknown_hint">The clip\'s own audio is exported unchanged</string>
+    <string name="export_audio_rate_section">Sample rate</string>
+    <string name="export_audio_channels_section">Channels</string>
+    <string name="export_audio_rate_source_hint">This is the clip\'s own rate</string>
+    <string name="export_audio_rate_pick_hint">Resamples the whole clip to this rate</string>
+    <string name="export_audio_channels_pick_hint">Remixes the clip to %1$s</string>
     <string name="export_loudness">Loudness target</string>
     <string name="export_loudness_value">%1$s LUFS</string>
     <string name="export_loudness_off">Off</string>
@@ -449,7 +457,7 @@
     <string name="export_help_rate_mode">Variable (VBR) spends bits where the picture needs them. Constant (CBR) keeps the rate steady, which some players and uploads prefer.</string>
     <string name="export_help_keyframes">How often a full picture is stored. Shorter is easier to edit and seek, longer is smaller. Every frame is the largest and the easiest to edit.</string>
     <string name="export_help_profile">Auto lets the encoder choose. Pick one only if a player needs it.</string>
-    <string name="export_help_audio">Audio quality of the AAC track. The sample rate and channel count follow the clip.</string>
+    <string name="export_help_audio">Audio quality of the AAC track. The sample rate and channel count are their own row below.</string>
     <string name="export_bit_depth">Bit depth</string>
     <string name="export_ten_bit_needs">10-bit needs the original size, no crop or straighten, a grade the GPU path supports and a 10-bit encoder. It is made on the GPU path only.</string>
     <string name="export_help_bit_depth">10-bit (HEVC Main10) keeps smooth gradients like skies without banding. It is rendered on the GPU path at the original size. Players need to support 10-bit HEVC.</string>

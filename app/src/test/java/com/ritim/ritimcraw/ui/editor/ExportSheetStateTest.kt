@@ -115,9 +115,10 @@ class ExportSheetStateTest {
             ExportSheetState.mainRows(false).map { it.name },
         )
         // test change (E5, night D2): the loudness target row joins the
-        // Advanced order between AUDIO and the read-only AUDIO_FORMAT —
-        // the audio section's own setting, before the audio-format
-        // description row.
+        // Advanced order between AUDIO and the audio-format row — the
+        // audio section's own setting, before the audio-format
+        // description row. (E5-B, night G1): the audio-format row stays
+        // in the same place; it is the rate/channel CHOICE now.
         assertEquals(
             listOf("BITRATE", "RATE_MODE", "KEYFRAME", "PROFILE", "AUDIO", "LOUDNESS", "AUDIO_FORMAT"),
             ExportSheetState.advancedRows().map { it.name },
@@ -139,10 +140,57 @@ class ExportSheetStateTest {
 
     @Test
     fun only_the_clip_derived_rows_are_read_only() {
+        // test change (E5-B, night G1): the audio-format row OPENS the
+        // rate/channel sub-page now, so it is no longer read-only — only
+        // the frame rate (the clip's own, never a choice in v1) stays.
         val ro = ExportSheetState.Row.entries.filter { ExportSheetState.isReadOnly(it) }
+        assertEquals(setOf(ExportSheetState.Row.FRAME_RATE), ro.toSet())
+    }
+
+    // ---- (E5-B, night G1) the audio-format row's value ----
+
+    @Test
+    fun the_audio_format_row_value_is_the_source_pair_when_source() {
+        // Source choices (both null): the clip's own pair, or the honest
+        // "Source" word when the metadata carries no facts — never a
+        // guessed number.
+        assertEquals("48 kHz · Stereo", ExportSheetState.audioFormatValue(48000, 2, null, null))
+        assertEquals("44.1 kHz · Mono", ExportSheetState.audioFormatValue(44100, 1, null, null))
+        assertEquals("Source", ExportSheetState.audioFormatValue(0, 0, null, null))
+    }
+
+    @Test
+    fun the_audio_format_row_value_shows_the_pick_or_the_honest_mix() {
+        // A full pick: the chosen pair, plain.
         assertEquals(
-            setOf(ExportSheetState.Row.FRAME_RATE, ExportSheetState.Row.AUDIO_FORMAT),
-            ro.toSet(),
+            "44.1 kHz · Mono",
+            ExportSheetState.audioFormatValue(48000, 2, 44100, 1),
         )
+        // A pick that lands on the clip's own shape is the source in
+        // effect: the plain value, no fake conversion arrow.
+        assertEquals(
+            "48 kHz · Stereo",
+            ExportSheetState.audioFormatValue(48000, 2, 48000, 2),
+        )
+        // Half a pick: the honest "source -> pick" mix (each side on its
+        // own — the resolution pair's rule).
+        assertEquals(
+            "48 kHz · Stereo → 44.1 kHz · Stereo",
+            ExportSheetState.audioFormatValue(48000, 2, 44100, null),
+        )
+        assertEquals(
+            "48 kHz · Stereo → 48 kHz · Mono",
+            ExportSheetState.audioFormatValue(48000, 2, null, 1),
+        )
+    }
+
+    @Test
+    fun the_rate_and_channel_words_are_the_units_the_row_shows() {
+        assertEquals("44.1 kHz", ExportSheetState.rateText(44100))
+        assertEquals("48 kHz", ExportSheetState.rateText(48000))
+        assertEquals("Mono", ExportSheetState.channelText(1))
+        assertEquals("Stereo", ExportSheetState.channelText(2))
+        assertEquals("Source", ExportSheetState.sourceText(0, 0))
+        assertEquals("48 kHz · Stereo", ExportSheetState.sourceText(48000, 2))
     }
 }

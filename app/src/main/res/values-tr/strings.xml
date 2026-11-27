@@ -413,7 +413,15 @@
     <string name="export_frame_rate">Kare hızı</string>
     <string name="export_frame_rate_value">%1$s kare/sn (klipten)</string>
     <string name="export_audio_format">Ses örnekleme hızı ve kanallar</string>
-    <string name="export_audio_format_value">Klip ile aynı</string>
+    <string name="export_help_audio_format">AAC parçasının örnekleme hızı ve kanal sayısı. Kaynak, klibin kendi sesini aynen korur; bir seçim tüm klibi kodlamadan önce yeniden örnekler ve yeniden karıştırır.</string>
+    <string name="export_audio_source">Kaynak</string>
+    <string name="export_audio_source_known_hint">Klibin kendi sesi (%1$s) değiştirilmeden aktarılır</string>
+    <string name="export_audio_source_unknown_hint">Klibin kendi sesi değiştirilmeden aktarılır</string>
+    <string name="export_audio_rate_section">Örnekleme hızı</string>
+    <string name="export_audio_channels_section">Kanallar</string>
+    <string name="export_audio_rate_source_hint">Bu klibin kendi hızıdır</string>
+    <string name="export_audio_rate_pick_hint">Tüm klibi bu hıza yeniden örnekler</string>
+    <string name="export_audio_channels_pick_hint">Klibi %1$s olarak yeniden karıştırır</string>
     <string name="export_loudness">Ses şiddeti hedefi</string>
     <string name="export_loudness_value">%1$s LUFS</string>
     <string name="export_loudness_off">Kapalı</string>
@@ -446,7 +454,7 @@
     <string name="export_help_rate_mode">Değişken (VBR) bitleri görüntünün ihtiyaç duyduğu yere harcar. Sabit (CBR) hızı sabit tutar; bazı oynatıcılar ve yüklemeler bunu tercih eder.</string>
     <string name="export_help_keyframes">Tam bir görüntünün ne sıklıkla saklandığı. Kısa olan düzenlemesi ve ileri sarması kolay, uzun olan daha küçüktür. Her kare en büyük ve düzenlemesi en kolay olandır.</string>
     <string name="export_help_profile">Otomatik, seçimi kodlayıcıya bırakır. Yalnızca bir oynatıcı istiyorsa seçin.</string>
-    <string name="export_help_audio">AAC ses parçasının kalitesi. Örnekleme hızı ve kanal sayısı klibi izler.</string>
+    <string name="export_help_audio">AAC ses parçasının kalitesi. Örnekleme hızı ve kanal sayısı aşağıdaki kendi satırındadır.</string>
     <string name="export_bit_depth">Bit derinliği</string>
     <string name="export_ten_bit_needs">10-bit için özgün boyut, kırpma ve düzeltme olmaması, GPU yolunun desteklediği bir ayar ve 10-bit kodlayıcı gerekir. Yalnızca GPU yolunda üretilir.</string>
     <string name="export_help_bit_depth">10-bit (HEVC Main10) gökyüzü gibi yumuşak geçişleri bantlaşma olmadan korur. Özgün boyutta GPU yolunda üretilir. Oynatıcının 10-bit HEVC desteklemesi gerekir.</string>
