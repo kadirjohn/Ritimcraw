@@ -466,6 +466,25 @@
     <string name="exports_notification_channel">Dışa aktarımlar</string>
     <string name="exports_notification_running">Dışa aktarım sürüyor</string>
 
+    <!-- Proxy background build notification (G3): the visible side of the
+         process priority that keeps a backgrounded proxy build alive — the
+         ExportForegroundService shape, its own channel and id. -->
+    <string name="proxy_notification_channel">Proxy üretimi</string>
+    <string name="proxy_notification_running">Proxy üretiliyor</string>
+    <string name="proxy_notification_frames">%1$d / %2$d kare</string>
+
+    <!-- Proxy storage page section (G3, plan section 6): usage against the
+         cap, per-clip rows, the over-cap line (owner decision 2026-11-26),
+         delete actions. -->
+    <string name="proxy_storage_title">Proxy önbelleği</string>
+    <string name="proxy_storage_usage">%2$s GB içinden %1$s GB</string>
+    <string name="proxy_storage_over_cap">Sınırın %1$s GB üstünde — eski proxy\'ler otomatik silinecek</string>
+    <string name="proxy_storage_clear_all">Proxy önbelleğini temizle</string>
+    <string name="proxy_clip_delete">%1$s proxy\'lerini sil</string>
+    <string name="proxy_clip_queued">sırada</string>
+    <string name="proxy_clip_building">üretiliyor</string>
+    <string name="proxy_clip_failed">başarısız: %1$s</string>
+
     <!-- Projects -->
     <string name="projects_title">Projeler</string>
     <string name="projects_open_timeline">Zaman çizelgesini aç</string>
