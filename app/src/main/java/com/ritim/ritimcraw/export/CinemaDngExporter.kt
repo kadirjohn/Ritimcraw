@@ -272,9 +272,13 @@ class CinemaDngExporter(
     }
 
     private fun detailOf(r: CinemaDngResult): String = when (r.state) {
+        // DONE: the counts, the WAV's name when it was written, and the
+        // HONEST no-audio line when it was not (the auditor's
+        // lie-of-omission fix: a silent clip reads "no audio", never a
+        // bare "N/N frames" that hides the WAV's absence).
         State.DONE -> "${r.framesWritten}/${r.framesTotal} frames" +
             (r.wavName?.let { " · $it" } ?: "") +
-            (if (r.audioAbsent) "" else "")
+            (if (r.audioAbsent) " · no audio" else "")
         State.CANCELLED -> "cancelled after ${r.framesWritten}/${r.framesTotal} frames (written frames kept)"
         State.FAILED -> r.failDetail ?: "unknown failure"
         else -> "${r.framesWritten}/${r.framesTotal} frames"
@@ -422,13 +426,35 @@ class CinemaDngExporter(
 
         // 3. The WAV (only when the clip has audio): the clip's own PCM,
         //    framed by CinemaDngWav into the folder beside the frames.
+        //    RUN-TIME AUDIO RESOLUTION (auditor RED fix, 2026-11-27): the
+        //    sheet's snapshot carries audioSampleRate=0/audioChannels=0
+        //    (the sheet does not read the clip's audio facts), so the
+        //    snapshot's own values can NEVER gate this block — the source
+        //    is asked HERE, through the io seam, when the snapshot did not
+        //    carry a usable pair (>0 = a caller that DID resolve them at
+        //    enqueue keeps them, the backward-compatibility rule).
+        //    io.audioInfo returning null / a 0-0 pair is the honest
+        //    "the clip has no audio" state: the WAV is simply not written
+        //    and the DONE detail says so (never a fabricated file, never a
+        //    silent lie of omission).
+        val audioFromSnapshot = settings.audioSampleRate > 0 && settings.audioChannels > 0
+        val audio = if (audioFromSnapshot) {
+            Pair(settings.audioSampleRate, settings.audioChannels)
+        } else {
+            val info = io.audioInfo(sourceFd)
+            if (info != null && info.size >= 2 && info[0] > 0 && info[1] > 0) {
+                Pair(info[0], info[1])
+            } else {
+                null // no audio track, or the read failed — honest skip
+            }
+        }
         var wavName: String? = null
         var audioAbsent = false
-        if (settings.audioSampleRate > 0 && settings.audioChannels > 0) {
+        if (audio != null) {
             val pcm = io.readAudio(sourceFd)
             if (pcm == null || pcm.isEmpty()) {
-                // HONEST no-audio: the settings snapshot said audio, the
-                // source has none readable — the WAV is skipped, the job
+                // HONEST no-audio: the clip reported an audio track but
+                // no PCM could be read — the WAV is skipped, the job
                 // detail reports it (never a fabricated file).
                 audioAbsent = true
             } else {
@@ -447,7 +473,7 @@ class CinemaDngExporter(
                     )
                 }
                 try {
-                    CinemaDngWav.write(out, pcm, settings.audioSampleRate, settings.audioChannels)
+                    CinemaDngWav.write(out, pcm, audio.first, audio.second)
                     wavName = name
                 } catch (e: Exception) {
                     out.close()
@@ -465,6 +491,11 @@ class CinemaDngExporter(
                 }
                 out.close()
             }
+        } else {
+            // The clip has no audio track at all: the frames alone are the
+            // honest, complete deliverable — but the DONE detail SAYS so
+            // (reported, never guessed; the auditor's lie-of-omission fix).
+            audioAbsent = true
         }
 
         return CinemaDngResult(

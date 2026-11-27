@@ -675,11 +675,13 @@ Result<void> writeCfaDng(const std::string& path, const uint16_t* cfa,
 
 namespace {
 
-// Serializes the CFA DNG (with extras + sequence tags) to a byte vector.
-// Shared by the path arm and the fd arm; the layout logic is IDENTICAL to
-// the inline body above (one source of truth — the path overload is the
-// reference; a drift would change every export, so the tests pin the
-// bytes against the path writer's output).
+// Serializes the CFA DNG (with extras + sequence tags) to a byte vector,
+// for the fd arm. This is a SEPARATE COPY of the path arm's inline body
+// (the path overload above keeps its own body untouched — changing it
+// would change every single-frame export, so it stays byte-frozen): the
+// two are pinned equal by test_dng_sequence's
+// fd_arm_writes_identical_bytes_to_the_path_arm — a drift in either arm
+// fails that test, which is the coupling that replaces shared code here.
 Result<std::vector<uint8_t>> serializeCfaDng(
         const uint16_t* cfa, const FrameInfo& frame, const RawMeta& meta,
         const DngExtraMeta& extra, const DngSequenceMeta& seq) {

@@ -1562,7 +1562,10 @@ class ExportQueueTest {
         assertEquals(1, queue.runAll())
         val row = store.all().single()
         assertEquals(State.DONE, row.state)
-        assertEquals("2/2 frames", row.detail)
+        // The fake io carries no audio: the DONE detail names the absent
+        // WAV (the run-time audio resolution + honest wording, the
+        // auditor's RED fix).
+        assertEquals("2/2 frames · no audio", row.detail)
         // The sequence ran (2 frames) and the per-clip DNG arm never did.
         assertEquals(2, io.log.count { it.startsWith("frame:") })
         assertTrue(log.isEmpty())

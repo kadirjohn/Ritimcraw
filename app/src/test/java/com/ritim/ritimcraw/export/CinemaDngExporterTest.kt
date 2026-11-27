@@ -287,9 +287,72 @@ class CinemaDngExporterTest {
             val exporter = CinemaDngExporter(io = io, engine = e)
             val result = runBlocking { exporter.export(job(), 7, settings(2)) }
             assertEquals(State.DONE, result.state)
-            // No WAV name in the detail, no wav open in the log.
-            assertEquals("2/2 frames", result.detail)
+            // No WAV name in the detail, no wav open in the log — and the
+            // DONE detail names the absent audio (the snapshot said audio,
+            // the clip had none readable: honest skip, honest wording).
+            assertEquals("2/2 frames · no audio", result.detail)
             assertTrue(io.log.none { it.startsWith("wav:") })
+        } finally {
+            e.shutdown()
+        }
+    }
+
+    // ---- RUN-TIME AUDIO RESOLUTION (auditor RED fix, 2026-11-27) ----
+    // The sheet's snapshot carries audioSampleRate=0/audioChannels=0 (the
+    // sheet does not read the clip's audio facts), so the WAV arm must
+    // resolve the audio AT RUN TIME through io.audioInfo — the snapshot's
+    // 0-0 pair can never gate the block.
+
+    @Test
+    fun zero_snapshot_audio_resolves_at_run_time_and_writes_the_wav() {
+        val e = engine()
+        try {
+            val io = FakeIo(frames = 2)
+            val exporter = CinemaDngExporter(io = io, engine = e)
+            // The REAL sheet's snapshot: 0/0 (the sheet never read the
+            // audio facts). The clip HAS audio (FakeIo's pcm).
+            val s = settings(2).copy(audioSampleRate = 0, audioChannels = 0)
+            val result = runBlocking { exporter.export(job(), 7, s) }
+            assertEquals(State.DONE, result.state)
+            // The WAV WAS opened and written — the run-time resolution
+            // found the audio the snapshot did not carry.
+            assertEquals("2/2 frames · clip.wav", result.detail)
+            assertTrue(io.log.any { it.startsWith("wav:") })
+        } finally {
+            e.shutdown()
+        }
+    }
+
+    @Test
+    fun zero_snapshot_audio_with_no_clip_audio_says_no_audio_honestly() {
+        val e = engine()
+        try {
+            val io = FakeIo(frames = 2, pcm = null)
+            val exporter = CinemaDngExporter(io = io, engine = e)
+            val s = settings(2).copy(audioSampleRate = 0, audioChannels = 0)
+            val result = runBlocking { exporter.export(job(), 7, s) }
+            assertEquals(State.DONE, result.state)
+            // The DONE detail names the absent audio — never a bare
+            // "N/N frames" that hides the WAV's absence (the auditor's
+            // lie-of-omission fix).
+            assertEquals("2/2 frames · no audio", result.detail)
+            assertTrue(io.log.none { it.startsWith("wav:") })
+        } finally {
+            e.shutdown()
+        }
+    }
+
+    @Test
+    fun snapshot_audio_pair_is_kept_when_present() {
+        val e = engine()
+        try {
+            val io = FakeIo(frames = 2)
+            val exporter = CinemaDngExporter(io = io, engine = e)
+            // A caller that DID resolve the audio at enqueue (a future
+            // sheet): the snapshot pair wins, backward compatible.
+            val result = runBlocking { exporter.export(job(), 7, settings(2)) }
+            assertEquals(State.DONE, result.state)
+            assertEquals("2/2 frames · clip.wav", result.detail)
         } finally {
             e.shutdown()
         }

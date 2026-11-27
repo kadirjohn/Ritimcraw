@@ -1728,7 +1728,8 @@ fun AppNav(
                         // (E1c) the export sheet's time estimate: this device's
                         // last measured MP4 export speed (null until one ran).
                         exportRate = ExportSheetModel.latestRate(exportJobs),
-                        onExport = { target, resolutionW, resolutionH, exportSettings ->                            // Snapshot the CURRENT grade at queue time (the
+                        onExport = { target, resolutionW, resolutionH, exportSettings ->
+                            // Snapshot the CURRENT grade at queue time (the
                             // spec: a later edit must not change an in-flight
                             // export) and enqueue; the runner picks it up.
                             // The output name is captured from the clip's
