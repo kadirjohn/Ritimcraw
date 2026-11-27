@@ -80,6 +80,36 @@ object CubeExportPlan {
         return "$safe ${grid.n}${grid.n}${grid.n}${EXTENSION}"
     }
 
+    /** Extensions stripped from a clip name before it becomes a LUT name. */
+    private val CLIP_EXTENSIONS = setOf("mcraw", "mp4", "mov")
+
+    private val UNSAFE_CHARS = Regex("[/\\\\:*?\"<>|\\p{Cntrl}]")
+    private val WHITESPACE = Regex("\\s+")
+    private val STAMP_FORMAT =
+        java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd_HHmm", Locale.ROOT)
+
+    /**
+     * The SAF save sheet's pre-filled file name:
+     * "<clip name without its extension>_<yyyy-MM-dd_HHmm>.cube". Only the
+     * last extension, and only a known clip one (.mcraw, .mp4, .mov), is
+     * stripped. Characters a file name cannot carry become "_", whitespace
+     * runs collapse to one "_", and an empty result falls back to "lut".
+     * Pure: the instant and zone are injected, never read here.
+     */
+    fun suggestedFileName(clipName: String, now: java.time.Instant, zone: java.time.ZoneId): String {
+        var base = clipName.trim()
+        val dot = base.lastIndexOf('.')
+        if (dot > 0 && base.substring(dot + 1).lowercase(Locale.ROOT) in CLIP_EXTENSIONS) {
+            base = base.substring(0, dot)
+        }
+        val safe = base
+            .replace(UNSAFE_CHARS, "_")
+            .replace(WHITESPACE, "_")
+            .trim('_', '.')
+            .ifEmpty { "lut" }
+        return "${safe}_${STAMP_FORMAT.format(now.atZone(zone))}$EXTENSION"
+    }
+
     /**
      * The honest upper bound of the written .cube text for one grid:
      * the writer emits "%.6f %.6f %.6f\n" rows, so a row is at most
