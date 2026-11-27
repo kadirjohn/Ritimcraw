@@ -5,7 +5,9 @@ import com.ritim.ritimcraw.export.ExportJob
 import com.ritim.ritimcraw.export.State
 import com.ritim.ritimcraw.export.Target
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -16,6 +18,12 @@ import org.junit.Test
  * (nothing deletes, nothing stays armed), and the dialog's context
  * line (the DONE row names its file, the failed/cancelled row its
  * clip). JVM-only, no Compose — the [ExportsSelectionTest] shape.
+ *
+ * M8 (owner request 2026-11-27, the same pass: "delete from disk
+ * box'u da olsun"): the checkbox rules are here too — the arm reset
+ * (a new dialog never inherits the last one's disk choice) and the
+ * visibility rule (only a DONE row with a published file shows the
+ * checkbox at all).
  */
 class ExportsDeleteConfirmTest {
 
@@ -25,6 +33,8 @@ class ExportsDeleteConfirmTest {
         // The display-derived name captured at enqueue (fileName's
         // backing field); null falls back to the legacy derived name.
         outputName: String? = null,
+        // The published media-store URI (M8): a DONE row's file target.
+        publishedUri: String? = null,
     ) = ExportJob(
         id = id,
         sourceId = "clip-$id",
@@ -32,6 +42,7 @@ class ExportsDeleteConfirmTest {
         target = Target.MP4,
         state = state,
         outputName = outputName,
+        publishedUri = publishedUri,
     )
 
     // ---- arm ----
@@ -124,5 +135,50 @@ class ExportsDeleteConfirmTest {
                 sourceNames = emptyMap(),
             ),
         )
+    }
+
+    // ---- the delete-from-disk checkbox (M8, owner request 2026-11-27) ----
+
+    @Test
+    fun the_checkbox_resets_to_unchecked_at_every_arm() {
+        // The box is the user's opt-in for THIS dialog: whatever the last
+        // dialog left checked, the new arm starts unchecked (the safe
+        // side — the M3 meaning is the default).
+        assertEquals(false, ExportsDeleteConfirm.armCheckbox(checked = true))
+        assertEquals(false, ExportsDeleteConfirm.armCheckbox(checked = false))
+    }
+
+    @Test
+    fun the_checkbox_shows_for_a_done_row_with_a_published_file() {
+        assertTrue(
+            ExportsDeleteConfirm.showsDiskCheckbox(
+                job("a", State.DONE, publishedUri = "content://media/external/video/media/42"),
+            )
+        )
+    }
+
+    @Test
+    fun the_checkbox_hides_for_a_failed_or_cancelled_row() {
+        // Nothing was written/published: a checkbox that does nothing
+        // would be a lie, so it does not compose.
+        assertFalse(ExportsDeleteConfirm.showsDiskCheckbox(job("f", State.FAILED)))
+        assertFalse(ExportsDeleteConfirm.showsDiskCheckbox(job("c", State.CANCELLED)))
+    }
+
+    @Test
+    fun the_checkbox_hides_for_a_done_row_whose_publish_failed() {
+        // A null or blank URI is no file on disk (the publish failed — the
+        // row opens the internal copy, which the record-only delete
+        // leaves): nothing to offer the checkbox.
+        assertFalse(ExportsDeleteConfirm.showsDiskCheckbox(job("n", State.DONE)))
+        assertFalse(ExportsDeleteConfirm.showsDiskCheckbox(job("b", State.DONE, publishedUri = "")))
+    }
+
+    @Test
+    fun a_live_row_never_shows_the_checkbox() {
+        // A live row never arms the dialog at all (arm's own rule); the
+        // visibility rule repeats it for defense in depth.
+        assertFalse(ExportsDeleteConfirm.showsDiskCheckbox(job("q", State.QUEUED, publishedUri = "content://media/1")))
+        assertFalse(ExportsDeleteConfirm.showsDiskCheckbox(job("r", State.RUNNING, publishedUri = "content://media/1")))
     }
 }

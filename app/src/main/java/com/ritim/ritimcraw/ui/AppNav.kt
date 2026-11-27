@@ -125,6 +125,7 @@ import com.ritim.ritimcraw.ui.components.NavSettings
 import com.ritim.ritimcraw.export.BitmapPngWriter
 import com.ritim.ritimcraw.export.CodecMeasureStore
 import com.ritim.ritimcraw.export.DngExporter
+import com.ritim.ritimcraw.export.ExportDelete
 import com.ritim.ritimcraw.export.ExportIo
 import com.ritim.ritimcraw.export.ExportJob
 import com.ritim.ritimcraw.export.ExportOpen
@@ -1222,6 +1223,60 @@ fun AppNav(
                 scope.launch {
                     exportSnackbar.showSnackbar(openMissingText, duration = SnackbarDuration.Long)
                 }
+        }
+    }
+
+    // DELETE-FROM-DISK (owner request 2026-11-27, M8: "bunu işaretlerse
+    // diskten de silsin"): the device-gated half of the pure
+    // [ExportDelete] rule, the [MediaStorePublisher]/openExport adapter
+    // shape — the resolver delete and the internal-copy delete cannot
+    // run in JVM tests, so every decision (WHICH rows, WHICH URIs,
+    // WHICH internal candidates) lives in the pure object and this only
+    // executes it. BEST-EFFORT, exactly like the publish: a failed
+    // resolver delete (a SecurityException, a vanished row — MediaStore
+    // may refuse an owned-row delete under some policies) never blocks
+    // the RECORD delete that already landed; the failure is logged
+    // under the "ritim-trace" tag the owner greps, never surfaced as a
+    // user-facing error (the record is gone either way, and a half-
+    // deleted file is the honest outcome of a best-effort delete).
+    fun deleteExportsFromDisk(ids: Set<String>) {
+        if (ids.isEmpty()) return
+        // Read the rows BEFORE the record delete below: the store's
+        // all() is the same list the pure rule filters; after delete()
+        // the rows are gone and the URIs with them.
+        val targets = ExportDelete.diskTargets(stores.exports.all(), ids)
+        if (targets.isEmpty()) return
+        scope.launch {
+            withContext(Dispatchers.IO) {
+                for (job in targets) {
+                    // (a) The published media-store row — THE file the owner
+                    // means: the gallery's copy. runCatching + one log line
+                    // (the MediaStorePublisher lines 72/87 pattern).
+                    val uri = job.publishedUri
+                    if (uri != null) {
+                        val deleted = runCatching {
+                            context.contentResolver.delete(Uri.parse(uri), null, null)
+                        }
+                        Log.i(
+                            "ritim-trace",
+                            "export delete-from-disk ${job.id}: media-store " +
+                                (deleted.getOrNull()?.let { "removed $it row(s)" } ?: "kept (${deleted.exceptionOrNull()?.message ?: "no row"})"),
+                        )
+                    }
+                    // (b) The internal copy (files/exports/<jobId>/ and the
+                    // legacy flat name): the retry-dedupe source and the
+                    // open-path fallback — left behind it would keep opening
+                    // and re-publishing the file the dialog said left. The
+                    // SAME candidates the open path offers, one delete() each
+                    // (a missing file is a no-op, not an error).
+                    for (file in ExportDelete.internalTargets(job, exportDir)) {
+                        val removed = file.delete()
+                        if (removed) {
+                            Log.i("ritim-trace", "export delete-from-disk ${job.id}: internal copy ${file.name} removed")
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -2804,10 +2859,17 @@ fun AppNav(
                             // removes the job records only — same meaning as
                             // Clear, per-id — and repeats the live-guard
                             // under its own lock. No kick needed: nothing
-                            // runnable changed.
-                            onDelete = { ids ->
+                            // runnable changed. The SECOND parameter (M8,
+                            // owner request 2026-11-27: "diskten de silsin")
+                            // is the dialog's delete-from-disk checkbox:
+                            // checked -> the published rows and internal
+                            // copies leave too (best-effort, AFTER the
+                            // record delete decision — the record leaves
+                            // regardless, the checkbox only widens it).
+                            onDelete = { ids, fromDisk ->
                                 stores.exports.delete(ids)
                                 exportJobs = stores.exports.all()
+                                if (fromDisk) deleteExportsFromDisk(ids)
                             },
                         )
                         Destination.SETTINGS -> SettingsScreen(
