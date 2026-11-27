@@ -1213,3 +1213,134 @@ TEST_CASE("merge_output_is_identical_serial_and_parallel_and_pinned") {
         CHECK(parallel == golden[scenario]);
     }
 }
+
+// ---- D4 (night-e6b): the optimized merge loop is bit-identical to the
+// frozen pre-D4 reference (A/B memcmp on identical synthetic inputs) ----
+
+namespace {
+
+// Synthetic weight/vector fields that exercise EVERY branch of the merge
+// loop: accepted blocks at several weights, rejected (weight 0) blocks,
+// motion vectors of several magnitudes (including warps that leave the
+// frame on edge blocks -> the bounds-continue path), and both feather
+// bands plus the plateau on both axes. Grid 6x4 blocks (kLw=512 -> 4 wide
+// would not leave room for edge-warp misses; 6x4 covers interior + all
+// four frame edges with the grid derived from a 768x512 frame).
+struct AbFields {
+    uint32_t bw = 0, bh = 0;
+    std::vector<MotionVector> fwdP, fwdN;
+    std::vector<float> wP, wN;
+};
+
+AbFields makeAbFields(uint32_t bw, uint32_t bh) {
+    AbFields f;
+    f.bw = bw;
+    f.bh = bh;
+    f.fwdP.assign(static_cast<size_t>(bw) * bh, MotionVector{});
+    f.fwdN.assign(static_cast<size_t>(bw) * bh, MotionVector{});
+    f.wP.assign(static_cast<size_t>(bw) * bh, 0.0f);
+    f.wN.assign(static_cast<size_t>(bw) * bh, 0.0f);
+    Lcg rng(20261127u);
+    for (uint32_t by = 0; by < bh; ++by) {
+        for (uint32_t bx = 0; bx < bw; ++bx) {
+            const size_t bi = static_cast<size_t>(by) * bw + bx;
+            // Prev side: a mix of full weight, tapered weight, and
+            // rejected blocks, with motion vectors up to +-3 proxy px
+            // (edge blocks then read out of frame -> the continue path).
+            f.wP[bi] = (rng.u() < 0.25f) ? 0.0f : 0.10f + 0.30f * rng.u();
+            f.fwdP[bi].dx = static_cast<int>(rng.u() * 7.0f) - 3;
+            f.fwdP[bi].dy = static_cast<int>(rng.u() * 7.0f) - 3;
+            // Next side: sparser acceptance, different vectors.
+            f.wN[bi] = (rng.u() < 0.45f) ? 0.0f : 0.15f + 0.25f * rng.u();
+            f.fwdN[bi].dx = static_cast<int>(rng.u() * 5.0f) - 2;
+            f.fwdN[bi].dy = static_cast<int>(rng.u() * 5.0f) - 2;
+        }
+    }
+    return f;
+}
+
+} // namespace
+
+TEST_CASE("merge_rows_ab_bit_identical" * doctest::description("D4 A/B: temporalMergeRows == temporalMergeRowsReference, memcmp == 0")) {
+    // 768x512 CFA (6x4 blocks of 128x128), textured center + shifted,
+    // noisy neighbors + a real noise profile: the guard and the warp both
+    // read real sample differences, not constants.
+    const uint32_t w = 768, h = 512;
+    const RawMeta m = testMeta();
+    const FrameInfo info = testInfo(w, h);
+    const AbFields f = makeAbFields(w / 128, h / 128);
+    auto tex = [&](int sx, int sy) {
+        return [sx, sy](uint32_t x, uint32_t y) {
+            const int xx = static_cast<int>(x) - (sx << 3);
+            const int yy = static_cast<int>(y) - (sy << 3);
+            return texture(static_cast<uint32_t>(std::min(std::max(xx, 0), 511)),
+                           static_cast<uint32_t>(std::min(std::max(yy, 0), 511)));
+        };
+    };
+    std::vector<uint16_t> c = makeFrame(w, h, tex(0, 0), 401, 6.0f);
+    std::vector<uint16_t> p = makeFrame(w, h, tex(1, 0), 402, 6.0f);
+    std::vector<uint16_t> x = makeFrame(w, h, tex(0, 1), 403, 6.0f);
+    NoiseProfile np = constantProfile(6.0f);
+    TemporalSettings ts;
+    ts.strength = 100.0f;
+    ts.centerNoise = &np;
+    ts.prevNoise = &np;
+    ts.nextNoise = &np;
+
+    TemporalSideField prevField, nextField;
+    prevField.on = true;
+    prevField.blockWeight = f.wP.data();
+    prevField.fwd = f.fwdP.data();
+    prevField.bw = f.bw;
+    prevField.bh = f.bh;
+    nextField.on = true;
+    nextField.blockWeight = f.wN.data();
+    nextField.fwd = f.fwdN.data();
+    nextField.bw = f.bw;
+    nextField.bh = f.bh;
+
+    std::vector<uint16_t> oA(c.size(), 0), oB(c.size(), 0);
+    std::vector<double> rowAP(h, -1.0), rowAN(h, -1.0);
+    std::vector<double> rowBP(h, -1.0), rowBN(h, -1.0);
+    const bool before = setParallelForcedSerial(true);
+    temporalMergeRows(c.data(), p.data(), x.data(), info, m, ts,
+                      prevField, nextField, oA.data(), rowAP.data(), rowAN.data());
+    temporalMergeRowsReference(c.data(), p.data(), x.data(), info, m, ts,
+                               prevField, nextField, oB.data(), rowBP.data(), rowBN.data());
+    setParallelForcedSerial(before);
+    CHECK(std::memcmp(oA.data(), oB.data(), oA.size() * sizeof(uint16_t)) == 0);
+    CHECK(rowAP == rowBP);
+    CHECK(rowAN == rowBN);
+
+    // Same proof with ONE side on (the prev-only and next-only shapes the
+    // bridge really produces at clip edges).
+    nextField.on = false;
+    std::fill(oA.begin(), oA.end(), 0);
+    std::fill(oB.begin(), oB.end(), 0);
+    std::fill(rowAP.begin(), rowAP.end(), -1.0);
+    std::fill(rowAN.begin(), rowAN.end(), -1.0);
+    std::fill(rowBP.begin(), rowBP.end(), -1.0);
+    std::fill(rowBN.begin(), rowBN.end(), -1.0);
+    temporalMergeRows(c.data(), p.data(), x.data(), info, m, ts,
+                      prevField, nextField, oA.data(), rowAP.data(), rowAN.data());
+    temporalMergeRowsReference(c.data(), p.data(), x.data(), info, m, ts,
+                               prevField, nextField, oB.data(), rowBP.data(), rowBN.data());
+    CHECK(std::memcmp(oA.data(), oB.data(), oA.size() * sizeof(uint16_t)) == 0);
+    CHECK(rowAP == rowBP);
+    CHECK(rowAN == rowBN);
+
+    // And a degenerate-range meta (white <= black -> the 1.0f range
+    // fallback): both paths must agree there too.
+    RawMeta deg = m;
+    deg.white = 0;
+    std::fill(oA.begin(), oA.end(), 0);
+    std::fill(oB.begin(), oB.end(), 0);
+    nextField.on = true;
+    temporalMergeRows(c.data(), p.data(), x.data(), info, deg, ts,
+                      prevField, nextField, oA.data(), rowAP.data(), rowAN.data());
+    temporalMergeRowsReference(c.data(), p.data(), x.data(), info, deg, ts,
+                               prevField, nextField, oB.data(), rowBP.data(), rowBN.data());
+    CHECK(std::memcmp(oA.data(), oB.data(), oA.size() * sizeof(uint16_t)) == 0);
+    CHECK(rowAP == rowBP);
+    CHECK(rowAN == rowBN);
+}

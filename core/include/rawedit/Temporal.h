@@ -292,6 +292,51 @@ struct TemporalReport {
     double mergeMs = 0.0;
 };
 
+// Per-neighbor inputs of the full-resolution merge loop, in the form the
+// loop consumes them (D4 night-e6b): the per-block weight field (0 =
+// rejected block) and the per-block motion vectors the merge warps by,
+// with the block-grid dims. Exposed for tests (the A/B bit-identity
+// harness below); production fills it from the internal match state.
+struct TemporalSideField {
+    bool on = false;                    // side eligible: arrays valid
+    const float* blockWeight = nullptr; // bw*bh, 0 = rejected block
+    const MotionVector* fwd = nullptr;  // bw*bh, center -> neighbor
+    uint32_t bw = 0, bh = 0;            // block grid dims
+};
+
+// The full-resolution merge loop (D4 night-e6b), split out of
+// temporalMergeCfa so the A/B bit-identity test can drive it directly
+// with synthetic weight/vector fields. Same math, same order, same
+// output as inlined in temporalMergeCfa before the split: per CFA pixel
+// O = (C + wP*P + wN*N)/(1 + wP + wN) with OBMC feathering over accepted
+// blocks, the 6-sigma per-pixel occlusion guard, and per-row diagnostic
+// weight sums (rowWPrev/rowWNext must point to h doubles each, filled
+// per row and combined in ROW ORDER by the caller so serial and
+// parallel runs report identical numbers). Rows are independent and run
+// through parallelForRows.
+void temporalMergeRows(const uint16_t* center, const uint16_t* prev,
+                       const uint16_t* next, const FrameInfo& info,
+                       const RawMeta& meta, const TemporalSettings& settings,
+                       const TemporalSideField& prevField,
+                       const TemporalSideField& nextField,
+                       uint16_t* out, double* rowWPrev, double* rowWNext);
+
+// FROZEN REFERENCE twin of temporalMergeRows: the verbatim pre-D4 loop
+// (axisCandidates recomputed per pixel, no per-frame tables, no fast
+// path). Production NEVER calls it; the A/B test
+// (merge_rows_ab_bit_identical, test_temporal.cpp) runs both on the same
+// synthetic fields and memcmps the outputs, so every optimization inside
+// temporalMergeRows is pinned bit-identical to this copy at test time.
+// Do not "fix" or optimize this function — its value is being old.
+void temporalMergeRowsReference(const uint16_t* center, const uint16_t* prev,
+                                const uint16_t* next, const FrameInfo& info,
+                                const RawMeta& meta,
+                                const TemporalSettings& settings,
+                                const TemporalSideField& prevField,
+                                const TemporalSideField& nextField,
+                                uint16_t* out, double* rowWPrev,
+                                double* rowWNext);
+
 // Merges the temporal window into `out`. center/prev/next are full-res CFA
 // buffers (frameCount x w*h uint16, row-major); prev/next may be null
 // (first/last frame, or an ineligible neighbor the caller already dropped —
