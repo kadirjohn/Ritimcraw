@@ -340,6 +340,51 @@ TEST_CASE("smpte_timecode_layout_and_flags") {
     }
 }
 
+TEST_CASE("smpte_timecode_bcd_digits") {
+    uint8_t c[8];
+    // Frame 72 of a 30 fps clip (00:00:02:12) via the offset path.
+    smpteTimeCodes(0, 0, 0, 0, 72, 30.0, c);
+    const uint8_t a[8] = {0x12, 0x02, 0x00, 0x00, 0, 0, 0, 0};
+    CHECK(std::memcmp(c, a, 8) == 0);
+    smpteTimeCodes(0, 59, 59, 29, 0, 30.0, c);
+    const uint8_t b[8] = {0x29, 0x59, 0x59, 0x00, 0, 0, 0, 0};
+    CHECK(std::memcmp(c, b, 8) == 0);
+    smpteTimeCodes(23, 59, 59, 23, 0, 24.0, c);
+    const uint8_t d[8] = {0x23, 0x59, 0x59, 0x23, 0, 0, 0, 0};
+    CHECK(std::memcmp(c, d, 8) == 0);
+    smpteTimeCodes(1, 2, 3, 4, 0, 25.0, c);
+    const uint8_t e[8] = {0x04, 0x03, 0x02, 0x01, 0, 0, 0, 0};
+    CHECK(std::memcmp(c, e, 8) == 0);
+}
+
+TEST_CASE("smpte_timecode_rollover_and_drop_bit") {
+    uint8_t c[8];
+    smpteTimeCodes(23, 59, 59, 23, 1, 24.0, c); // wraps to zero
+    for (int k = 0; k < 8; ++k) CHECK(c[k] == 0);
+    smpteTimeCodes(0, 59, 59, 29, 1, 30.0, c); // -> 01:00:00:00
+    CHECK(c[0] == 0x00);
+    CHECK(c[1] == 0x00);
+    CHECK(c[2] == 0x00);
+    CHECK(c[3] == 0x01);
+    smpteTimeCodes(0, 0, 59, 24, 1, 25.0, c); // -> 00:01:00:00
+    CHECK(c[1] == 0x00);
+    CHECK(c[2] == 0x01);
+    smpteTimeCodes(0, 0, 0, 29, 1, 30000.0 / 1001.0, c);
+    CHECK(c[0] == 0x40);
+    CHECK(c[1] == 0x01);
+    smpteTimeCodes(0, 0, 0, 0, 12, 30000.0 / 1001.0, c);
+    CHECK(c[0] == (0x12 | 0x40));
+    CHECK((c[1] & 0x80) == 0);
+}
+
+TEST_CASE("smpte_timecode_user_bytes_preserved") {
+    const uint8_t in[8] = {0x04, 0x03, 0x02, 0x01, 0xA1, 0xB2, 0xC3, 0xD4};
+    uint8_t c[8];
+    smpteTimeCodesRaw(in, 3, 25.0, c);
+    const uint8_t want[8] = {0x07, 0x03, 0x02, 0x01, 0xA1, 0xB2, 0xC3, 0xD4};
+    CHECK(std::memcmp(c, want, 8) == 0);
+}
+
 TEST_CASE("smpte_fps_classification") {
     uint8_t flags[2] = {9, 9};
     smpteFpsFlags(24.0, flags);
