@@ -211,6 +211,16 @@ fun SettingsScreen(
     // project.json keeps the editor's seek drag byte-identical.
     scrubFrames: Boolean = false,
     onScrubFramesChange: (Boolean) -> Unit = {},
+    // ---- Proxy storage section (G3, plan P4) ----
+    // The pure feed's state + the display-name seam + the delete/clear
+    // actions. Null state = the section renders nothing (the feature
+    // flag off, or the cache is empty and no clip ever built a proxy —
+    // the same honest emptiness the Exports tab has). The actions arrive
+    // as nullable so the flag-off page is read-only by construction.
+    proxyStorage: com.ritim.ritimcraw.proxy.ProxyStorageState? = null,
+    proxyNameFor: (String) -> String? = { null },
+    onDeleteProxyClip: ((String) -> Unit)? = null,
+    onClearProxyAll: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     // The Device report row's navigation: AppNav owns the route flag
@@ -390,6 +400,19 @@ fun SettingsScreen(
                     count = 2,
                 )
             }
+        }
+        // ---- Proxy storage (G3, plan section 6 / P4) ----
+        // The pure feed's rows: usage against the 20 GiB cap, the per-clip
+        // bytes, the over-cap line, delete/clear. Renders NOTHING while the
+        // feed is null (the flag-off path) — the same honest emptiness the
+        // Exports tab's empty placeholder has.
+        if (proxyStorage != null) {
+            ProxyStorageSection(
+                state = proxyStorage,
+                nameFor = proxyNameFor,
+                onDeleteClip = onDeleteProxyClip,
+                onClearAll = onClearProxyAll,
+            )
         }
         // ---- Measure preview performance (debug) + Advanced ----
         // Spec button: outside any group, 56dp pill (extraLarge = 28dp on
