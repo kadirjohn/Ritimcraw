@@ -1582,6 +1582,13 @@ vec3 nbSum(highp sampler2DArray s, ivec2 g, int blk, int layer) {
 // The ratio v_c / v_r near g at the finest scale with >= 5% unclipped-pair
 // support (the CPU's five scales, same thresholds), or -1 when none has any.
 float ratioFor(ivec2 g, int c, int r) {
+    return ratioForW(g, c, r).x;
+}
+
+// The same ratio WITH the window of the scale that supplied it (9x9, 8/32/128/512): the joint
+// two-channel estimate weights each ratio by 1/window (the CPU's windowOf, commit "weight the
+// joint estimate by ratio scale fineness", research-recovery-joint-estimate branch).
+vec2 ratioForW(ivec2 g, int c, int r) {
     int layer = c * 2 + (r > c ? r - 1 : r);
     int mc = 1 << c;
     int mr = 1 << r;
@@ -1596,16 +1603,16 @@ float ratioFor(ivec2 g, int c, int r) {
             s += pairTerm(t, int(t.a + 0.5), mc, mr, sc, sr);
         }
     }
-    if (s.x >= 4.05 && s.z > 0.0) return s.y / s.z;
+    if (s.x >= 4.05 && s.z > 0.0) return vec2(s.y / s.z, 9.0);
     s = nbSum(uL0, g, 8, layer);
-    if (s.x >= 28.8 && s.z > 0.0) return s.y / s.z;
+    if (s.x >= 28.8 && s.z > 0.0) return vec2(s.y / s.z, 8.0);
     s = nbSum(uL1, g, 32, layer);
-    if (s.x >= 460.8 && s.z > 0.0) return s.y / s.z;
+    if (s.x >= 460.8 && s.z > 0.0) return vec2(s.y / s.z, 32.0);
     s = nbSum(uL2, g, 128, layer);
-    if (s.x >= 7372.8 && s.z > 0.0) return s.y / s.z;
+    if (s.x >= 7372.8 && s.z > 0.0) return vec2(s.y / s.z, 128.0);
     s = nbSum(uL3, g, 512, layer);
-    if (s.x >= 117964.8 && s.z > 0.0) return s.y / s.z;
-    return -1.0;
+    if (s.x >= 117964.8 && s.z > 0.0) return vec2(s.y / s.z, 512.0);
+    return vec2(-1.0, 0.0);
 }
 
 void main() {
@@ -1625,13 +1632,50 @@ void main() {
         else r = (v.r >= v.b) ? (cf[0] ? 2 : 0) : (cf[2] ? 0 : 2);
         float vr = v[r];
         vec3 o = v;
-        for (int c = 0; c < 3; ++c) {
-            if (!cf[c]) continue;
-            float rho = ratioFor(g, c, r);
-            if (rho > 0.0) {
-                float e = max(v[c], vr * rho);  // the clipped value is a lower bound
+        bool joint = false;
+        vec2 jointE = vec2(0.0);
+        if (nc == 2) {
+            // Joint two-channel estimate (the CPU's research-recovery-joint-estimate branch):
+            // the two clipped channels are estimated together - the two independent ratios and
+            // the pair's own ratio c1/c2 reconciled by a weighted least-squares fit in log
+            // space, each weighted 1/window of its scale (a finer scale's ratio is localized;
+            // a coarse block-scale mean carries scene drift as bias). Falls back to the
+            // independent loop when any of the three ratios is unavailable.
+            int c1 = cf[0] ? 0 : 1;
+            int c2 = cf[2] ? 2 : 1;
+            vec2 r1 = ratioForW(g, c1, r);
+            vec2 r2 = ratioForW(g, c2, r);
+            vec2 r12 = ratioForW(g, c1, c2);
+            if (r1.x > 0.0 && r2.x > 0.0 && r12.x > 0.0) {
+                float w1 = 1.0 / r1.y, w2 = 1.0 / r2.y, w3 = 1.0 / r12.y;
+                float D = w1 * w2 + w1 * w3 + w2 * w3;
+                float a1 = log(vr * r1.x);
+                float a2 = log(vr * r2.x);
+                float a12 = log(r12.x);
+                float x1 = (w1 * (w2 + w3) * a1 + w2 * w3 * (a2 + a12)) / D;
+                float x2 = (w1 * w3 * (a1 - a12) + w2 * (w1 + w3) * a2) / D;
+                joint = true;
+                jointE = vec2(exp(x1), exp(x2));
+            }
+        }
+        if (joint) {
+            float est[2] = float[2](jointE.x, jointE.y);
+            int chan[2] = int[2](cf[0] ? 0 : 1, cf[2] ? 2 : 1);
+            for (int k = 0; k < 2; ++k) {
+                int c = chan[k];
+                float e = max(v[c], est[k]);  // the clipped value is a lower bound
                 if (v[c] > 0.0) e = min(e, 4.0 * v[c]);  // headroom cap K = 4 (CPU kRecoveryHeadroom)
                 o[c] = e;
+            }
+        } else {
+            for (int c = 0; c < 3; ++c) {
+                if (!cf[c]) continue;
+                float rho = ratioFor(g, c, r);
+                if (rho > 0.0) {
+                    float e = max(v[c], vr * rho);  // the clipped value is a lower bound
+                    if (v[c] > 0.0) e = min(e, 4.0 * v[c]);  // headroom cap K = 4 (CPU kRecoveryHeadroom)
+                    o[c] = e;
+                }
             }
         }
         v = o;

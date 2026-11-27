@@ -218,6 +218,21 @@ echo "== building tests =="
 # Run by hand (`record` a baseline, `verify` it after the change); not a self-contained test.
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/hr_equivalence.cpp" \
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/hr_equivalence"
+# hr_joint_estimate pairs|support|m1 [drift] — D8 research (research-recovery-joint-estimate branch
+# ONLY, 2026-11-27): the M1 band's pixel-type counts, the per-pair ratio-support W and scale
+# histogram, and the Neutral-vs-Recovery M1 tables. Run by hand, not a test.
+"$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/hr_joint_estimate.cpp" \
+  "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/hr_joint_estimate"
+# test_recovery_glsl_twin: I7 (research-recovery-glsl-twin branch, 2026-11-27) — the
+# RECOVERY_COMPOSITE GLSL block's C++ twin (recovery_glsl_twin.hpp, the shader text
+# translated line-by-line into float32) vs the CPU oracle recoverClippedHighlights on
+# identical inputs (the M1 scene + the hr_equivalence direct patterns), under the shipped
+# Recovery parity thresholds (maxDiffLsb <= 1, mismatch <= 0.01%; NO LOOSENING).
+# -ffp-contract=off: the twin models the GLSL source's plain float32 op chain — no
+# desktop FMA contraction (Yuv.cpp/Loudness.cpp precedent; the device GPU's own
+# contraction is the owner's on-device parity sweep's to measure).
+"$CXX" "${FLAGS[@]}" -ffp-contract=off "${INCLUDES[@]}" "$ROOT/core/tests/test_recovery_glsl_twin.cpp" \
+  "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_recovery_glsl_twin"
 # p5_compare <clip.mcraw> <frame> <maxDim> <outPrefix> — P5 old-vs-binned preview reduction on a real frame
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/p5_compare.cpp" \
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/p5_compare"
@@ -514,6 +529,8 @@ echo "== running test_audio_fx =="
 "$BUILD/test_audio_fx"
 echo "== running test_cube_export =="
 "$BUILD/test_cube_export"
+echo "== running test_recovery_glsl_twin =="
+"$BUILD/test_recovery_glsl_twin"
 echo "== running bench_develop (real-clip case needs RAWEDIT_REALCLIP=1) =="
 (cd "$ROOT" && "$BUILD/bench_develop")
 
