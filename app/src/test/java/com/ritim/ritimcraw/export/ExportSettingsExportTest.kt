@@ -206,4 +206,52 @@ class ExportSettingsExportTest {
         assertFalse(plainText, plainText.contains("audioLufs"))
         assertFalse(plainText, plainText.contains("audioDbtp"))
     }
+
+    @Test
+    fun the_g1_audio_report_fields_ride_the_report_and_omit_when_absent() {
+        // (E5/E5-B, night G1) The applied gain, the honest skip reason and
+        // the output audio shape ride the report the same way — and omit
+        // when null, so every pre-G1 report row parses exactly as it
+        // always did.
+        val with = ExportReport(
+            "c2.a.hevc", true, "video/hevc", 1080, 1920, 30.0, 8, "VBR", null, 1f, 6_000_000, 192,
+            123_456L, 10.5, listOf("plan: x"), emptyList(),
+            audioLufs = -14.02, audioDbtp = -1.01, audioGainDb = 5.98,
+            audioSampleRateHz = 44100, audioChannels = 1, audioSkipped = null,
+        )
+        val job = job(ExportSettings()).copy(state = State.DONE, report = with)
+        val back = ExportStore.parseExports("{\"exports\":" + ExportStore.renderExports(listOf(job)) + "}").single()
+        assertEquals(with, back.report)
+        assertEquals(5.98, back.report!!.audioGainDb!!, 1e-9)
+        assertEquals(44100, back.report!!.audioSampleRateHz)
+        assertEquals(1, back.report!!.audioChannels)
+        val text = ExportStore.renderExports(listOf(job))
+        assertTrue(text, text.contains("\"audioGainDb\":5.98"))
+        assertTrue(text, text.contains("\"audioSampleRateHz\":44100"))
+        assertTrue(text, text.contains("\"audioChannels\":1"))
+        // The skip reason is a quoted string when present.
+        val skipped = with.copy(
+            audioLufs = null, audioDbtp = null, audioGainDb = 0.0, audioSkipped = "too-short",
+        )
+        val skippedJob = job(ExportSettings()).copy(state = State.DONE, report = skipped)
+        val skippedBack = ExportStore.parseExports(
+            "{\"exports\":" + ExportStore.renderExports(listOf(skippedJob)) + "}",
+        ).single()
+        assertEquals("too-short", skippedBack.report!!.audioSkipped)
+        assertTrue(
+            ExportStore.renderExports(listOf(skippedJob)).contains("\"audioSkipped\":\"too-short\""),
+        )
+        // Without them, nothing is written (byte-identical old rows).
+        val without = with.copy(
+            audioLufs = null, audioDbtp = null, audioGainDb = null,
+            audioSampleRateHz = null, audioChannels = null, audioSkipped = null,
+        )
+        val plainText = ExportStore.renderExports(
+            listOf(job(ExportSettings()).copy(state = State.DONE, report = without)),
+        )
+        assertFalse(plainText, plainText.contains("audioGainDb"))
+        assertFalse(plainText, plainText.contains("audioSkipped"))
+        assertFalse(plainText, plainText.contains("audioSampleRateHz"))
+        assertFalse(plainText, plainText.contains("audioChannels"))
+    }
 }

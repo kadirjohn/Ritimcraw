@@ -70,6 +70,7 @@ add_library(rawedit STATIC
     src/Loudness.cpp
     src/Resample.cpp
     src/AudioNormalize.cpp
+    src/AudioReshape.cpp
     src/Yuv.cpp)
 # Yuv.cpp is the byte-exact twin of export/YuvConverter.kt: its chroma
 # multiply-add chain must round exactly where the Kotlin float ops round,
@@ -103,6 +104,12 @@ set_source_files_properties(src/Resample.cpp PROPERTIES
 # tests; the NDK build must round the same way the desktop script does
 # (the Loudness.cpp / Yuv.cpp precedent).
 set_source_files_properties(src/AudioNormalize.cpp PROPERTIES
+    COMPILE_OPTIONS "-ffp-contract=off")
+# AudioReshape.cpp (E5-B 16-bit reshape boundary, night G1): the
+# remix/resample pass over one clip's whole PCM at the JNI boundary; the
+# quantize chain and the f32 boundary must round the same way the
+# desktop script does (the AudioNormalize.cpp / Resample.cpp precedent).
+set_source_files_properties(src/AudioReshape.cpp PROPERTIES
     COMPILE_OPTIONS "-ffp-contract=off")
 target_include_directories(rawedit PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(rawedit PUBLIC motioncam_decoder vqf)

@@ -95,6 +95,37 @@ class ExportPlanRun(
     var audioMeasuredDbtp: Double? = null
         internal set
 
+    /**
+     * (E5, night G1) The gain the loudness chain applied, dB; null when
+     * the chain did not run (no target). A chain that skipped honestly
+     * reports 0 — the gain is never invented.
+     */
+    var audioAppliedGainDb: Double? = null
+        internal set
+
+    /**
+     * (E5, night G1) Why the loudness chain skipped honestly, when a
+     * target was set but the audio could not be measured ("too-short" /
+     * "silent" — the core's own vocabulary, never a guess); null when
+     * the chain ran or no target was set.
+     */
+    var audioSkippedReason: String? = null
+        internal set
+
+    /**
+     * (E5-B, night G1) The output audio shape the export really encoded
+     * — the clip's own rate/channels, or the reshaped choice. Written by
+     * the pipeline's audio-preparation point whenever the clip has an
+     * audio track; both null on a video-only export (the pair travels
+     * together, never half).
+     */
+    var audioOutSampleRateHz: Int? = null
+        internal set
+
+    /** [audioOutSampleRateHz]'s pair; null together with it. */
+    var audioOutChannels: Int? = null
+        internal set
+
     var fixUsed: Boolean = false
         private set
 

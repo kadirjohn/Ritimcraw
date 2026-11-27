@@ -341,8 +341,8 @@ object ExportSettingsWire {
         val resH = (m["resolutionH"] as? Double)?.toInt()
         // v3's optional fields: absent (a v1/v2 row, or a v3 row with the
         // defaults) parses as SOURCE — the v1/v2 behavior exactly.
-        val rate = (m["audioSampleRateHz"] as? Double)?.toInt()
-        val ch = (m["audioChannels"] as? Double)?.toInt()
+        val audioRate = (m["audioSampleRateHz"] as? Double)?.toInt()
+        val audioCh = (m["audioChannels"] as? Double)?.toInt()
         return Parsed.Ok(
             ExportSettings(
                 codec = codec,
@@ -359,8 +359,8 @@ object ExportSettingsWire {
                 truePeakDbtp = tp,
                 resolutionW = resW,
                 resolutionH = resH,
-                audioSampleRateHz = rate,
-                audioChannels = ch,
+                audioSampleRateHz = audioRate,
+                audioChannels = audioCh,
             )
         )
     }

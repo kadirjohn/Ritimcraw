@@ -265,11 +265,22 @@ class TimelineMp4Exporter(
         // audio-preparation hook is the Mp4Exporter's shape (plan §4.2's
         // timeline leg); until then a targeted job exports exactly what
         // an untargeted one does, and says so.
-        if (planRun?.settings?.loudnessTargetLufs != null) {
+        // (E5-B, night G1) The same honesty for the audio shape choices:
+        // a rate/channel choice has no PCM to reshape in a v1 timeline
+        // export — the honest line says so, and the report carries no
+        // output audio shape.
+        val settings = planRun?.settings
+        if (settings?.loudnessTargetLufs != null) {
             stageLog?.invoke(
                 "timeline loudness: not applied (v1 exports the video track only)"
             )
             planRun?.note("loudness: not applied (timeline has no audio track in v1)")
+        }
+        if (settings?.audioSampleRateHz != null || settings?.audioChannels != null) {
+            stageLog?.invoke(
+                "timeline audio shape: not applied (v1 exports the video track only)"
+            )
+            planRun?.note("audio shape: not applied (timeline has no audio track in v1)")
         }
 
         val black = blackI420(plan.width, plan.height)

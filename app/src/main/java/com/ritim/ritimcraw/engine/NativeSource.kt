@@ -650,6 +650,25 @@ class NativeSource private constructor(
         @JvmStatic private external fun nativeAudioNormalizeReport(): DoubleArray
 
         /**
+         * (E5-B, night G1) The remix + resample of one clip's whole PCM
+         * (core/src/AudioReshape.cpp; the BS.775 remix and the
+         * StreamResampler cores behind it): 16-bit interleaved in, the
+         * reshaped 16-bit interleaved PCM out — the frame count follows
+         * the rate ratio, the sample count follows the channel count.
+         * [toRate]/[toChannels] 0 = keep the source's own (the identity
+         * the caller never asks for; the core copies untouched anyway).
+         * Returns null on a malformed request (read the error accessors
+         * from the same thread).
+         */
+        @JvmStatic private external fun nativeAudioReshape(
+            pcm: ShortArray,
+            sampleRate: Int,
+            channels: Int,
+            toRate: Int,
+            toChannels: Int,
+        ): ShortArray?
+
+        /**
          * Stateless RGB888 -> I420 conversion (MP4 export YUV step): the
          * byte-exact native twin of export/YuvConverter.kt's toI420 (the
          * contract lives in core/include/rawedit/Yuv.h). [matrix] is the
@@ -1824,6 +1843,27 @@ class NativeSource private constructor(
         internal fun jniAudioNormalizeReport(): DoubleArray? {
             if (!nativeAvailable) return null
             return nativeAudioNormalizeReport()
+        }
+
+        /**
+         * JNI bridge: the E5-B remix + resample of [pcm] from
+         * [sampleRate]/[channels] to [toRate]/[toChannels] (0 = keep the
+         * source's own) — the whole clip's PCM in, the reshaped PCM out.
+         * Throws IllegalStateException when the .so is absent; null with
+         * the library loaded is a malformed request and the error
+         * accessors say why.
+         */
+        internal fun jniAudioReshape(
+            pcm: ShortArray,
+            sampleRate: Int,
+            channels: Int,
+            toRate: Int,
+            toChannels: Int,
+        ): ShortArray? {
+            if (!nativeAvailable) {
+                throw IllegalStateException(nativeUnavailableMessage)
+            }
+            return nativeAudioReshape(pcm, sampleRate, channels, toRate, toChannels)
         }
 
         /** JNI bridge: see nativeRgbToI420 (byte-exact toI420 twin). */
