@@ -1120,13 +1120,9 @@ constexpr float kRecoveryEps = 1e-4f;
 
 // One (clipped c, reference r) pair's compact result: the consumer pixels (ascending) and
 // their ratio values (>= 0 when a scale had support, else -1 — the old dense array's default).
-// scale[] carries WHICH scale supplied each rho (0..4, 255 = none): the joint two-channel
-// estimate (research-recovery-joint-estimate branch) weights each ratio by its scale's
-// fineness, so the chosen scale is part of the pair's output now.
 struct PairRatios {
     std::vector<uint32_t> idx;
     std::vector<float> rho;
-    std::vector<uint8_t> scale;
 };
 
 // The streaming pass for one pair: builds the three 9x9 integral images in one walk (the
@@ -1136,7 +1132,7 @@ struct PairRatios {
 // expression is the reference's, in the reference's order (see the block comment above).
 void pairRatiosWalk(const ImageF& img, const uint8_t* clipped, uint32_t w, uint32_t h,
                     int c, int r, const std::vector<uint32_t>& consumers, std::vector<float>& rho,
-                    std::vector<uint8_t>& scale, std::vector<uint32_t>& needBlocks) {
+                    std::vector<uint32_t>& needBlocks) {
     const size_t W1 = static_cast<size_t>(w) + 1;
     // Integral rows y-4..y+5 are live for a consumer row y (r = 4 for the 9x9 scale) — a
     // 12-slot ring holds them; row 0 is the all-zero border row of the reference integral.
@@ -1148,7 +1144,6 @@ void pairRatiosWalk(const ImageF& img, const uint8_t* clipped, uint32_t w, uint3
     };
 
     rho.assign(consumers.size(), -1.0f);
-    scale.assign(consumers.size(), uint8_t(255));
     size_t ci = 0;
     const auto gatherRow = [&](int32_t yc) {
         const uint32_t rowBegin = static_cast<uint32_t>(yc) * w, rowEnd = rowBegin + w;
@@ -1165,7 +1160,6 @@ void pairRatiosWalk(const ImageF& img, const uint8_t* clipped, uint32_t w, uint3
             const double B = ib1[x1 + 1] - ib0[x1 + 1] - ib1[x0] + ib0[x0];
             if (W >= kRecoveryScaleTable[0].minSupport && B > 0.0) {
                 rho[ci] = static_cast<float>(A / B);
-                scale[ci] = 0;
             } else {
                 needBlocks.push_back(i);
             }
@@ -1208,7 +1202,7 @@ namespace {
 
 void pairRatiosBlocks(const ImageF& img, const uint8_t* clipped, uint32_t w, uint32_t h,
                       int c, int r, const std::vector<uint32_t>& consumers, std::vector<float>& rho,
-                      std::vector<uint8_t>& scale, std::vector<uint32_t>& pending) {
+                      std::vector<uint32_t>& pending) {
     std::vector<uint32_t> pendIn = pending, pendOut;
     for (int s = 1; s < kRecoveryScales && !pendIn.empty(); ++s) {
         const int b = kRecoveryScaleTable[s].param;
@@ -1261,10 +1255,7 @@ void pairRatiosBlocks(const ImageF& img, const uint8_t* clipped, uint32_t w, uin
             }
             // position in the consumer list: pendIn entries carry pixel ids; find rho's slot
             const size_t slot = std::lower_bound(consumers.begin(), consumers.end(), i) - consumers.begin();
-            if (nW >= kRecoveryScaleTable[s].minSupport && nB > 0.0) {
-                rho[slot] = static_cast<float>(nA / nB);
-                scale[slot] = static_cast<uint8_t>(s);
-            }
+            if (nW >= kRecoveryScaleTable[s].minSupport && nB > 0.0) rho[slot] = static_cast<float>(nA / nB);
             else pendOut.push_back(i);
         }
         pendIn.swap(pendOut);
@@ -1305,13 +1296,6 @@ void recoverClippedHighlights(ImageF& img, const ImageF& clipMask, const Recover
                     else r = (img.rgb[i * 3 + 0] >= img.rgb[i * 3 + 2]) ? (cf[0] ? 2 : 0) : (cf[2] ? 0 : 2);
                     for (int c = 0; c < 3; ++c)
                         if (cf[c]) mine[c * 3 + r].push_back(static_cast<uint32_t>(i));
-                    if (nc == 2) {
-                        // Joint estimate (research-recovery-joint-estimate branch, D8): the pair's
-                        // own ratio c1/c2 is read at this pixel too (from neighbours where both are
-                        // unclipped) so the two clipped channels can be made ratio-consistent.
-                        const int c1 = cf[0] ? 0 : 1, c2 = cf[2] ? 2 : 1;
-                        mine[c1 * 3 + c2].push_back(static_cast<uint32_t>(i));
-                    }
                 }
             std::lock_guard<std::mutex> lk(mergeMu);
             chunks.emplace(y0, std::move(mine));
@@ -1337,9 +1321,9 @@ void recoverClippedHighlights(ImageF& img, const ImageF& clipMask, const Recover
             for (size_t j = b; j < e; ++j) {
                 const int c = jobs[j].first, r = jobs[j].second;
                 std::vector<uint32_t> pending;
-                pairRatiosWalk(img, cl, w, h, c, r, pair[c][r].idx, pair[c][r].rho, pair[c][r].scale, pending);
+                pairRatiosWalk(img, cl, w, h, c, r, pair[c][r].idx, pair[c][r].rho, pending);
                 if (!pending.empty())
-                    pairRatiosBlocks(img, cl, w, h, c, r, pair[c][r].idx, pair[c][r].rho, pair[c][r].scale, pending);
+                    pairRatiosBlocks(img, cl, w, h, c, r, pair[c][r].idx, pair[c][r].rho, pending);
             }
         });
     }
@@ -1379,79 +1363,15 @@ void recoverClippedHighlights(ImageF& img, const ImageF& clipMask, const Recover
                     else r = (px[0] >= px[2]) ? (cf[0] ? 2 : 0) : (cf[2] ? 0 : 2);
                     const float vr = px[r];
                     float out[3] = {px[0], px[1], px[2]};
-                    // The reference's rho lookup for one (c, r) at this pixel, plus the scale
-                    // that supplied it (the joint estimate weights by scale fineness).
-                    const auto lookup = [&](int c, int rr, float& rhoOut, uint8_t& scaleOut) {
-                        const PairRatios& pr = pair[c][rr];
-                        rhoOut = -1.0f;
-                        scaleOut = uint8_t(255);
-                        if (pr.idx.empty()) return false;
-                        size_t& cur = cursor[c][rr];
-                        while (cur < pr.idx.size() && pr.idx[cur] < i) ++cur;
-                        if (cur < pr.idx.size() && pr.idx[cur] == i) {
-                            rhoOut = pr.rho[cur];
-                            scaleOut = pr.scale[cur];
-                            return true;
-                        }
-                        return false;
-                    };
-                    // The joint two-channel estimate (research-recovery-joint-estimate, D8):
-                    // when TWO channels are clipped, their independent estimates (each the
-                    // reference x its own measured ratio) are reconciled with the pair's own
-                    // ratio c1/c2 by a WEIGHTED least-squares fit in log space, weight 1/window
-                    // of the scale that supplied each ratio (a ratio measured on a finer scale
-                    // is localized; a coarse block-scale mean ratio carries scene drift as a
-                    // bias and is trusted less). Falls back to the independent estimate whenever
-                    // any of the three ratios is unavailable, so the no-support behaviour is
-                    // unchanged.
-                    if (nc == 2) {
-                        const int c1 = cf[0] ? 0 : 1, c2 = cf[2] ? 2 : 1;
-                        float rho1 = -1.0f, rho2 = -1.0f, rho12 = -1.0f;
-                        uint8_t s1 = 255, s2 = 255, s12 = 255;
-                        const bool have1 = lookup(c1, r, rho1, s1);
-                        const bool have2 = lookup(c2, r, rho2, s2);
-                        const bool have12 = lookup(c1, c2, rho12, s12);
-                        // scale window: the 9x9 of scale 0 (the table's param is the half-window 4),
-                        // else the block size itself.
-                        const auto windowOf = [](uint8_t s) -> double {
-                            if (s > 4) return 0.0;  // none
-                            return s == 0 ? 9.0 : static_cast<double>(kRecoveryScaleTable[s].param);
-                        };
-                        if (have1 && have2 && have12 && rho1 > 0.0f && rho2 > 0.0f && rho12 > 0.0f) {
-                            const double w1 = 1.0 / windowOf(s1), w2 = 1.0 / windowOf(s2), w3 = 1.0 / windowOf(s12);
-                            const double D = w1 * w2 + w1 * w3 + w2 * w3;
-                            if (D > 0.0) {
-                                const double a1 = std::log(static_cast<double>(vr) * rho1);
-                                const double a2 = std::log(static_cast<double>(vr) * rho2);
-                                const double a12 = std::log(rho12);
-                                const double x1 = (w1 * (w2 + w3) * a1 + w2 * w3 * (a2 + a12)) / D;
-                                const double x2 = (w1 * w3 * (a1 - a12) + w2 * (w1 + w3) * a2) / D;
-                                float est[2] = {static_cast<float>(std::exp(x1)), static_cast<float>(std::exp(x2))};
-                                const int chan[2] = {c1, c2};
-                                for (int k = 0; k < 2; ++k) {
-                                    const int c = chan[k];
-                                    const float e0 = est[k];
-                                    if (sink != nullptr && px[c] > 0.0f && e0 > px[c]) {
-                                        sink->ratio.push_back(e0 / px[c]);
-                                        sink->refFrac.push_back(vr / params.refLevel[r]);
-                                        sink->chan.push_back(static_cast<uint8_t>(c));
-                                        sink->pix.push_back(static_cast<uint32_t>(i));
-                                    }
-                                    if (params.minRefFrac > 0.0f && vr < params.minRefFrac * params.refLevel[r]) continue;
-                                    float e = std::max(px[c], e0);  // the clipped value is a lower bound
-                                    if (params.headroom > 0.0f && px[c] > 0.0f) e = std::min(e, params.headroom * px[c]);
-                                    out[c] = e;
-                                }
-                                px[0] = out[0]; px[1] = out[1]; px[2] = out[2];
-                                continue;
-                            }
-                        }
-                    }
                     for (int c = 0; c < 3; ++c) {
                         if (!cf[c]) continue;
+                        const PairRatios& pr = pair[c][r];
                         float rho = -1.0f;
-                        uint8_t scl = 255;
-                        if (!lookup(c, r, rho, scl)) rho = -1.0f;
+                        if (!pr.idx.empty()) {
+                            size_t& cur = cursor[c][r];
+                            while (cur < pr.idx.size() && pr.idx[cur] < i) ++cur;
+                            if (cur < pr.idx.size() && pr.idx[cur] == i) rho = pr.rho[cur];
+                        }
                         if (rho <= 0.0f) continue;
                         const float est = vr * rho;
                         if (sink != nullptr && px[c] > 0.0f && est > px[c]) {
