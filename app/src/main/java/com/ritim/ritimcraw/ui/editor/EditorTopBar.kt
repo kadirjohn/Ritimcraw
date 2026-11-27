@@ -398,10 +398,20 @@ private fun ExportSheet(
             height = size.second and 1.inv(),
             fps = if (clipInfo.fps > 0f) ExportFps.snap(clipInfo.fps.toDouble()) else 30.0,
             durationSec = clipInfo.totalUs / 1_000_000.0,
+            // E1f-2: the source's REAL frame count feeds the conversion's
+            // count rule; 0 (unknown) leaves the summary on the source's
+            // own facts, never a guess.
+            frames = clipInfo.frameCount,
         )
     } else {
         null
     }
+    // (E1f-2) The summary answers the movie the encode will really make:
+    // a chosen target converts the subject to the OUTPUT's own facts
+    // (the target's exact rate, the floor+1 count, the last-grid-point +
+    // one-period duration). SOURCE — and any unknown frame count — keeps
+    // the subject untouched, byte-identical to the pre-E1f sheet.
+    val summarySubject = subject?.let { ExportSheetModel.converted(it, settings.targetFps) }
     // (E1d) 10-bit availability for THIS export: the device offers an
     // RGBA1010102 EGL config (a throwaway native probe, off the UI thread),
     // the size is Original, nothing is cropped/straightened, and every grade
@@ -498,7 +508,7 @@ private fun ExportSheet(
                         }
                     },
                     plan = plan,
-                    subject = subject,
+                    subject = summarySubject,
                     facts = facts,
                     rate = exportRate,
                     tenBitAvailable = exportContext.tenBitPathAvailable,
@@ -521,6 +531,7 @@ private fun ExportSheet(
                     // unknown; the sheet never guesses a number).
                     clipAudioRate = clipInfo.audioSampleRateHz,
                     clipAudioChannels = clipInfo.audioChannels,
+                    sourceFps = if (clipInfo.fps > 0f) clipInfo.fps.toDouble() else null,
                     targetDetail = {
                         // The non-MP4 targets' descriptions (also the Format sub-page's hints).
                         when (tab) {

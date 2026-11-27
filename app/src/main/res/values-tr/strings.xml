@@ -412,6 +412,12 @@
     <string name="export_keyframe_seconds">%1$s sn</string>
     <string name="export_frame_rate">Kare hızı</string>
     <string name="export_frame_rate_value">%1$s kare/sn (klipten)</string>
+    <string name="export_frame_rate_source">Kaynak</string>
+    <string name="export_frame_rate_source_hint">Klibin kendi hızı (%1$s kare/sn), olduğu gibi taşınır</string>
+    <string name="export_frame_rate_source_unknown_hint">Klibin kendi ölçülen hızı</string>
+    <string name="export_frame_rate_target_hint">%1$s kare/sn: kareler atılır veya tekrarlanır</string>
+    <string name="export_frame_rate_lossy_warning">Kare hızı dönüşümü kayıplıdır: kareler atılır veya tekrarlanır, zamanlama yarım kaynak kare içinde kayar. Ses dokunulmaz ve senkte kalır.</string>
+    <string name="export_help_frame_rate">Kaynak, klibin kendi kare zamanlamasını korur. Bir hedef, videoyu o hızda kare atıp tekrarlayarak yeniden örnekler — kayıplıdır, hiçbir zaman hız değişimi değildir. Sese dokunulmaz.</string>
     <string name="export_audio_format">Ses örnekleme hızı ve kanallar</string>
     <string name="export_help_audio_format">AAC parçasının örnekleme hızı ve kanal sayısı. Kaynak, klibin kendi sesini aynen korur; bir seçim tüm klibi kodlamadan önce yeniden örnekler ve yeniden karıştırır.</string>
     <string name="export_audio_source">Kaynak</string>

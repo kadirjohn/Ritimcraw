@@ -89,6 +89,47 @@ object PtsTimeline {
     }
 
     /**
+     * The SOURCE path's video samples (E1f-2, plan §4.7): frame j at its own
+     * normalized pts with frameIndex = the list position — exactly the
+     * samples [interleave] of the same pts list derives, as PREPARED samples
+     * so the encode loop can walk one shape for both paths. A converting
+     * export replaces this with FrameRateConvertPlan's mapped samples
+     * (target-grid pts, the SOURCE frame index i(j) — duplicates repeat an
+     * index); SOURCE never does, so its behavior stays byte-identical.
+     */
+    fun videoSamples(videoPts: List<Long>): List<Sample> =
+        videoPts.mapIndexed { i, p -> Sample(Sample.Track.VIDEO, p, i) }
+
+    /**
+     * The merge for PREPARED video samples (E1f-2): the same
+     * presentation-order rule as [interleave] — pts ascending, equal pts
+     * video first (the first video frame opens the movie), audio blocks by
+     * their own pts — over samples whose frameIndex the caller already
+     * chose (the position for SOURCE, the mapped source frame for a
+     * conversion). Audio keeps frameIndex = its block index, exactly as
+     * [interleave] derives it.
+     */
+    fun interleaveSamples(
+        video: List<Sample>,
+        audioBlockPts: List<Long>,
+    ): List<Sample> {
+        data class Event(val pts: Long, val sample: Sample, val audio: Boolean, val order: Int)
+
+        val events = ArrayList<Event>(video.size + audioBlockPts.size)
+        // The stable-sort order key: video events keep their list order
+        // (equal-pts video frames submit in grid order, j ascending),
+        // audio events theirs; video sorts before audio at equal pts.
+        var order = 0
+        for (s in video) events.add(Event(s.ptsUs, s, false, order++))
+        order = 0
+        audioBlockPts.forEachIndexed { i, p ->
+            events.add(Event(p, Sample(Sample.Track.AUDIO, p, i), true, order++))
+        }
+        events.sortWith(compareBy({ it.pts }, { it.audio }, { it.order }))
+        return events.map { it.sample }
+    }
+
+    /**
      * Encoder pts (us) -> the nanosecond timestamp
      * EGLExt.eglPresentationTimeANDROID takes (deliverable F core, owner
      * request 2026-11-12 §10: "ptsUs->ptsNs dönüşümünde taşma kontrolü;

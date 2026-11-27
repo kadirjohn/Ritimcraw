@@ -101,4 +101,27 @@ object FrameRateConvertPlan {
         require(target != TargetFps.SOURCE) { "SOURCE has no ratio" }
         return durationSec * (1.0 - sourceFps / (target.num.toDouble() / target.den))
     }
+
+    /**
+     * The encoder's video samples of a CONVERTING plan (E1f-2, plan §4.7):
+     * output frame j as one [PtsTimeline.Sample] — pts on the target's
+     * exact grid, frameIndex the SOURCE frame i(j) the frame-nearest map
+     * picked (duplicates repeat the same index; the pipeline's decode
+     * cache reuses the developed frame, the timeline's own pattern).
+     * Pure: the same recipe the tests pin, the shape the encode loop
+     * walks. A SOURCE plan has no grid (its samples are the source's own
+     * pts — PtsTimeline.videoSamples of videoPts), so it refuses here:
+     * SOURCE is "no conversion", the caller does not build samples from
+     * a plan at all.
+     */
+    fun videoSamples(p: Plan): List<PtsTimeline.Sample> {
+        require(p.converting) { "SOURCE carries no grid; the caller walks the source's own pts" }
+        return p.mapping.ptsUs.indices.map { j ->
+            PtsTimeline.Sample(
+                PtsTimeline.Sample.Track.VIDEO,
+                p.mapping.ptsUs[j],
+                p.mapping.sourceFrames[j],
+            )
+        }
+    }
 }

@@ -415,6 +415,12 @@
     <string name="export_keyframe_seconds">%1$s s</string>
     <string name="export_frame_rate">Frame rate</string>
     <string name="export_frame_rate_value">%1$s fps (from the clip)</string>
+    <string name="export_frame_rate_source">Source</string>
+    <string name="export_frame_rate_source_hint">The clip\'s own rate (%1$s fps), carried through untouched</string>
+    <string name="export_frame_rate_source_unknown_hint">The clip\'s own measured rate</string>
+    <string name="export_frame_rate_target_hint">%1$s fps: drops or repeats frames</string>
+    <string name="export_frame_rate_lossy_warning">Frame rate conversion is lossy: frames are dropped or repeated, and timing moves within half a source frame. Audio stays untouched and in sync.</string>
+    <string name="export_help_frame_rate">Source keeps the clip\'s own frame timing. A target re-samples the video by dropping or repeating frames on that exact rate — lossy, never a speed change. Audio is not touched.</string>
     <string name="export_audio_format">Audio sample rate and channels</string>
     <string name="export_help_audio_format">The AAC track\'s sample rate and channel count. Source keeps the clip\'s own audio exactly; a pick resamples and remixes the whole clip before the encode.</string>
     <string name="export_audio_source">Source</string>
