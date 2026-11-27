@@ -18,6 +18,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
+import kotlin.math.roundToInt
 import org.junit.rules.TemporaryFolder
 import java.io.File
 import java.nio.ByteBuffer
@@ -4205,5 +4206,231 @@ class Mp4ExporterTest {
         assertEquals(listOf(1, 2), session.rendered)
         assertEquals(2, writer.rgbFrames)
         assertEquals(1, writer.drainCalls)
+    }
+
+    // ---- E1f-2 (G2): the frame-nearest fps conversion in the pipeline ----
+
+    /**
+     * A plan run whose settings carry [targetFps] — the pipeline resolves
+     * the plan (and, since E1f-2, builds the conversion) from
+     * planRun.current.targetFps. Null settings = a pre-E1 job: no plan, no
+     * conversion, the legacy path.
+     */
+    private fun fpsRun(targetFps: TargetFps? = null): ExportPlanRun? =
+        targetFps?.let { ExportPlanRun(ExportSettings(targetFps = it), { emptyList() }) }
+
+    /** The writer that also records the VIDEO pts it was fed, in order. */
+    private class PtsWriter : Mp4MediaWriter {
+        val videoPts = ArrayList<Long>()
+        val audioPts = ArrayList<Long>()
+        var started = false
+        var released = false
+        override fun start(outPath: String, width: Int, height: Int, orientationDeg: Int, sampleRate: Int, channels: Int) {
+            started = true
+        }
+        override fun writeVideoFrame(ptsUs: Long, i420: ByteArray) {
+            videoPts.add(ptsUs)
+        }
+        override fun writeAudioBlock(ptsUs: Long, pcm: ShortArray) {
+            audioPts.add(ptsUs)
+        }
+        override fun finish(): Boolean = true
+        override fun release() {
+            released = true
+        }
+    }
+
+    @Test
+    fun source_target_runs_exactly_the_reference_calls_and_pts() {
+        // D2/G1's null-path rule for E1f: targetFps == SOURCE (the default)
+        // means the conversion code path NEVER runs — the same number of
+        // develop calls as the reference (one per frame, none reused), the
+        // video pts are the source's own (never a target grid), and the
+        // audio block pts are untouched.
+        val session = FakeSession(frames = 4, audio = true)
+        val source = PtsWriter()
+        ExportPipeline(session, source, planRun = fpsRun(TargetFps.SOURCE))
+            .run(7, GradeK(), "/tmp/out.partial")
+        // The reference run with NO plan at all (the pre-E1 job): same
+        // calls, same pts, byte-identical submission order.
+        val refSession = FakeSession(frames = 4, audio = true)
+        val reference = PtsWriter()
+        ExportPipeline(refSession, reference, planRun = fpsRun(null))
+            .run(7, GradeK(), "/tmp/out.partial")
+        assertEquals(reference.videoPts, source.videoPts)
+        assertEquals(reference.audioPts, source.audioPts)
+        assertEquals(4, source.videoPts.size) // the source's own pts: 0,33ms,66ms,100ms steps
+        assertEquals(listOf(0, 1, 2, 3), session.rendered) // one develop per frame, none reused
+        assertEquals(4, refSession.rendered.size)
+        assertEquals(source.audioPts.size, reference.audioPts.size)
+        assertTrue(source.audioPts.isNotEmpty()) // the audio really muxed
+    }
+
+    @Test
+    fun converting_30_to_25_walks_the_target_grid_with_mapped_frames() {
+        // FakeSession: 10 frames at 33_333 us steps measure 30.0003 -> snap
+        // 30.0 fps; span 299_997 us. FPS_25: lastJ = floor(299_997*25/1e6) =
+        // 7 -> 8 output frames on the exact 25 grid, showing the mapped
+        // source frames (0,1,2,4,5,6,7,8 — frame 3 is the dropped one).
+        val session = FakeSession(frames = 10, audio = false)
+        val writer = PtsWriter()
+        val run = fpsRun(TargetFps.FPS_25)!!
+        val progress = ArrayList<Int>()
+        ExportPipeline(session, writer, planRun = run).run(
+            7, GradeK(), "/tmp/out.partial",
+            onProgress = { _, total -> progress.add(total) },
+        )
+        assertEquals(8, writer.videoPts.size)
+        // The exact 25-grid: round(j*1e6/25) = j*40_000.
+        assertEquals((0 until 8).map { it * 40_000L }, writer.videoPts)
+        // The plan ran at the TARGET fps (§3.4: the bitrate table and the
+        // capability queries model the stream the encoder really makes).
+        assertEquals(25.0, run.plan!!.fps, 0.0)
+        // The duration follows the OUTPUT count: last pts + one 25-fps
+        // period (280_000 us + 40_000 us = 0.32 s — the source span would
+        // say 299_997 + 33_333 = 0.333 s).
+        assertEquals(0.32, run.durationSec, 1e-9)
+        // The progress denominator is the OUTPUT frame count.
+        assertTrue(progress.all { it == 8 })
+        // The mapped source frames: the production plan's recipe, checked
+        // against the pure map's own algebra (i(j) = round(j*1.2)).
+        assertEquals(listOf(0, 1, 2, 4, 5, 6, 7, 8), session.rendered)
+        // Every develop was a DISTINCT frame — the drop case never reuses.
+        assertEquals(8, session.rendered.size)
+    }
+
+    @Test
+    fun duplicates_reuse_the_developed_frame_instead_of_redeveloping() {
+        // 23.976 -> 30 duplicates ~20 % of the output frames: a repeated
+        // source index between consecutive video samples must NOT develop
+        // again — the decode cache (TimelineMp4Exporter's own pattern)
+        // hands the writer the SAME developed bytes. The develop CALL COUNT
+        // is the honest witness: fewer calls than encoded frames.
+        val session = FakeSession(frames = 12, audio = false)
+        val writer = PtsWriter()
+        ExportPipeline(session, writer, planRun = fpsRun(TargetFps.FPS_60)).run(
+            7, GradeK(), "/tmp/out.partial",
+        )
+        // 12 frames at 33_333 us measure 30 fps; span 366_663 us -> 60 fps:
+        // lastJ = floor(366_663*60/1e6) = 21 -> 22 output frames, and the
+        // map repeats every source frame ~2x (30 -> 60 duplicates ~50 %).
+        assertEquals(22, writer.videoPts.size)
+        assertTrue(
+            "develop calls ${session.rendered.size} must be fewer than the encoded ${writer.videoPts.size}",
+            session.rendered.size < writer.videoPts.size,
+        )
+        // Every developed frame was DISTINCT: the cache never redevelops a
+        // repeat, and never skips a new frame.
+        assertEquals(session.rendered.distinct().size, session.rendered.size)
+        // The rendered set covers the mapped recipe (the production plan's
+        // sourceFrames, in order) — pin the parity against FrameRateMap: a
+        // UNIFORM recipe's distinct frames ARE the developed ones, in
+        // order (the cache develops each distinct frame exactly once).
+        val plan = FrameRateConvertPlan.plan(
+            FrameRateConvertPlan.Source(fps = 30.0, frames = 12, spanUs = 366_663L),
+            TargetFps.FPS_60,
+        )
+        assertEquals(plan.mapping.sourceFrames.distinct(), session.rendered)
+        assertEquals(plan.mapping.outputFrames, writer.videoPts.size)
+    }
+
+    @Test
+    fun audio_pts_stay_untouched_through_a_conversion() {
+        // §2.4's contract, pinned at the writer boundary: the video pts
+        // move to the target grid, the AUDIO block pts do not — the same
+        // clip with and without the conversion feeds the writer the SAME
+        // audio pts, so both clocks stay on the one wall time (zero drift).
+        val plain = PtsWriter()
+        ExportPipeline(FakeSession(frames = 3, audio = true), plain, planRun = fpsRun(null))
+            .run(7, GradeK(), "/tmp/out.partial")
+        val converting = PtsWriter()
+        ExportPipeline(FakeSession(frames = 3, audio = true), converting, planRun = fpsRun(TargetFps.FPS_24))
+            .run(7, GradeK(), "/tmp/out.partial")
+        assertEquals(plain.audioPts, converting.audioPts)
+        // And the video really did convert: 3 frames at 33_333 us (30 fps)
+        // measure a 66_666 us span -> FPS_24 gives lastJ = floor(1.599) = 1
+        // -> 2 output frames on the 24 grid: 0 and round(1e6/24) = 41_667
+        // (gridPtsUs' half-up integer rounding, never a pre-rounded step).
+        assertEquals(listOf(0L, 41_667L), converting.videoPts)
+    }
+
+    @Test
+    fun the_pure_sample_helpers_match_interleave_on_the_source_path() {
+        // PtsTimeline.videoSamples + interleaveSamples must reproduce the
+        // OLD interleave exactly on the SOURCE lists — the byte-identity of
+        // the pre-conversion path rides on it (equal pts, video first).
+        val video = listOf(0L, 21_333L, 42_667L)
+        val audio = listOf(0L, 21_333L, 42_666L, 64_000L)
+        assertEquals(
+            PtsTimeline.interleave(video, audio),
+            PtsTimeline.interleaveSamples(PtsTimeline.videoSamples(video), audio),
+        )
+        // And a mapped (duplicated-index) sample list keeps presentation
+        // order with equal-pts video first — the conversion's merge rule.
+        val mapped = listOf(
+            PtsTimeline.Sample(PtsTimeline.Sample.Track.VIDEO, 0L, 0),
+            PtsTimeline.Sample(PtsTimeline.Sample.Track.VIDEO, 21_333L, 1),
+            PtsTimeline.Sample(PtsTimeline.Sample.Track.VIDEO, 21_333L, 1), // duplicate
+            PtsTimeline.Sample(PtsTimeline.Sample.Track.VIDEO, 42_667L, 2),
+        )
+        val merged = PtsTimeline.interleaveSamples(mapped, audio)
+        assertEquals(8, merged.size) // every sample submits, none dropped
+        // The whole order, pinned flat: pts ascending, VIDEO before AUDIO
+        // at equal pts (the movie's first video frame opens it; a
+        // duplicate still beats the audio block it shares a pts with),
+        // video keeping list order, audio keeping block order.
+        val v = PtsTimeline.Sample.Track.VIDEO
+        val a = PtsTimeline.Sample.Track.AUDIO
+        assertEquals(
+            listOf(
+                PtsTimeline.Sample(v, 0L, 0),
+                PtsTimeline.Sample(a, 0L, 0),
+                PtsTimeline.Sample(v, 21_333L, 1),
+                PtsTimeline.Sample(v, 21_333L, 1),
+                PtsTimeline.Sample(a, 21_333L, 1),
+                PtsTimeline.Sample(a, 42_666L, 2),
+                PtsTimeline.Sample(v, 42_667L, 2),
+                PtsTimeline.Sample(a, 64_000L, 3),
+            ),
+            merged,
+        )
+    }
+
+    @Test
+    fun the_production_samples_match_the_timeline_walks_algebra() {
+        // The parity test calls the REAL production chain (E3's plan +
+        // E1f-2's videoSamples — no inline copy): the pipeline's frame
+        // recipe must be the SAME algebra the timeline walk uses
+        // (TimelineExport: round(pos * sourceFps / projectFps)). The pairs
+        // are TIE-FREE (j * sourceFps / projectFps never lands on an
+        // exact .5): at an exact .5 the double evaluation order decides
+        // (26*1e6/24*30/1e6 drifts to 32.4999… while 26*30/24 is the exact
+        // 32.5), and the plan §4.5 pins the MAP's linear path as the
+        // authority there — FrameRateMapTest's own timeline-parity test
+        // documents the same caveat, so this test pins the agreement where
+        // the algebra is unambiguous.
+        val pairs = listOf(24.0 to 30, 30.0 to 25, 60.0 to 30, 30.0 to 50, 24.0 to 25, 60.0 to 50)
+        for ((sourceFps, projectFps) in pairs) {
+            val target = TargetFps.entries.first {
+                it != TargetFps.SOURCE && it.num.toDouble() / it.den == projectFps.toDouble()
+            }
+            val n = 120
+            val span = Math.round((n - 1) * 1_000_000.0 * target.den / target.num)
+            val p = FrameRateConvertPlan.plan(
+                FrameRateConvertPlan.Source(fps = sourceFps, frames = n, spanUs = span),
+                target,
+            )
+            val samples = FrameRateConvertPlan.videoSamples(p)
+            assertEquals(p.mapping.outputFrames, samples.size)
+            assertEquals(p.mapping.ptsUs, samples.map { it.ptsUs })
+            for (j in samples.indices) {
+                // TimelineExport.kt:222's own expression: roundToInt —
+                // ties round HALF-UP (2.5 -> 3), the same rounding the
+                // timeline walk uses (kotlin.math.round would round ties
+                // towards EVEN and is NOT the timeline's algebra).
+                val expected = (j * sourceFps / projectFps).roundToInt().coerceIn(0, n - 1)
+                assertEquals("src=$sourceFps proj=$projectFps j=$j", expected, samples[j].frameIndex)
+            }
+        }
     }
 }

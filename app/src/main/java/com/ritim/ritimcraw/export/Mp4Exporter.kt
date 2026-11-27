@@ -1491,6 +1491,39 @@ class ExportPipeline(
         }
         val videoPts = PtsTimeline.videoPts(rawPts)
 
+        // E1f-2 (plan §4.7): the video samples the encode loop walks. SOURCE
+        // (the default, every pre-E1f job, and a null planRun) walks the
+        // source's own normalized pts one frame each — the exact samples
+        // interleave(videoPts, …) always derived, byte-identical. A ladder
+        // target walks the frame-nearest map's samples instead: output
+        // frame j on the TARGET's exact grid (pts_j), showing the mapped
+        // SOURCE frame i(j) — duplicates repeat the index and the decode
+        // cache below reuses the developed frame. The AUDIO pts are NEVER
+        // touched by this branch (plan §2.4: both clocks hang off the same
+        // wall time; audioBlockPts below is computed exactly as before).
+        val measuredFps = ExportFps.fromPts(rawPts)
+        val convertTarget = planRun?.current?.targetFps?.takeIf { it != TargetFps.SOURCE }
+        val convertPlan = convertTarget?.let {
+            FrameRateConvertPlan.plan(
+                FrameRateConvertPlan.Source(
+                    fps = measuredFps,
+                    frames = info.frameCount,
+                    spanUs = videoPts.last(),
+                ),
+                it,
+            )
+        }
+        val videoSamples = convertPlan?.let { FrameRateConvertPlan.videoSamples(it) }
+            ?: PtsTimeline.videoSamples(videoPts)
+        if (convertPlan != null) {
+            stageLog?.invoke(
+                "fps-conv: ${measuredFps} -> ${convertTarget!!.num.toDouble() / convertTarget.den} " +
+                    "frames=${convertPlan.mapping.outputFrames} " +
+                    "drops=${convertPlan.mapping.drops} duplicates=${convertPlan.mapping.duplicates} " +
+                    "skew=0 (audio pts untouched)"
+            )
+        }
+
         // 2. Audio description + PCM (absent audio = video-only file).
         // AUD-02: audioAttached=false (DETACHED/REMOVED/LINKED_EDITED)
         // takes the null path on purpose — same as a clip with no audio
@@ -1746,7 +1779,15 @@ class ExportPipeline(
                 // E1b: the plan for THIS encode size and the clip's own fps
                 // (never a setting). An unresolvable plan fails here, before
                 // any encoder exists, with the planner's reason.
-                val fps = ExportFps.fromPts(rawPts)
+                // E1f-2 (plan §3.4): a converting export plans at the TARGET
+                // fps — the bitrate table and the encoder capability queries
+                // model the stream the encoder will really produce; SOURCE
+                // keeps the measured source fps exactly as before.
+                val fps = if (convertTarget != null) {
+                    convertTarget.num.toDouble() / convertTarget.den
+                } else {
+                    measuredFps
+                }
                 // 10-bit is GPU-only (see TenBitUnavailable): it needs the GPU
                 // develop session on the encoder-surface fast path (1:1 pixels,
                 // every grade stage on the GPU) AND an RGBA1010102 EGL config
@@ -1769,7 +1810,11 @@ class ExportPipeline(
                     encodeDims.width, encodeDims.height, fps,
                     ExportContext(tenBitPathAvailable = tenBitPath),
                 )
-                run.durationSec = (videoPts.last() / 1_000_000.0) + 1.0 / fps
+                // E1f-2: the output's own last pts — the source's for
+                // SOURCE, the target grid's last point for a conversion —
+                // plus one period of the OUTPUT fps (the §4.2 count rule:
+                // the last frame is displayed, never a short tail frame).
+                run.durationSec = (videoSamples.last().ptsUs / 1_000_000.0) + 1.0 / fps
                 tenBit = plan.bitDepth == 10
                 if (!plan.ok) throw IllegalStateException(plan.errorMessage())
                 writer.expectVideoConfig()
@@ -1937,7 +1982,7 @@ class ExportPipeline(
             val timing = if (stageLog != null) ExportStageTiming(stageLog) else null
             timing?.let { writer.attachTiming(it) }
             val tEncode0 = System.nanoTime()
-            onProgress?.invoke(0, videoPts.size)
+            onProgress?.invoke(0, videoSamples.size)
             var done = 0
             // GRADE PARCEL (commit b): the grade crosses the encode loop as
             // ONE immutable packet, encoded ONCE before the first frame —
@@ -1947,7 +1992,13 @@ class ExportPipeline(
             // native side; the flat per-field threading is gone (the old
             // door is deleted).
             val gradeParcel = GradeParcel.encode(grade)
-            for (s in PtsTimeline.interleave(videoPts, audioPts)) {
+            // E1f-2: the duplicate cache's slots (see the VIDEO branch's
+            // reuse note) — loop-locals, so only the video branch writes
+            // them and an audio block between two samples of the same
+            // source frame never invalidates the reuse.
+            var lastFrame = -1
+            var lastRgb: ByteArray? = null
+            for (s in PtsTimeline.interleaveSamples(videoSamples, audioPts)) {
                 when (s.track) {
                     PtsTimeline.Sample.Track.VIDEO -> {
                         timing?.startFrame()
@@ -2048,7 +2099,7 @@ class ExportPipeline(
                                 writer.drainEncoderInput()
                                 timing?.endFrame()
                                 done++
-                                onProgress?.invoke(done, videoPts.size)
+                                onProgress?.invoke(done, videoSamples.size)
                                 continue
                             }
                             // A refused frame: detach the session's surface (single-producer rule) and let the writer
@@ -2087,7 +2138,7 @@ class ExportPipeline(
                                 writer.drainEncoderInput()
                                 timing?.endFrame()
                                 done++
-                                onProgress?.invoke(done, videoPts.size)
+                                onProgress?.invoke(done, videoSamples.size)
                                 continue
                             }
                             if (tenBit) {
@@ -2129,8 +2180,23 @@ class ExportPipeline(
                         // makes the mid-stream switch visually invisible.
                         // The CPU branch stays byte-identical to the
                         // reference path (the same call, the same args).
+                        // E1f-2 — the frame-nearest map's DUPLICATE cache
+                        // (the timeline's own pattern, TimelineMp4Exporter
+                        // :315-322): a converting export repeats a SOURCE
+                        // frame's index across consecutive video samples, and
+                        // the developed frame is REUSED, never re-developed
+                        // — decode once per DISTINCT frame. The cache lives
+                        // in these two loop-locals, so an interleaved audio
+                        // block never disturbs it (the audio branch below
+                        // does not write them). SOURCE never repeats an index
+                        // (frameIndex walks the positions 0..N-1 in order),
+                        // so every sample is a cache miss and the develop
+                        // calls stay exactly as before — byte-identical.
+                        val reused = s.frameIndex == lastFrame && lastRgb != null
                         var rgb: ByteArray
-                        if (gpuDevelopActive) {
+                        if (reused) {
+                            rgb = lastRgb!!
+                        } else if (gpuDevelopActive) {
                             val gpu = try {
                                 gpuDevelop.renderFrameParcel(
                                     gpuSessionHandle, info.handle, s.frameIndex,
@@ -2170,6 +2236,10 @@ class ExportPipeline(
                                     )
                                 )
                         }
+                        if (!reused) {
+                            lastFrame = s.frameIndex
+                            lastRgb = rgb
+                        }
                         timing?.mark(ExportStageTiming.STAGE_NATIVE, System.nanoTime() - t0)
                         // Commit (d): the bridge timed its six internals
                         // into thread-local slots during that call (debug
@@ -2182,7 +2252,11 @@ class ExportPipeline(
                         // (stale numbers would be dishonest), so the
                         // sample line stays plain — the develop stage is
                         // attributed to STAGE_NATIVE above either way.
-                        if (!gpuDevelopActive) {
+                        // E1f-2: a REUSED duplicate developed nothing, so
+                        // its slots would be the PREVIOUS frame's numbers —
+                        // a re-used frame reads no sub-stages and its
+                        // sample line stays plain (honest zeros).
+                        if (!gpuDevelopActive && !reused) {
                             timing?.markNativeSubStages(session.lastFrameSubStagesMs())
                         }
                         // Section 5: renderFrame returns NOT-rotated RGB888;
@@ -2260,7 +2334,7 @@ class ExportPipeline(
                         ) {
                             timing?.endFrame()
                             done++
-                            onProgress?.invoke(done, videoPts.size)
+                            onProgress?.invoke(done, videoSamples.size)
                             continue
                         }
                         // Direct-to-plane first (commit (c)): when the writer
@@ -2309,7 +2383,7 @@ class ExportPipeline(
                         // queueVideoFrame), before endFrame reads them.
                         timing?.endFrame()
                         done++
-                        onProgress?.invoke(done, videoPts.size)
+                        onProgress?.invoke(done, videoSamples.size)
                     }
                     PtsTimeline.Sample.Track.AUDIO ->
                         writer.writeAudioBlock(s.ptsUs, blocks[s.frameIndex])
