@@ -1939,6 +1939,19 @@ fun AppNav(
                             val rec = stores.sources.get(r.sourceId)
                             rec?.let { proxyRuntime.openPlaybackProxy(it.fingerprint) } ?: -1
                         },
+                        // The ORIGINAL clip's audio facts for a proxy-opened
+                        // session (the plan's "ses orijinalden çalar, proxy'de
+                        // ses yok" — the proxy is video-only): resolved from
+                        // the ORIGINAL's measured metadata record. The audio
+                        // DESCRIPTOR stays sourceFdProvider (the original's
+                        // fd) — only the FACTS ride the session's open, and
+                        // only when a proxy opened (the screen's own
+                        // openedFromProxy flag decides that).
+                        proxyAudioFacts = stores.sources.get(r.sourceId)?.let { rec ->
+                            stores.metadata.get(rec.id)?.audio?.value?.let { a ->
+                                a.sampleRateHz to a.channels
+                            }
+                        },
                         // The session-close seam: the runtime's gate releases
                         // the proxy's in-use protection with the session.
                         onProxySessionClose = {

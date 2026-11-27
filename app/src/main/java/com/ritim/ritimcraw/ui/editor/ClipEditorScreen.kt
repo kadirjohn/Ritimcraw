@@ -955,6 +955,13 @@ fun ClipEditorScreen(
     // the file). Null (the default) = the flag-off path, byte-identical to
     // the pre-G3 open: every existing caller keeps sourceFdProvider.
     proxyOpenFd: () -> Int = { -1 },
+    // The ORIGINAL clip's audio facts (sampleRate to channels) when the
+    // session opened the clip's PROXY — a video-only file (plan: "ses
+    // orijinalden çalar, proxy'de ses yok"); without them the session's own
+    // 0/0 would silence the clip. Null = the original opened (the default;
+    // the facts stand). The AUDIO DESCRIPTOR is unchanged: audio.start still
+    // receives sourceFdProvider, the ORIGINAL's fd.
+    proxyAudioFacts: Pair<Int, Int>? = null,
     // The session-close seam: called ONCE when the editor leaves composition
     // (the sameDisposableEffect that closes the session), so the runtime
     // releases the proxy's in-use protection ([ProxyPlaybackGate.close]).
@@ -2234,13 +2241,30 @@ fun ClipEditorScreen(
             // hit opens the PROXY file's fd, a miss keeps the original fd
             // exactly as before. The default (-1) keeps the pre-G3 open
             // byte-identical.
+            //
+            // AUDIO when the proxy opened (the plan's "ses orijinalden
+            // çalar, proxy'de ses yok"): the proxy is video-only, so its own
+            // audio facts are 0/0 and the session's openAudio would
+            // short-circuit to SILENCE (the auditor's finding). The
+            // ORIGINAL's facts (proxyAudioFacts) ride the open, and the
+            // audio DESCRIPTOR is untouched: audio.start below still takes
+            // sourceFdProvider — the ORIGINAL's fd. audioFacts is non-null
+            // IFF a proxy opened; the two facts stay consistent because the
+            // same fd resolution decides both.
+            var openedFromProxy = false
             val opened = PreviewSessions.open(
                 path = sourcePath,
                 fdProvider = {
                     val proxyFd = proxyOpenFd()
-                    if (proxyFd >= 0) proxyFd else sourceFdProvider()
+                    if (proxyFd >= 0) {
+                        openedFromProxy = true
+                        proxyFd
+                    } else {
+                        sourceFdProvider()
+                    }
                 },
                 engine = PreviewRenderer.previewEngine,
+                audioFacts = if (openedFromProxy) proxyAudioFacts else null,
             )
             val s = opened.getOrNull()
             if (s != null) {

@@ -320,6 +320,58 @@ class EncodedPreviewSessionTest {
         session.close()
     }
 
+    @Test
+    fun open_audio_with_overridden_facts_plays_the_originals_audio_from_a_proxy_session() = runBlocking {
+        // G3 (the auditor's finding 1): a PROXY-opened session sees the
+        // proxy's own 0/0 audio facts (the proxy is video-only — the plan's
+        // "ses orijinalden çalar, proxy'de ses yok"), and openAudio's
+        // no-audio-track short-circuit would SILENCE the clip. The
+        // ORIGINAL's facts (audioFacts) must reach the source instead, while
+        // the DESCRIPTOR is the fd the PROVIDER handed (the caller routes
+        // the original's fd there — ClipEditorScreen's sourceFdProvider).
+        val fake = fakeSource(pts = longArrayOf(0), readerSampleRate = 0, readerChannels = 0)
+        var handed: Int? = null
+        var handedRate = 0
+        var handedChannels = 0
+        val audio = FakeClipAudioSource()
+        val session = EncodedPreviewSession.open(
+            fd = 7,
+            engine,
+            newSource = { fake },
+            newAudioSource = { fd, rate, ch ->
+                handed = fd
+                handedRate = rate
+                handedChannels = ch
+                audio
+            },
+            audioFacts = 48_000 to 2, // the ORIGINAL's facts, handed in by the caller
+        ).getOrThrow()
+
+        val opened = session.openAudio { 42 } // the ORIGINAL's fd comes from the provider
+
+        assertSame(audio, opened)                    // the session did NOT short-circuit to null
+        assertEquals(42, handed)                     // the descriptor is the provider's
+        assertEquals(48_000, handedRate)             // the ORIGINAL's rate, not the proxy's 0
+        assertEquals(2, handedChannels)               // the ORIGINAL's channels
+        session.close()
+    }
+
+    @Test
+    fun open_audio_with_overridden_facts_still_requires_a_fresh_descriptor() = runBlocking {
+        // The override lifts the FACTS only: no descriptor still means silent
+        // playback (never a failure) — the audio path's own honesty.
+        val fake = fakeSource(pts = longArrayOf(0), readerSampleRate = 0, readerChannels = 0)
+        val session = EncodedPreviewSession.open(
+            fd = 7,
+            engine,
+            newSource = { fake },
+            audioFacts = 48_000 to 2,
+        ).getOrThrow()
+
+        assertNull(session.openAudio { -1 })
+        session.close()
+    }
+
     // ---- PreviewSessions factory: routing + fd ownership ----
 
     @Test
