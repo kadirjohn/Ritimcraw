@@ -125,14 +125,29 @@ internal object SubtitleTimes {
         return (h * 3600 + m * 60 + s) * 1000_000 + ms * 1000
     }
 
-    /** Parses an "a --> b" arrow line into (startUs, endUs), or null when invalid. */
+    /**
+     * Parses an "a --> b [settings]" arrow line into (startUs, endUs), or
+     * null when invalid. Cue settings after the end timecode are legal
+     * (WebVTT); comments after '#' are cut first (both formats). The
+     * START half must be a lone timecode; the END half uses its FIRST
+     * timecode-shaped token (settings may follow on the same line).
+     */
     fun toRange(arrowLine: String): Pair<Long, Long>? {
-        val cleaned = arrowLine.substringBefore('#').trim() // VTT: " --> X settings"
+        val cleaned = arrowLine.substringBefore('#').trim()
         val bits = cleaned.split("-->")
         if (bits.size != 2) return null
-        val a = toUs(bits[0]) ?: return null
-        val b = toUs(bits[1]) ?: return null
-        return a to b
+        val start = toUs(bits[0]) ?: return null
+        val endBits = bits[1].trim().split(Regex("\\s+"))
+        var end: Long? = null
+        for (tok in endBits) {
+            val u = toUs(tok)
+            if (u != null) {
+                end = u
+                break
+            }
+        }
+        if (end == null) return null
+        return start to end
     }
 
     /** Formats us as an SRT timecode hh:mm:ss,mmm. */
