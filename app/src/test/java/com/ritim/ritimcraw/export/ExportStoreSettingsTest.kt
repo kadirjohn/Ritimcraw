@@ -46,7 +46,8 @@ class ExportStoreSettingsTest {
     @Test
     fun a_queued_job_with_settings_a_newer_app_wrote_is_failed_not_run_as_legacy() {
         // The unknown-version case is now v4 (this build writes and reads
-        // v3 since the E5 loudness and E1f target fps fields both landed).
+        // v3 since the E5 loudness, E1f target fps, and E5-B audio shape
+        // fields all landed).
         val text = ExportStore.renderExports(listOf(job(ExportSettings()))).replace("\"v\":3", "\"v\":4")
         val back = ExportStore.parseExports("{\"exports\":$text}").single()
         assertNull(back.settings)
@@ -59,8 +60,8 @@ class ExportStoreSettingsTest {
     fun a_queued_job_with_v1_settings_keeps_running_its_exact_old_settings() {
         // A row this app's v1-writing build produced: parses (the reader
         // accepts 1..3), keeps every field, and the E5 loudness chain and
-        // the fps conversion both stay OFF — the v1 behavior, exactly
-        // (plan E1F §3.2).
+        // the fps conversion, and the E5-B audio shape all stay
+        // SOURCE/OFF — the v1 behavior, exactly (plan E1F §3.2).
         val v1 = "\"settings\":{" +
             "\"v\":1,\"codec\":\"AVC\",\"bitDepth\":8," +
             "\"dynamicRange\":\"SDR\",\"rateMode\":\"VBR\"," +
@@ -74,6 +75,31 @@ class ExportStoreSettingsTest {
         assertEquals(ExportSettings(codec = ExportCodec.AVC, audioKbps = 192), back.settings)
         assertNull(back.settings!!.loudnessTargetLufs)
         assertEquals(TargetFps.SOURCE, back.settings!!.targetFps)
+        assertNull(back.settings!!.audioSampleRateHz)
+        assertNull(back.settings!!.audioChannels)
+    }
+
+    @Test
+    fun a_queued_job_with_v2_settings_keeps_running_its_exact_old_settings() {
+        // (E5-B, night G1) A row this app's v2-writing build produced
+        // (the D2 loudness fields present, no audio shape keys): the
+        // reader accepts 1..3 and the loudness choice SURVIVES while the
+        // audio shape parses as SOURCE — never a guess either way.
+        val v2 = "\"settings\":{" +
+            "\"v\":2,\"codec\":\"AVC\",\"bitDepth\":8," +
+            "\"dynamicRange\":\"SDR\",\"rateMode\":\"VBR\"," +
+            "\"bitrateLevel\":\"STANDARD\",\"uncapped\":false," +
+            "\"keyframe\":\"AUTO\",\"audioKbps\":192," +
+            "\"loudnessTargetLufs\":-14.0,\"truePeakDbtp\":-1.0}"
+        val row = ExportStore.renderExports(listOf(job(ExportSettings())))
+            .replace(Regex("\"settings\":\\{[^}]*\\}"), v2)
+        assertTrue(row, row.contains("\"v\":2"))
+        val back = ExportStore.parseExports("{\"exports\":$row}").single()
+        assertEquals(State.QUEUED, back.state)
+        assertEquals(-14f, back.settings!!.loudnessTargetLufs)
+        assertEquals(-1f, back.settings!!.truePeakDbtp)
+        assertNull(back.settings!!.audioSampleRateHz)
+        assertNull(back.settings!!.audioChannels)
     }
 
     @Test

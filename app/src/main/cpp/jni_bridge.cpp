@@ -32,6 +32,7 @@
 #include <rawedit/Develop.h>
 #include <rawedit/DngWriter.h>
 #include <rawedit/AudioNormalize.h>
+#include <rawedit/AudioReshape.h>
 #include <rawedit/Gyro.h>
 #include <rawedit/ImageStab.h>
 #include <rawedit/Lut.h>
@@ -6301,6 +6302,54 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeAudioNormalizeReport(
     if (arr == nullptr) return nullptr;
     env->SetDoubleArrayRegion(arr, 0, 7, out);
     return arr;
+}
+
+// E5-B audio reshape (night G1) --------------------------------------------
+//
+// The remix + resample of one clip's WHOLE PCM (core/src/AudioReshape.cpp;
+// the BS.775 remix and the StreamResampler are the E5-B planar-f32 cores
+// in Resample.cpp). Stateless entry like nativeAudioNormalize above: the
+// PCM travels by value, no handle, no report slot.
+//  - nativeAudioReshape(pcm, rate, channels, toRate, toChannels) returns
+//    the reshaped interleaved 16-bit PCM (frames follow the rate ratio;
+//    samples follow the channel count), or null on a malformed request
+//    (the error state says why). toRate/toChannels 0 = keep the source's
+//    own (the identity request the Kotlin seam never sends — the core
+//    copies untouched in that case anyway, the second lock).
+JNIEXPORT jshortArray JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativeAudioReshape(
+        JNIEnv* env, jclass, jshortArray pcm, jint sampleRate, jint channels,
+        jint toRate, jint toChannels) {
+    if (pcm == nullptr || channels <= 0 || sampleRate <= 0 ||
+            toRate < 0 || toChannels < 0) {
+        setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageFrameRead,
+                 "audio reshape: empty clip or bad audio description");
+        return nullptr;
+    }
+    const jsize n = env->GetArrayLength(pcm);
+    if (n <= 0 || n % channels != 0) {
+        setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageFrameRead,
+                 "audio reshape: the PCM does not match its channel count");
+        return nullptr;
+    }
+    std::vector<int16_t> in(static_cast<size_t>(n));
+    env->GetShortArrayRegion(pcm, 0, n, in.data());
+    const size_t frames = static_cast<size_t>(n) / static_cast<size_t>(channels);
+    try {
+        rawedit::ReshapeResult r = rawedit::reshapePcm(
+            in.data(), frames, sampleRate, channels, toRate, toChannels);
+        const jsize outN = static_cast<jsize>(r.pcm.size());
+        jshortArray out = env->NewShortArray(outN);
+        if (out == nullptr) return nullptr;
+        if (outN > 0) env->SetShortArrayRegion(out, 0, outN, r.pcm.data());
+        return out;
+    } catch (const std::bad_alloc&) {
+        setError("audio reshape: out of memory (recovery: free memory and retry)");
+        return nullptr;
+    } catch (const std::exception& e) {
+        setError(std::string("audio reshape: ") + e.what() + " (recovery: export again)");
+        return nullptr;
+    }
 }
 
 // RGB888 -> I420 (MP4 export YUV step) -----------------------------------------

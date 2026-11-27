@@ -47,6 +47,30 @@ data class ExportReport(
     val audioLufs: Double? = null,
     /** [audioLufs]'s true-peak pair in dBTP; null together with it. */
     val audioDbtp: Double? = null,
+    /**
+     * (E5, night G1) The gain the loudness chain applied, in dB; null
+     * when the chain did not run. A chain that skipped honestly (too
+     * short, silent) reports 0 with its reason in [steps] — the gain is
+     * never invented. Omitted from the wire when null.
+     */
+    val audioGainDb: Double? = null,
+    /**
+     * (E5-B, night G1) The output audio sample rate in Hz the export
+     * really encoded — the clip's own rate, or the reshaped choice. Null
+     * on a video-only export and on every pre-G1 report row (omit-when-
+     * absent: an old row parses exactly as it always did).
+     */
+    val audioSampleRateHz: Int? = null,
+    /** [audioSampleRateHz]'s channel pair; null together with it. */
+    val audioChannels: Int? = null,
+    /**
+     * (E5, night G1) Why the loudness chain did not change the audio,
+     * when a target was set but the chain skipped honestly: "too-short"
+     * (<400 ms — the gating blocks cannot measure it) or "silent"
+     * (unmeasurable). Null when the chain ran or no target was set.
+     * Omitted from the wire when null.
+     */
+    val audioSkipped: String? = null,
 ) {
     /** The whole file's real bit rate (video + audio + container), or null without size/duration. */
     val actualTotalBps: Long?
@@ -81,6 +105,10 @@ data class ExportReport(
             wallMs = wallMs,
             audioLufs = run.audioMeasuredLufs,
             audioDbtp = run.audioMeasuredDbtp,
+            audioGainDb = run.audioAppliedGainDb,
+            audioSampleRateHz = run.audioOutSampleRateHz,
+            audioChannels = run.audioOutChannels,
+            audioSkipped = run.audioSkippedReason,
         )
 
         const val MAX_STEPS = 12
@@ -112,6 +140,15 @@ object ExportReportWire {
         // report row without them parses exactly as it always did.
         if (r.audioLufs != null) sb.append(",\"audioLufs\":").append(r.audioLufs)
         if (r.audioDbtp != null) sb.append(",\"audioDbtp\":").append(r.audioDbtp)
+        // (E5, night G1) The chain's applied gain and the honest skip
+        // reason, omit-when-absent — a pre-G1 row parses exactly as it
+        // always did.
+        if (r.audioGainDb != null) sb.append(",\"audioGainDb\":").append(r.audioGainDb)
+        if (r.audioSkipped != null) sb.append(",\"audioSkipped\":").append(ProjectJson.quote(r.audioSkipped))
+        // (E5-B, night G1) The output audio shape the export really
+        // encoded, omit-when-absent (video-only exports and old rows).
+        if (r.audioSampleRateHz != null) sb.append(",\"audioSampleRateHz\":").append(r.audioSampleRateHz)
+        if (r.audioChannels != null) sb.append(",\"audioChannels\":").append(r.audioChannels)
         sb.append(",\"steps\":").append(strings(r.steps)).append(",\"issues\":").append(strings(r.issues)).append('}')
         return sb.toString()
     }
@@ -150,6 +187,10 @@ object ExportReportWire {
             wallMs = d("wallMs")?.toLong(),
             audioLufs = d("audioLufs"),
             audioDbtp = d("audioDbtp"),
+            audioGainDb = d("audioGainDb"),
+            audioSkipped = m["audioSkipped"] as? String,
+            audioSampleRateHz = d("audioSampleRateHz")?.toInt(),
+            audioChannels = d("audioChannels")?.toInt(),
         )
     }
 }

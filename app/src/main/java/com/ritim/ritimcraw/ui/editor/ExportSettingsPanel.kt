@@ -78,7 +78,7 @@ import java.util.Locale
  * decision 2026-11-23): the clip's own rate and the source audio format are
  * carried through.
  */
-internal enum class ExportPage { FORMAT, PRESET, RESOLUTION, CODEC, BIT_DEPTH, BITRATE, RATE_MODE, KEYFRAME, PROFILE, AUDIO, LOUDNESS }
+internal enum class ExportPage { FORMAT, PRESET, RESOLUTION, CODEC, BIT_DEPTH, BITRATE, RATE_MODE, KEYFRAME, PROFILE, AUDIO, LOUDNESS, AUDIO_FORMAT }
 
 /** One resolution choice as the sub-page lists it (built by [rememberResolutionUi]). */
 internal class ResolutionChoiceUi(
@@ -116,6 +116,10 @@ internal fun ExportBody(
     targetDetail: @Composable () -> Unit,
     page: ExportPage?,
     onPage: (ExportPage?) -> Unit,
+    // (E5-B, night G1) The clip's own audio description (the metadata's
+    // import facts; 0/0 = unknown): the audio-format row's Source value.
+    clipAudioRate: Int = 0,
+    clipAudioChannels: Int = 0,
 ) {
     var advanced by remember { mutableStateOf(false) }
 
@@ -148,6 +152,8 @@ internal fun ExportBody(
                 onAdvanced = { advanced = it },
                 onOpen = { onPage(it) },
                 targetDetail = targetDetail,
+                clipAudioRate = clipAudioRate,
+                clipAudioChannels = clipAudioChannels,
             )
         } else {
             SubPage(
@@ -166,6 +172,8 @@ internal fun ExportBody(
                 onCustomResolution = onCustomResolution,
                 onBack = { onPage(null) },
                 onDone = { onPage(null) },
+                clipAudioRate = clipAudioRate,
+                clipAudioChannels = clipAudioChannels,
             )
         }
     }
@@ -193,6 +201,8 @@ private fun MainList(
     onAdvanced: (Boolean) -> Unit,
     onOpen: (ExportPage) -> Unit,
     targetDetail: @Composable () -> Unit,
+    clipAudioRate: Int,
+    clipAudioChannels: Int,
 ) {
     val hevcOk = ExportSheetModel.hevcAvailable(facts)
     val preset = ExportPreset.of(settings, hevcOk)
@@ -311,10 +321,20 @@ private fun MainList(
                             valLoudness(settings),
                             onClick = { onOpen(ExportPage.LOUDNESS) },
                         )
+                        // (E5-B, night G1) The audio-format row is the
+                        // sample-rate + channel choice now: the value is
+                        // the clip's own pair (Source) or the honest
+                        // "source -> pick" mix; the sub-page offers the
+                        // ladder. Görsel doğrulanmadı (night G1).
                         ExportSheetState.Row.AUDIO_FORMAT -> SettingRow(
                             stringResource(R.string.export_audio_format),
-                            stringResource(R.string.export_audio_format_value),
-                            onClick = null,
+                            ExportSheetState.audioFormatValue(
+                                clipAudioRate,
+                                clipAudioChannels,
+                                settings.audioSampleRateHz,
+                                settings.audioChannels,
+                            ),
+                            onClick = { onOpen(ExportPage.AUDIO_FORMAT) },
                         )
                         else -> Unit
                     }
@@ -508,6 +528,8 @@ private fun SubPage(
     onCustomResolution: () -> Unit,
     onBack: () -> Unit,
     onDone: () -> Unit,
+    clipAudioRate: Int,
+    clipAudioChannels: Int,
 ) {
     val hevcOk = ExportSheetModel.hevcAvailable(facts)
     val preset = ExportPreset.of(settings, hevcOk)
@@ -694,8 +716,83 @@ private fun SubPage(
                 ) { apply(settings.copy(loudnessTargetLufs = target, truePeakDbtp = -1f)) }
             }
         }
+        // (E5-B, night G1) The audio-format page — the sample rate and
+        // channel choices (plan §6.2/§6.3): Source (the default, the
+        // bit-identical export) / 44.1 / 48 kHz and Source / Mono / Stereo.
+        // Each side is its own choice (the resolution pair's half-choice
+        // rule); a pick that lands on the clip's own shape is SOURCE in
+        // effect. Selecting a platform claim is never implied (the plan §5
+        // naming rule). Görsel doğrulanmadı (night G1): the owner checks
+        // the row on the device.
+        ExportPage.AUDIO_FORMAT -> PageFrame(stringResource(R.string.export_audio_format), stringResource(R.string.export_help_audio_format), onBack) {
+            // ---- sample rate ----
+            Text(
+                stringResource(R.string.export_audio_rate_section),
+                style = MaterialTheme.typography.titleSmall,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+            )
+            OptionRow(
+                stringResource(R.string.export_audio_source),
+                sourceRateHint(clipAudioRate, clipAudioChannels),
+                selected = settings.audioSampleRateHz == null,
+                enabled = true,
+            ) { apply(settings.copy(audioSampleRateHz = null)) }
+            for (hz in ExportSettings.AUDIO_SAMPLE_RATES) {
+                val isSource = clipAudioRate == hz
+                OptionRow(
+                    ExportSheetState.rateText(hz),
+                    if (isSource) stringResource(R.string.export_audio_rate_source_hint)
+                    else stringResource(R.string.export_audio_rate_pick_hint),
+                    selected = settings.audioSampleRateHz == hz,
+                    enabled = true,
+                ) { apply(settings.copy(audioSampleRateHz = hz)) }
+            }
+            // ---- channels ----
+            Text(
+                stringResource(R.string.export_audio_channels_section),
+                style = MaterialTheme.typography.titleSmall,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+            )
+            OptionRow(
+                stringResource(R.string.export_audio_source),
+                sourceChannelHint(clipAudioChannels),
+                selected = settings.audioChannels == null,
+                enabled = true,
+            ) { apply(settings.copy(audioChannels = null)) }
+            for (ch in ExportSettings.AUDIO_CHANNEL_COUNTS) {
+                val isSource = clipAudioChannels == ch
+                OptionRow(
+                    ExportSheetState.channelText(ch),
+                    if (isSource) stringResource(R.string.export_audio_rate_source_hint)
+                    else stringResource(R.string.export_audio_channels_pick_hint, ExportSheetState.channelText(ch).lowercase()),
+                    selected = settings.audioChannels == ch,
+                    enabled = true,
+                ) { apply(settings.copy(audioChannels = ch)) }
+            }
+        }
     }
 }
+
+/** The Source rate option's hint: the clip's own rate when known. */
+@Composable
+private fun sourceRateHint(clipAudioRate: Int, clipAudioChannels: Int): String =
+    if (clipAudioRate > 0 && clipAudioChannels > 0) {
+        stringResource(
+            R.string.export_audio_source_known_hint,
+            ExportSheetState.sourceText(clipAudioRate, clipAudioChannels),
+        )
+    } else {
+        stringResource(R.string.export_audio_source_unknown_hint)
+    }
+
+/** The Source channels option's hint: the clip's own pair when known. */
+@Composable
+private fun sourceChannelHint(clipAudioChannels: Int): String =
+    if (clipAudioChannels > 0) {
+        stringResource(R.string.export_audio_source_known_hint, ExportSheetState.channelText(clipAudioChannels))
+    } else {
+        stringResource(R.string.export_audio_source_unknown_hint)
+    }
 
 /** Custom bitrate: the Mbps field, the uncapped switch and its warning (all from the old Advanced block). */
 @Composable

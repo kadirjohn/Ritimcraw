@@ -516,6 +516,11 @@ private fun ExportSheet(
                     },
                     page = page,
                     onPage = { page = it },
+                    // (E5-B, night G1) The clip's own audio description
+                    // for the audio-format row's Source value (0/0 =
+                    // unknown; the sheet never guesses a number).
+                    clipAudioRate = clipInfo.audioSampleRateHz,
+                    clipAudioChannels = clipInfo.audioChannels,
                     targetDetail = {
                         // The non-MP4 targets' descriptions (also the Format sub-page's hints).
                         when (tab) {
@@ -1144,6 +1149,18 @@ data class ClipInfo(
      * says "16-bit CFA" separately.
      */
     val rawWhiteLevel: Int = 0,
+    /**
+     * (E5-B, night G1) The clip's own audio sample rate in Hz from the
+     * import metadata (MetadataStore's AudioSummary); 0 = unknown (the
+     * clip has no audio, or the record carries no audio facts). The
+     * export sheet's sample-rate row shows this as the Source value and
+     * the reshape hook needs it never — the exporter reads the REAL
+     * description from the native session at run time; this is the
+     * SHEET's honest display fact only.
+     */
+    val audioSampleRateHz: Int = 0,
+    /** [audioSampleRateHz]'s pair; 0 = unknown. */
+    val audioChannels: Int = 0,
 )
 
 /**

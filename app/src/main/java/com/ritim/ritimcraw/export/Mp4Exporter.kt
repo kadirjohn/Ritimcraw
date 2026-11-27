@@ -1402,6 +1402,18 @@ class ExportPipeline(
      * fake and count calls.
      */
     private val normalizer: AudioNormalizer = NativeAudioNormalizer,
+    /**
+     * (E5-B, night G1) The remix + resample seam, the loudness chain's
+     * sibling at the same audio-preparation point: it runs ONLY when the
+     * job's settings carry a rate or channel choice that DIFFERS from the
+     * clip's own (plan §4.2); null/n-equal choices — the default, every
+     * pre-G1 job and every Source row — never call it, keeping the
+     * encoded audio bytes BIT-IDENTICAL. Runs BEFORE the loudness chain
+     * so the normalization measures the FINAL audio (the E5-B plan's own
+     * order rule). The default is the native core; JVM tests inject a
+     * fake and count calls.
+     */
+    private val reshaper: AudioReshaper = NativeAudioReshaper,
 ) {
 
     private fun stabPathFor(info: Mp4SessionInfo, grade: GradeK, attachedGyroPath: String?): String? {
@@ -1516,6 +1528,40 @@ class ExportPipeline(
                 ?: throw IllegalStateException(
                     Mp4ExportErrors.message(session.code(), session.stage(), session.detail())
                 )
+            // (E5-B, night G1) The audio-shape hook — the same plan §4.2
+            // audio-preparation point as the loudness chain below, run
+            // FIRST so the normalization measures the FINAL audio (the
+            // E5-B plan's own order rule: the rate/channel choice changes
+            // what the integrated loudness IS). The hook runs ONLY when
+            // the job's settings carry a rate or channel choice that
+            // DIFFERS from the clip's own; Source choices (the default,
+            // every pre-G1 job) keep this path bit-identical — the block
+            // below is the only other audio change this feature can make.
+            val plan = planRun
+            val settings = plan?.settings
+            val wantRate = settings?.audioSampleRateHz
+            val wantChannels = settings?.audioChannels
+            if ((wantRate != null && wantRate != sampleRate) ||
+                (wantChannels != null && wantChannels != channels)
+            ) {
+                val toRate = wantRate ?: sampleRate
+                val toChannels = wantChannels ?: channels
+                val result = reshaper.reshape(pcm, pcm.size / channels, sampleRate, channels, toRate, toChannels)
+                pcm = result.pcm
+                sampleRate = result.sampleRate
+                channels = result.channels
+                plan?.note(
+                    "audio shape: ${if (wantRate != null) "rate ${audio[0]}->${result.sampleRate}" else "rate kept"}" +
+                        " ${if (wantChannels != null) "channels ${audio[1]}->${result.channels}" else "channels kept"}" +
+                        " frames=${result.frames}"
+                )
+            }
+            if (plan != null) {
+                // (E5-B, night G1) The honest output shape for the report,
+                // whatever ran above: the clip's own or the reshaped pair.
+                plan.audioOutSampleRateHz = sampleRate
+                plan.audioOutChannels = channels
+            }
             // (E5, night D2) The loudness normalization hook — the plan
             // §4.2 audio-preparation point: the whole clip's PCM is in
             // memory, the blocks have not been cut yet, and the pts math
@@ -1524,21 +1570,25 @@ class ExportPipeline(
             // a target; a null target (the default, every pre-E5 job)
             // keeps this path bit-identical — the code below is the only
             // audio change this feature can make.
-            val plan = planRun
-            val loudnessTarget = plan?.settings?.loudnessTargetLufs
+            val loudnessTarget = settings?.loudnessTargetLufs
             if (loudnessTarget != null) {
-                val tp = plan!!.settings.truePeakDbtp
+                val tp = settings!!.truePeakDbtp
                 val result = normalizer.normalize(pcm, sampleRate, channels, loudnessTarget, tp)
                 pcm = result.pcm
                 val r = result.report
-                plan.note(
+                plan?.note(
                     "loudness: target=${loudnessTarget}db tp=${tp}dbtp " +
                         "measuredI=${fmtLufs(r.measuredLufs)} measuredTP=${fmtLufs(r.measuredDbtp)} " +
                         "gain=${"%.2f".format(java.util.Locale.ROOT, r.appliedGainDb)}db " +
                         "iterations=${r.iterations} skipped=${skipName(r.skipped)}"
                 )
-                plan.audioMeasuredLufs = r.finalLufs
+                plan!!.audioMeasuredLufs = r.finalLufs
                 plan.audioMeasuredDbtp = r.finalDbtp
+                plan.audioAppliedGainDb = r.appliedGainDb
+                // (E5, night G1) The honest skip reason rides the report:
+                // a target that could not be applied says WHY, never a
+                // guessed measurement.
+                plan.audioSkippedReason = if (r.skipped != AudioNormalizeSkips.NONE) skipName(r.skipped) else null
             }
             blocks = chunk(pcm, channels)
             audioPts = (0 until blocks.size).map {
@@ -2621,6 +2671,14 @@ class Mp4Exporter(
      * whose settings carry a loudness target ever reaches it.
      */
     private val normalizer: AudioNormalizer = NativeAudioNormalizer,
+    /**
+     * (E5-B, night G1) The remix + resample seam, the loudness seam's
+     * sibling, threaded through to every ExportPipeline attempt the same
+     * way: the default is the native core, JVM tests inject a fake. Only
+     * a job whose settings carry a rate/channel choice that differs from
+     * the clip's own ever reaches it.
+     */
+    private val reshaper: AudioReshaper = NativeAudioReshaper,
 ) {
 
     /**
@@ -2888,6 +2946,7 @@ class Mp4Exporter(
             chainWire = chainWire,
             allowSessionSurface = allowSessionSurface,
             normalizer = normalizer,
+            reshaper = reshaper,
         ).run(
             sourceFd, grade, outPath, lutPath, gyroPath, manualRotationDeg, onProgress
         )

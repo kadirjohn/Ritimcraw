@@ -940,6 +940,8 @@ class Mp4ExporterTest {
         var calls = 0
         var lastTarget: Float? = null
         var lastTp: Float? = null
+        var sawSampleRate: Int? = null
+        var sawChannels: Int? = null
         var sawPcm: ShortArray? = null
 
         override fun normalize(
@@ -952,6 +954,8 @@ class Mp4ExporterTest {
             calls++
             lastTarget = targetLufs
             lastTp = tpDbtp
+            sawSampleRate = sampleRate
+            sawChannels = channels
             sawPcm = pcm.copyOf()
             // A visible change: every sample becomes 7 (the chain's shape
             // and length are the seam's contract).
@@ -1035,6 +1039,248 @@ class Mp4ExporterTest {
         assertEquals(0, normalizer.calls)
         assertEquals(0, writer.audioBlocks)
         assertNull(run.audioMeasuredLufs)
+    }
+
+    // ---- (E5-B, night G1) the audio-shape (remix + resample) hook ----
+
+    /** A reshaper fake that counts calls and returns a marked PCM shape. */
+    private class CountingReshaper : AudioReshaper {
+        var calls = 0
+        var lastToRate: Int? = null
+        var lastToChannels: Int? = null
+        var sawSampleRate: Int? = null
+        var sawChannels: Int? = null
+
+        override fun reshape(
+            pcm: ShortArray,
+            frames: Int,
+            sampleRate: Int,
+            channels: Int,
+            toRate: Int,
+            toChannels: Int,
+        ): AudioReshaper.Result {
+            calls++
+            lastToRate = toRate
+            lastToChannels = toChannels
+            sawSampleRate = sampleRate
+            sawChannels = channels
+            // A visibly different shape: mono 44100, every sample 9, and
+            // a shorter frame count than the input (a real resample's
+            // ratio shape, small enough for the block math to hold).
+            return AudioReshaper.Result(
+                pcm = ShortArray(44100) { 9 },
+                frames = 44100,
+                sampleRate = 44100,
+                channels = 1,
+            )
+        }
+    }
+
+    @Test
+    fun pipeline_source_audio_shape_never_calls_the_reshaper() {
+        // The acceptance proof (task G1): with the default settings (both
+        // choices null = SOURCE), the reshape code path NEVER runs —
+        // zero calls — and the writer receives BIT-IDENTICAL samples and
+        // the clip's own rate/channels, exactly as before this feature.
+        val session = FakeSession(frames = 2, audio = true)
+        val reshaper = CountingReshaper()
+        // No planRun at all (a pre-G1 job): nothing to read a choice from.
+        val noRun = FakeWriter()
+        ExportPipeline(session, noRun, reshaper = reshaper).run(7, GradeK(), "/tmp/out.partial")
+        assertEquals(0, reshaper.calls)
+        assertEquals(48000, noRun.startArgs!![4])
+        assertEquals(2, noRun.startArgs!![5])
+        // A planRun whose settings carry the DEFAULTS (null/null): still
+        // zero calls — SOURCE is the OFF switch, not a "measure only".
+        val run = ExportPlanRun(ExportSettings(), { emptyList() })
+        val withRun = FakeWriter()
+        ExportPipeline(session, withRun, planRun = run, reshaper = reshaper)
+            .run(7, GradeK(), "/tmp/out.partial")
+        assertEquals(0, reshaper.calls)
+        // And the audio bytes are bit-identical to a pipeline with no hook.
+        val reference = FakeWriter()
+        ExportPipeline(session, reference).run(7, GradeK(), "/tmp/out.partial")
+        assertTrue(withRun.audioSamples == reference.audioSamples)
+        assertTrue(noRun.audioSamples == reference.audioSamples)
+    }
+
+    @Test
+    fun pipeline_source_choices_matching_the_clip_never_call_the_reshaper() {
+        // A settings row that carries the clip's OWN rate and channels
+        // explicitly (48000/2 on the FakeSession) is SOURCE in disguise:
+        // the hook does not run — no identity conversion, no f32 round
+        // trip, bit-identical audio.
+        val session = FakeSession(frames = 2, audio = true)
+        val reshaper = CountingReshaper()
+        val run = ExportPlanRun(
+            ExportSettings(audioSampleRateHz = 48000, audioChannels = 2),
+            { emptyList() },
+        )
+        val writer = FakeWriter()
+        ExportPipeline(session, writer, planRun = run, reshaper = reshaper)
+            .run(7, GradeK(), "/tmp/out.partial")
+        assertEquals(0, reshaper.calls)
+        assertEquals(47, writer.audioBlocks)
+    }
+
+    @Test
+    fun pipeline_audio_shape_choice_runs_the_reshaper_and_reconfigures_the_writer() {
+        // A rate/channel choice that differs: the hook runs ONCE on the
+        // whole PCM with the clip's own shape as the input and the choice
+        // as the target; the writer starts at the RESHAPED rate/channels,
+        // receives the chain's samples, and the block/pts math follows
+        // the NEW rate.
+        val session = FakeSession(frames = 2, audio = true)
+        val reshaper = CountingReshaper()
+        val run = ExportPlanRun(
+            ExportSettings(audioSampleRateHz = 44100, audioChannels = 1),
+            { emptyList() },
+        )
+        val writer = FakeWriter()
+        ExportPipeline(session, writer, planRun = run, reshaper = reshaper)
+            .run(7, GradeK(), "/tmp/out.partial")
+        assertEquals(1, reshaper.calls)
+        assertEquals(44100, reshaper.lastToRate)
+        assertEquals(1, reshaper.lastToChannels)
+        // The chain saw the clip's own shape (the FakeSession: 48000
+        // stereo, the whole pre-chunk interleaved buffer).
+        assertEquals(48000, reshaper.sawSampleRate)
+        assertEquals(2, reshaper.sawChannels)
+        // The writer starts at the RESHAPED shape, not the clip's.
+        assertEquals(44100, writer.startArgs!![4])
+        assertEquals(1, writer.startArgs!![5])
+        // Every sample the writer received is the chain's marker output.
+        assertTrue(writer.audioSamples.all { it == 9.toShort() })
+        // The block count follows the new shape: 44100 mono samples /
+        // 1024 frames = 43.06 -> 44 blocks (43 full + 1 short).
+        assertEquals(44, writer.audioBlocks)
+        // The run's report shape carries the RESHAPED pair.
+        assertEquals(44100, run.audioOutSampleRateHz)
+        assertEquals(1, run.audioOutChannels)
+        // And the trail says what ran.
+        assertTrue(run.steps.any { it.startsWith("audio shape:") })
+    }
+
+    @Test
+    fun pipeline_half_choice_reshapes_only_that_side() {
+        // Only the rate differs (channels left SOURCE): the hook runs
+        // with the clip's channels as the target; only the rate is the
+        // choice. The mirror case (channels only) runs the same rule.
+        val session = FakeSession(frames = 2, audio = true)
+        val reshaper = CountingReshaper()
+        val run = ExportPlanRun(ExportSettings(audioSampleRateHz = 44100), { emptyList() })
+        val writer = FakeWriter()
+        ExportPipeline(session, writer, planRun = run, reshaper = reshaper)
+            .run(7, GradeK(), "/tmp/out.partial")
+        assertEquals(1, reshaper.calls)
+        assertEquals(44100, reshaper.lastToRate)
+        assertEquals(2, reshaper.lastToChannels) // the clip's own
+        val reshaper2 = CountingReshaper()
+        val run2 = ExportPlanRun(ExportSettings(audioChannels = 1), { emptyList() })
+        val writer2 = FakeWriter()
+        ExportPipeline(session, writer2, planRun = run2, reshaper = reshaper2)
+            .run(7, GradeK(), "/tmp/out.partial")
+        assertEquals(1, reshaper2.calls)
+        assertEquals(48000, reshaper2.lastToRate) // the clip's own
+        assertEquals(1, reshaper2.lastToChannels)
+    }
+
+    @Test
+    fun pipeline_audio_shape_runs_before_the_loudness_chain() {
+        // The E5-B plan's own order rule: the reshape runs FIRST, so the
+        // loudness chain measures the FINAL audio — the normalizer's
+        // arguments are the RESHAPED rate/channels, never the clip's.
+        val session = FakeSession(frames = 2, audio = true)
+        val reshaper = CountingReshaper()
+        val normalizer = CountingNormalizer()
+        val run = ExportPlanRun(
+            ExportSettings(loudnessTargetLufs = -14f, audioChannels = 1),
+            { emptyList() },
+        )
+        val writer = FakeWriter()
+        ExportPipeline(session, writer, planRun = run, normalizer = normalizer, reshaper = reshaper)
+            .run(7, GradeK(), "/tmp/out.partial")
+        assertEquals(1, reshaper.calls)
+        assertEquals(1, normalizer.calls)
+        // The reshape target: channels 1 (the choice), rate kept (the
+        // clip's own 48000 — the half-choice rule).
+        assertEquals(48000, reshaper.lastToRate)
+        assertEquals(1, reshaper.lastToChannels)
+        // The NORMALIZER measured the RESHAPED shape — the fake's 44100
+        // mono output, never the clip's 48000 stereo (the E5-B order).
+        assertEquals(44100, normalizer.sawSampleRate)
+        assertEquals(1, normalizer.sawChannels)
+        assertEquals(44100, normalizer.sawPcm!!.size)
+        // The writer's samples are the NORMALIZER's marker output (the
+        // reshape ran before it, its own output became the input).
+        assertTrue(writer.audioSamples.all { it == 7.toShort() })
+    }
+
+    @Test
+    fun pipeline_audio_shape_without_audio_never_calls_the_reshaper() {
+        // A shaped job on a clip with NO audio track: nothing to
+        // reshape — the hook never runs and the export is video-only
+        // exactly as before, with no report shape pair.
+        val session = FakeSession(frames = 2, audio = false)
+        val reshaper = CountingReshaper()
+        val run = ExportPlanRun(ExportSettings(audioSampleRateHz = 44100), { emptyList() })
+        val writer = FakeWriter()
+        ExportPipeline(session, writer, planRun = run, reshaper = reshaper)
+            .run(7, GradeK(), "/tmp/out.partial")
+        assertEquals(0, reshaper.calls)
+        assertEquals(0, writer.audioBlocks)
+        assertNull(run.audioOutSampleRateHz)
+        assertNull(run.audioOutChannels)
+    }
+
+    @Test
+    fun pipeline_report_carries_the_honest_audio_shape_and_gain() {
+        // The (E5, night G1) report fields: a shaped+targeted job writes
+        // the output shape and the chain's applied gain; a SOURCE job
+        // with no target writes neither pair (old rows stay without
+        // them). A skipped chain reports gain 0 and the honest reason.
+        val session = FakeSession(frames = 2, audio = true)
+        val reshaper = CountingReshaper()
+        val normalizer = CountingNormalizer()
+        val run = ExportPlanRun(
+            ExportSettings(loudnessTargetLufs = -14f, audioSampleRateHz = 44100),
+            { emptyList() },
+        )
+        val writer = FakeWriter()
+        ExportPipeline(session, writer, planRun = run, normalizer = normalizer, reshaper = reshaper)
+            .run(7, GradeK(), "/tmp/out.partial")
+        assertEquals(44100, run.audioOutSampleRateHz)
+        assertEquals(1, run.audioOutChannels) // the fake's mono shape
+        assertEquals(5.98, run.audioAppliedGainDb!!, 1e-9)
+        assertNull(run.audioSkippedReason) // the fake's chain ran
+
+        // A skipped chain (too short) reports the honest reason and 0 gain.
+        class SkippingNormalizer : AudioNormalizer {
+            override fun normalize(
+                pcm: ShortArray, sampleRate: Int, channels: Int,
+                targetLufs: Float, tpDbtp: Float,
+            ): AudioNormalizer.Result = AudioNormalizer.Result(
+                pcm,
+                AudioNormalizer.Report(
+                    measuredLufs = null, measuredDbtp = null, finalLufs = null, finalDbtp = null,
+                    appliedGainDb = 0.0, iterations = 0, skipped = AudioNormalizeSkips.TOO_SHORT,
+                ),
+            )
+        }
+        val run2 = ExportPlanRun(ExportSettings(loudnessTargetLufs = -14f), { emptyList() })
+        ExportPipeline(session, FakeWriter(), planRun = run2, normalizer = SkippingNormalizer())
+            .run(7, GradeK(), "/tmp/out.partial")
+        assertEquals(0.0, run2.audioAppliedGainDb!!, 1e-9)
+        assertEquals("too-short", run2.audioSkippedReason)
+        // A SOURCE untargeted job: no gain, no skip, but the shape pair
+        // still lands (the clip's own — the honest output shape).
+        val run3 = ExportPlanRun(ExportSettings(), { emptyList() })
+        ExportPipeline(session, FakeWriter(), planRun = run3)
+            .run(7, GradeK(), "/tmp/out.partial")
+        assertNull(run3.audioAppliedGainDb)
+        assertNull(run3.audioSkippedReason)
+        assertEquals(48000, run3.audioOutSampleRateHz)
+        assertEquals(2, run3.audioOutChannels)
     }
 
     @Test
