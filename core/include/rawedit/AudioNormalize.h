@@ -1,29 +1,27 @@
 // E5 loudness normalization chain (D2, docs/E5_AUDIO_PORT_PLAN.md §4.1).
 //
-// Two-pass chain over the WHOLE clip PCM: measure (the E5-A BS.1770-4
-// meter, core/src/Loudness.cpp — REUSED, never duplicated) -> gain ->
-// ceiling -> verify, at most 2 gain iterations. Pure logic: 16-bit
-// interleaved in, 16-bit interleaved out, same layout and length; the
-// pts/block math of the exporter never sees this (block count and
-// durations are unchanged — plan §4.3).
+// Chain over the WHOLE clip PCM: measure (the E5-A BS.1770-4 meter,
+// core/src/Loudness.cpp — REUSED, never duplicated) -> gain (capped at
+// +12 dB) -> look-ahead Limiter at the true-peak ceiling (D1's
+// rawedit::Limiter, latency compensated: same length and alignment) ->
+// requantize -> MEASURE the result, with at most 2 gain iterations. The
+// limiter lets the gain reach the target on clips without true-peak
+// headroom instead of clamping it. Pure logic: 16-bit interleaved in,
+// 16-bit interleaved out, same layout and length; the pts/block math of
+// the exporter never sees this (plan §4.3).
 //
 // HONESTY CONTRACT ("reported, never guessed"):
 //  - shorter than 400 ms, or a gated-invalid measurement (integrated is
 //    -inf: silence or everything below the -70 LUFS absolute gate): the
 //    PCM is returned UNTOUCHED and the report says why. No gain is ever
 //    invented for a signal the standard cannot measure.
-//  - a target the true-peak ceiling cannot reach: the gain is CLAMPED by
-//    the ceiling (loudness is sacrificed, the peak is preserved — plan
-//    §4.1). The final I/TP are measured and reported as they really are.
-//
-// LIMITER NOTE (night D2, 2026-11-27): the ceiling here is a SIMPLE
-// HARD CLIP on the sample values (|y| <= 10^(tpDbtp/20)). The
-// look-ahead limiter from D1's branch (feat-audio-dsp-core) is
-// deliberately NOT ported into this branch (divergence risk — the
-// branches are both cut from main and must not lean on each other).
-// When D1 lands, this apply step is to be wired to that Limiter so the
-// ceiling stops clipping and starts gaining; the measurement loop, the
-// iteration bound and the report do not change.
+//  - the total gain never exceeds +12 dB (a very quiet clip must not get
+//    its noise floor lifted by 27 dB). A target that needs more is
+//    reported as NormalizeShortfall::GainCapped.
+//  - a target the limiter could not deliver inside the ceiling is
+//    reported as NormalizeShortfall::Ceiling. Final I/TP are MEASURED on
+//    the requantized output; a true peak still above the ceiling is
+//    flagged in ceiling_exceeded, never hidden.
 //
 // NUMBERS: the K-weighted measurement is the E5-A port's own algebra
 // (f64 state, f32 audio); this TU applies the gain in f64 and requantizes
@@ -49,6 +47,22 @@ enum class NormalizeSkipped {
     Silent = 2,
 };
 
+/// Why the final loudness is not at the target.
+enum class NormalizeShortfall {
+    None = 0,
+    /// The target needs more than +12 dB; +12 dB was applied.
+    GainCapped = 1,
+    /// The limiter could not deliver the target inside the ceiling.
+    Ceiling = 2,
+};
+
+/// Maximum total gain the chain applies, dB.
+constexpr double kMaxNormalizeGainDb = 12.0;
+/// Final I within this many LU of the target counts as reached.
+constexpr double kReachedLu = 0.2;
+/// Requantization slack on the true-peak ceiling check, dB.
+constexpr double kCeilingSlackDb = 0.05;
+
 /// What the chain measured and did. The values are as measured, never
 /// derived.
 struct NormalizeReport {
@@ -66,6 +80,11 @@ struct NormalizeReport {
     /// Gain application passes run (1 or 2; 0 when skipped).
     int iterations = 0;
     NormalizeSkipped skipped = NormalizeSkipped::None;
+    /// Why the target was not reached (None when it was, or skipped).
+    NormalizeShortfall shortfall = NormalizeShortfall::None;
+    /// True when the measured final true peak is above the ceiling
+    /// (beyond a 0.05 dB requantization slack).
+    bool ceiling_exceeded = false;
 };
 
 /// The whole-chain result: PCM plus the honest report.
@@ -88,8 +107,7 @@ double normalizeGainDbPeakLimited(double measured_lufs, double target_lufs,
 ///
 /// [pcm] interleaved 16-bit, [frames] frames of [channels] channels at
 /// [sample_rate] Hz. [target_lufs] the wanted integrated loudness;
-/// [tp_dbtp] the true-peak ceiling in dBTP (the hard-clip ceiling; see
-/// the LIMITER NOTE above). Returns PCM of the same shape plus the
+/// [tp_dbtp] the true-peak ceiling in dBTP (the Limiter's ceiling). Returns PCM of the same shape plus the
 /// honest report. Deterministic: the same input yields bit-identical
 /// output on every call and every target.
 NormalizeResult normalizePcm(const int16_t *pcm, std::size_t frames,
