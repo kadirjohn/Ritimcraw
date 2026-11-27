@@ -71,7 +71,8 @@ add_library(rawedit STATIC
     src/Resample.cpp
     src/Dynamics.cpp
     src/Ducking.cpp
-    src/Yuv.cpp)
+    src/Yuv.cpp
+    src/CubeExport.cpp)
 # Yuv.cpp is the byte-exact twin of export/YuvConverter.kt: its chroma
 # multiply-add chain must round exactly where the Kotlin float ops round,
 # so this TU alone opts out of FMA contraction (-ffp-contract=off).
@@ -219,6 +220,10 @@ if(PROJECT_NAME STREQUAL "rawedit" AND RAWEDIT_TESTS)
     target_include_directories(test_audio_fx PRIVATE ${DOCTEST_DIR})
     target_link_libraries(test_audio_fx PRIVATE rawedit)
     target_compile_options(test_audio_fx PRIVATE -ffp-contract=off)
+    # test_cube_export: E7 grade -> .cube bake + writer — synthetic only.
+    add_executable(test_cube_export tests/test_cube_export.cpp)
+    target_include_directories(test_cube_export PRIVATE ${DOCTEST_DIR})
+    target_link_libraries(test_cube_export PRIVATE rawedit)
     # bench_develop: M1 developCpu serial-vs-parallel measurement on the
     # real clip (RAWEDIT_REALCLIP-gated, mirrors tools/build-desktop.sh);
     # asserts byte-exactness, reports (never asserts) the speedup.
@@ -251,5 +256,6 @@ if(PROJECT_NAME STREQUAL "rawedit" AND RAWEDIT_TESTS)
     add_test(NAME dynamics COMMAND test_dynamics)
     add_test(NAME ducking COMMAND test_ducking)
     add_test(NAME audio_fx COMMAND test_audio_fx)
+    add_test(NAME cube_export COMMAND test_cube_export)
     add_test(NAME bench_develop COMMAND bench_develop)
 endif()
