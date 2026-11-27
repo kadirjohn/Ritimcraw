@@ -75,7 +75,9 @@ import androidx.core.content.FileProvider
 import com.ritim.ritimcraw.BuildConfig
 import com.ritim.ritimcraw.R
 import com.ritim.ritimcraw.data.Access
+import com.ritim.ritimcraw.data.AndroidSourceFileRenamer
 import com.ritim.ritimcraw.data.AndroidUriResolver
+import com.ritim.ritimcraw.data.RenameStatus
 import com.ritim.ritimcraw.data.AutoHidePlayerBarStore
 import com.ritim.ritimcraw.data.CollectionRefresh
 import com.ritim.ritimcraw.data.GcsvOrientation
@@ -999,6 +1001,25 @@ fun AppNav(
     val gyroAttachedText = stringResource(R.string.gyro_auto_attached)
     val importDoneText = stringResource(R.string.library_import_done)
     val gyroImportedWithText = stringResource(R.string.library_import_done_with_gyro)
+    // The ONE rename entry (owner request 2026-11-26): renames the app name
+    // AND the real .mcraw + .gcsv files; one short toast says what happened
+    // when the file part did not go through. True when the app name changed.
+    val renameClipWithFile: (String, String) -> Boolean = { id, name ->
+        val result = stores.sources.renameWithFile(id, name, AndroidSourceFileRenamer(context))
+        val messageRes = when (result.status) {
+            RenameStatus.APP_ONLY -> R.string.rename_file_note_app_only
+            RenameStatus.PARTIAL -> R.string.rename_file_partial
+            RenameStatus.REFUSED_EXISTS -> R.string.rename_file_exists
+            RenameStatus.REFUSED_SIDECAR_AMBIGUOUS -> R.string.rename_file_sidecar_ambiguous
+            RenameStatus.REFUSED_SIDECAR_FAILED -> R.string.rename_file_sidecar_failed
+            RenameStatus.REFUSED_INVALID -> R.string.rename_file_invalid
+            else -> null
+        }
+        if (messageRes != null) {
+            Toast.makeText(context, context.getString(messageRes), Toast.LENGTH_LONG).show()
+        }
+        result.accepted
+    }
     val gyroFolderHintText = stringResource(R.string.gyro_folder_hint_snackbar)
     val gyroFolderPickText = stringResource(R.string.gyro_folder_hint_action)
 
@@ -1785,6 +1806,9 @@ fun AppNav(
                     // The clip's display name for the top bar (owner request
                     // §2b): the real file name when known, the id otherwise.
                     // Keyed to the clip and refreshed by the backfill below.
+                    var sourceOriginalName by remember(r.sourceId) {
+                        mutableStateOf(stores.sources.get(r.sourceId)?.originalName ?: "")
+                    }
                     var sourceName by remember(r.sourceId) {
                         mutableStateOf(stores.sources.get(r.sourceId)?.displayOrId ?: r.sourceId)
                     }
@@ -1827,7 +1851,7 @@ fun AppNav(
                     val audioLinkState by remember(r.sourceId) {
                         mutableStateOf(stores.audio.load().link(r.sourceId).state)
                     }
-                    val sourceUri by remember(r.sourceId) {
+                    var sourceUri by remember(r.sourceId) {
                         mutableStateOf(stores.sources.get(r.sourceId)?.uri)
                     }
                     // Which engine opens the clip: the stored kind is
@@ -1922,6 +1946,11 @@ fun AppNav(
                             // shows the id until the resolver can name it —
                             // fill it in now and refresh the top bar.
                             val filled = stores.sources.backfillDisplayName(r.sourceId)
+                            // Original file name: frozen now for old records
+                            // (only when provably the original).
+                            stores.sources.backfillOriginalName(r.sourceId)
+                            sourceOriginalName =
+                                stores.sources.get(r.sourceId)?.originalName ?: ""
                             if (filled != null && filled.displayName.isNotBlank()) {
                                 sourceName = filled.displayOrId
                                 sources = stores.sources.all()
@@ -2176,13 +2205,19 @@ fun AppNav(
                         // The top bar's clip name (§2b): display name with
                         // the id as fallback — displayOrId never blank.
                         sourceName = sourceName,
+                        sourceOriginalName = sourceOriginalName,
                         onRenameClip = { name ->
-                            val renamed = stores.sources.rename(r.sourceId, name)
-                            if (renamed != null) {
-                                sourceName = renamed.displayOrId
+                            val accepted = renameClipWithFile(r.sourceId, name)
+                            if (accepted) {
+                                stores.sources.get(r.sourceId)?.let {
+                                    sourceName = it.displayOrId
+                                    // The file moved: later per-frame opens
+                                    // must follow the new document uri.
+                                    sourceUri = it.uri
+                                }
                                 sources = stores.sources.all()
                             }
-                            renamed != null
+                            accepted
                         },
                         // ---- LUT wiring (COL-07, managed interpretations
                         // 2026-11-13) ----
@@ -2958,11 +2993,11 @@ fun AppNav(
                                 // empty-library state after deleting
                                 // everything) updates in place.
                                 onRenameClip = { id, name ->
-                                    // Display name only: the record's field.
-                                    // The file/URI is never touched.
-                                    val renamed = stores.sources.rename(id, name)
+                                    // App name + the real file(s); falls
+                                    // back to the app name alone (toast).
+                                    val accepted = renameClipWithFile(id, name)
                                     sources = stores.sources.all()
-                                    renamed != null
+                                    accepted
                                 },
                                 onDeleteClips = { ids ->
                                     com.ritim.ritimcraw.data.ClipDeletion.delete(
@@ -3035,6 +3070,13 @@ fun AppNav(
                                         val matchName = imported.displayName
                                         thumbnailStore.removeFolder(uri)
                                         if (editedName != null) {
+                                            // App name ONLY, deliberately not the
+                                            // file rename: the gcsv orientation and
+                                            // gyro matches below look the .gcsv up by
+                                            // the file name AS IMPORTED, and renaming
+                                            // the file (and its sidecar) here would
+                                            // race those lookups and the probes that
+                                            // still hold the old uri.
                                             stores.sources.rename(imported.id, editedName)
                                         }
                                         sources = stores.sources.all()
@@ -3166,7 +3208,8 @@ fun AppNav(
                                                 context.contentResolver
                                                     .releasePersistableUriPermission(
                                                         Uri.parse(uri),
-                                                        Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                                                        Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                                                            Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
                                                     )
                                             }
                                         }

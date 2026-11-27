@@ -525,10 +525,21 @@ private fun LibraryScreenContent(
     ) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult // user backed out
         try {
-            context.contentResolver.takePersistableUriPermission(
-                uri,
-                Intent.FLAG_GRANT_READ_URI_PERMISSION,
-            )
+            // READ + WRITE: the write half lets a clip rename also rename
+            // the real file; a provider that only grants read falls back to
+            // the read-only grant (the rename then stays app-only).
+            try {
+                context.contentResolver.takePersistableUriPermission(
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                        Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
+                )
+            } catch (e: SecurityException) {
+                context.contentResolver.takePersistableUriPermission(
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                )
+            }
         } catch (e: SecurityException) {
             // Non-fatal: the browser's enumeration reports the honest
             // state if the grant really is required.
