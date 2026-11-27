@@ -16,7 +16,6 @@
 
 #include <rawedit/Result.h>
 #include <rawedit/Source.h>
-
 namespace rawedit {
 
 // Optional provenance tags for both DNG arms (şartname RAW-12: "CFA fazı,
@@ -189,5 +188,19 @@ Result<void> writeLinearDng(const std::string& path, const uint16_t* rgb,
                             const FrameInfo& frame, const RawMeta& meta,
                             const DngExtraMeta& extra,
                             const DngSequenceMeta& seq);
+
+// The fd arm of the CFA writer (CinemaDNG sequence export, R1-2, night
+// E-F 2026-11-27): the SAME bytes writeCfaDng would put at [path],
+// written to the RAW POSIX fd [outFd] the caller owns (Android SAF:
+// ContentResolver.openFileDescriptor(uri, "w") — no path exists the
+// path arm could open). The caller opens AND closes the fd; a failure
+// leaves whatever was written, and the CALLER discards the document
+// (the SAF delete) — the sequence's partial-result rule is the
+// caller's, exactly like DngSequenceWriter's. A short write is an
+// honest IoError with errno, never a silent partial frame.
+Result<void> writeCfaDngToFd(int outFd, const uint16_t* cfa,
+                             const FrameInfo& frame, const RawMeta& meta,
+                             const DngExtraMeta& extra,
+                             const DngSequenceMeta& seq);
 
 } // namespace rawedit

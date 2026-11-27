@@ -17,6 +17,8 @@
 #include <fstream>
 #include <vector>
 
+#include <unistd.h>
+
 namespace rawedit {
 namespace {
 
@@ -652,6 +654,279 @@ Result<void> writeCfaDng(const std::string& path, const uint16_t* cfa,
         std::remove(path.c_str());
         return Result<void>::fail(ErrorCode::IoError, "writing " + path +
                                    " failed (removed partial file)");
+    }
+    return Result<void>::ok();
+}
+
+// ---- fd arm (CinemaDNG sequence export, docs/CINEMADNG_EXPORT_PLAN.md
+// R1-2, night E-F 2026-11-27) ----
+//
+// The Android side writes each frame into a SAF folder through
+// ContentResolver.openFileDescriptor("w") — a raw POSIX fd, no path the
+// writer could ever open. serializeCfaDng is the SHARED body: the path
+// overload serializes to bytes and writes the file, the fd overload below
+// writes the SAME bytes to the fd, so a sequence frame and a single-frame
+// export carry the identical bytes for identical inputs (the byte-parity
+// rule; test_dng_sequence pins the equality). The fd is dup'd by NOTHING
+// here — the caller owns it and closes it (the Kotlin layer's
+// ParcelFileDescriptor owns the lifetime; a partially written frame is
+// the caller's to discard, which the SAF delete of the child document
+// does — the sequence's partial rule is the CALLER's).
+
+namespace {
+
+// Serializes the CFA DNG (with extras + sequence tags) to a byte vector.
+// Shared by the path arm and the fd arm; the layout logic is IDENTICAL to
+// the inline body above (one source of truth — the path overload is the
+// reference; a drift would change every export, so the tests pin the
+// bytes against the path writer's output).
+Result<std::vector<uint8_t>> serializeCfaDng(
+        const uint16_t* cfa, const FrameInfo& frame, const RawMeta& meta,
+        const DngExtraMeta& extra, const DngSequenceMeta& seq) {
+    if (cfa == nullptr)
+        return Result<std::vector<uint8_t>>::fail(ErrorCode::Unsupported,
+                                                  "cfa buffer is null");
+    if (frame.width == 0 || frame.height == 0)
+        return Result<std::vector<uint8_t>>::fail(ErrorCode::Unsupported,
+                                                  "empty frame");
+    if (frame.bitDepth != 16)
+        return Result<std::vector<uint8_t>>::fail(ErrorCode::Unsupported,
+                                                  "only 16-bit CFA supported");
+
+    const uint32_t w = frame.width;
+    const uint32_t h = frame.height;
+    const uint64_t stripBytes64 = static_cast<uint64_t>(w) * h * 2;
+    if (stripBytes64 > 0xffffffffull)
+        return Result<std::vector<uint8_t>>::fail(ErrorCode::Unsupported,
+                                                  "strip too large");
+    const uint32_t stripBytes = static_cast<uint32_t>(stripBytes64);
+
+    uint8_t codes[4];
+    cfaCodes(frame.cfa, codes);
+
+    std::vector<uint8_t> payload;
+    payload.reserve(128);
+
+    Entry blackLevel;
+    blackLevel.tag = kTagBlackLevel;
+    blackLevel.type = kTypeShort;
+    blackLevel.count = 4;
+    blackLevel.value[0] = blackLevel.value[1] = 0;
+    blackLevel.value[2] = blackLevel.value[3] = 0;
+
+    Entry colorMatrix;
+    colorMatrix.tag = kTagColorMatrix1;
+    colorMatrix.type = kTypeSRational;
+    colorMatrix.count = 9;
+
+    Entry asShotNeutral;
+    asShotNeutral.tag = kTagAsShotNeutral;
+    asShotNeutral.type = kTypeRational;
+    asShotNeutral.count = 3;
+
+    Entry activeArea;
+    activeArea.tag = kTagActiveArea;
+    activeArea.type = kTypeLong;
+    activeArea.count = 4;
+
+    std::vector<ExtraTag> extras = buildExtras(extra);
+    appendSequenceTags(seq, extras);
+    const uint32_t ifdOffset = 8;
+    const size_t entryCount = 21 + extras.size();
+    const uint32_t payloadOffset =
+        ifdOffset + static_cast<uint32_t>(2 + 12 * entryCount + 4);
+
+    uint32_t cursor = payloadOffset;
+    auto place = [&](Entry& e) {
+        const size_t bytes = e.count * typeSize(e.type);
+        setInlineLong(e, cursor);
+        cursor += static_cast<uint32_t>(bytes);
+    };
+
+    place(blackLevel);
+    {
+        const int32_t fb[4] = {
+            frame.dynamicBlack[0], frame.dynamicBlack[1],
+            frame.dynamicBlack[2], frame.dynamicBlack[3],
+        };
+        const bool useFrameBlack = fb[0] >= 0;
+        for (int i = 0; i < 4; ++i)
+            put16(payload, static_cast<uint16_t>(
+                useFrameBlack ? fb[i] : meta.black[i]));
+    }
+
+    place(colorMatrix);
+    for (int i = 0; i < 9; ++i)
+        putRational(payload, meta.colorMatrix[i], /*signedNum=*/true);
+
+    place(asShotNeutral);
+    for (int i = 0; i < 3; ++i)
+        putRational(payload, meta.asShotNeutral[i], /*signedNum=*/false);
+
+    place(activeArea);
+    const Rect& a = frame.activeArea;
+    const uint32_t top = a.h > 0 ? static_cast<uint32_t>(a.y) : 0;
+    const uint32_t left = a.w > 0 ? static_cast<uint32_t>(a.x) : 0;
+    const uint32_t bottom = a.h > 0 ? static_cast<uint32_t>(a.y + a.h) : h;
+    const uint32_t right = a.w > 0 ? static_cast<uint32_t>(a.x + a.w) : w;
+    put32(payload, top);
+    put32(payload, left);
+    put32(payload, bottom);
+    put32(payload, right);
+
+    std::vector<Entry> extraEntries;
+    if (!extras.empty() && extrasPayloadBytes(extras) > 0 && (cursor & 1u)) {
+        payload.push_back(0);
+        ++cursor;
+    }
+    appendExtras(extras, extraEntries, payload, cursor);
+
+    const uint32_t stripOffset = cursor;
+
+    std::vector<Entry> entries;
+
+    Entry e;
+    e.tag = kTagNewSubfileType; e.type = kTypeLong; e.count = 1;
+    setInlineLong(e, 0); entries.push_back(e);
+
+    e = Entry{};
+    e.tag = kTagImageWidth; e.type = kTypeLong; e.count = 1;
+    setInlineLong(e, w); entries.push_back(e);
+
+    e = Entry{};
+    e.tag = kTagImageLength; e.type = kTypeLong; e.count = 1;
+    setInlineLong(e, h); entries.push_back(e);
+
+    e = Entry{};
+    e.tag = kTagBitsPerSample; e.type = kTypeShort; e.count = 1;
+    setInlineShorts(e, {16}); entries.push_back(e);
+
+    e = Entry{};
+    e.tag = kTagCompression; e.type = kTypeShort; e.count = 1;
+    setInlineShorts(e, {1}); entries.push_back(e);
+
+    e = Entry{};
+    e.tag = kTagPhotometric; e.type = kTypeShort; e.count = 1;
+    setInlineShorts(e, {kPhotometricCfa}); entries.push_back(e);
+
+    e = Entry{};
+    e.tag = kTagStripOffsets; e.type = kTypeLong; e.count = 1;
+    setInlineLong(e, stripOffset); entries.push_back(e);
+
+    e = Entry{};
+    e.tag = kTagOrientation; e.type = kTypeShort; e.count = 1;
+    setInlineShorts(e, {tiffOrientation(frame.orientationDeg)});
+    entries.push_back(e);
+
+    e = Entry{};
+    e.tag = kTagSamplesPerPixel; e.type = kTypeShort; e.count = 1;
+    setInlineShorts(e, {1}); entries.push_back(e);
+
+    e = Entry{};
+    e.tag = kTagRowsPerStrip; e.type = kTypeLong; e.count = 1;
+    setInlineLong(e, h); entries.push_back(e);
+
+    e = Entry{};
+    e.tag = kTagStripByteCounts; e.type = kTypeLong; e.count = 1;
+    setInlineLong(e, stripBytes); entries.push_back(e);
+
+    e = Entry{};
+    e.tag = kTagCFARepeatPatternDim; e.type = kTypeShort; e.count = 2;
+    setInlineShorts(e, {2, 2}); entries.push_back(e);
+
+    e = Entry{};
+    e.tag = kTagCFAPattern; e.type = kTypeByte; e.count = 4;
+    e.value[0] = codes[0]; e.value[1] = codes[1];
+    e.value[2] = codes[2]; e.value[3] = codes[3];
+    entries.push_back(e);
+
+    e = Entry{};
+    e.tag = kTagDNGVersion; e.type = kTypeByte; e.count = 4;
+    e.value[0] = 1; e.value[1] = 4; e.value[2] = 0; e.value[3] = 0;
+    entries.push_back(e);
+
+    e = Entry{};
+    e.tag = kTagCFALayout; e.type = kTypeShort; e.count = 1;
+    setInlineShorts(e, {1}); entries.push_back(e);
+
+    e = Entry{};
+    e.tag = kTagBlackLevelRepeatDim; e.type = kTypeShort; e.count = 2;
+    setInlineShorts(e, {2, 2}); entries.push_back(e);
+
+    entries.push_back(blackLevel);
+
+    e = Entry{};
+    e.tag = kTagWhiteLevel; e.type = kTypeLong; e.count = 1;
+    setInlineLong(e, frame.dynamicWhite > 0
+        ? static_cast<uint32_t>(frame.dynamicWhite)
+        : static_cast<uint32_t>(meta.white));
+    entries.push_back(e);
+
+    entries.push_back(colorMatrix);
+    entries.push_back(asShotNeutral);
+    entries.push_back(activeArea);
+
+    entries.insert(entries.end(), extraEntries.begin(), extraEntries.end());
+    std::stable_sort(entries.begin(), entries.end(),
+                     [](const Entry& l, const Entry& r) { return l.tag < r.tag; });
+    if (entries.size() != entryCount)
+        return Result<std::vector<uint8_t>>::fail(
+            ErrorCode::IoError, "internal entry count error");
+
+    std::vector<uint8_t> file;
+    file.reserve(static_cast<size_t>(stripOffset) + stripBytes);
+
+    file.push_back('I'); file.push_back('I');
+    put16(file, 42);
+    put32(file, ifdOffset);
+
+    put16(file, static_cast<uint16_t>(entries.size()));
+    for (const Entry& ent : entries) {
+        put16(file, ent.tag);
+        put16(file, ent.type);
+        put32(file, ent.count);
+        file.insert(file.end(), ent.value, ent.value + 4);
+    }
+    put32(file, 0); // no next IFD
+
+    file.insert(file.end(), payload.begin(), payload.end());
+    if (file.size() != stripOffset)
+        return Result<std::vector<uint8_t>>::fail(
+            ErrorCode::IoError, "internal layout error");
+
+    const uint8_t* strip = reinterpret_cast<const uint8_t*>(cfa);
+    file.insert(file.end(), strip, strip + stripBytes);
+    return Result<std::vector<uint8_t>>::ok(std::move(file));
+}
+
+} // namespace
+
+// Writes the same CFA DNG bytes the path overload writes to the RAW
+// POSIX fd [outFd] (a SAF write stream's fd, opened by the caller — the
+// caller owns the fd and closes it). A short write is an IoError
+// reported with the counts; the caller discards the document.
+Result<void> writeCfaDngToFd(int outFd, const uint16_t* cfa,
+                            const FrameInfo& frame, const RawMeta& meta,
+                            const DngExtraMeta& extra,
+                            const DngSequenceMeta& seq) {
+    const Result<std::vector<uint8_t>> bytes =
+        serializeCfaDng(cfa, frame, meta, extra, seq);
+    if (!bytes.isOk())
+        return Result<void>::fail(bytes.code, bytes.detail);
+    const std::vector<uint8_t>& b = *bytes.value;
+    size_t off = 0;
+    while (off < b.size()) {
+        const ssize_t n = ::write(outFd, b.data() + off, b.size() - off);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            return Result<void>::fail(
+                ErrorCode::IoError,
+                std::string("fd write failed: ") + std::strerror(errno));
+        }
+        if (n == 0)
+            return Result<void>::fail(ErrorCode::IoError,
+                                      "fd write wrote zero bytes");
+        off += static_cast<size_t>(n);
     }
     return Result<void>::ok();
 }

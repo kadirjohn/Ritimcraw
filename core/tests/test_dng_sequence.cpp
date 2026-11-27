@@ -31,6 +31,7 @@
 #include <map>
 #include <string>
 #include <vector>
+#include <unistd.h>
 
 using namespace rawedit;
 
@@ -813,4 +814,116 @@ TEST_CASE("wav_zero_and_huge_sample_counts") {
     // An empty vector's range helpers are 0 (no bytes carried).
     CHECK(wavRangeDataBytes(empty, WavRange{}) == 0);
     CHECK(wavRangeSampleCount(empty, WavRange{10, 0}) == 0);
+}
+
+// ---- 5. the fd arm (night E-F: the SAF write path) ----
+
+TEST_CASE("fd_arm_writes_identical_bytes_to_the_path_arm") {
+    // The JNI layer writes each sequence frame through a RAW fd (a SAF
+    // stream), so the fd arm must produce the exact bytes the path arm
+    // writes for the same inputs — the byte-parity rule. Proven on the
+    // full tag set (base + extras + the sequence tags) with the tag
+    // reader above.
+    const FrameInfo frame = seqFrame();
+    const RawMeta meta = seqMeta();
+    const std::vector<uint16_t> pixels = seqPixels(7);
+
+    DngExtraMeta extra;
+    extra.make = "Xiaomi";
+
+    DngSequenceMeta seq;
+    seq.hasTimeCodes = true;
+    uint8_t code[8] = {0};
+    smpteTimeCodes(0, 0, 0, 7, 0, 25.0, code);
+    std::memcpy(seq.timeCodes, code, 8);
+    seq.hasFrameRate = true;
+    seq.frameRateNum = 25;
+    seq.frameRateDen = 1;
+
+    REQUIRE(writeCfaDng("/tmp/seq-fd-ref.dng", pixels.data(), frame, meta,
+                        extra, seq).isOk());
+    const std::vector<uint8_t> ref = readFile("/tmp/seq-fd-ref.dng");
+
+    // An anonymous temp FILE's fd: tmpfile() unlinks on close, so the
+    // test leaves nothing behind and needs no name.
+    std::FILE* tf = std::tmpfile();
+    REQUIRE(tf != nullptr);
+    const int fd = fileno(tf);
+    REQUIRE(fd >= 0);
+    const Result<void> written =
+        writeCfaDngToFd(fd, pixels.data(), frame, meta, extra, seq);
+    REQUIRE(written.isOk());
+    // Rewind and read the whole stream back.
+    std::fseek(tf, 0, SEEK_END);
+    const long size = std::ftell(tf);
+    REQUIRE(size == static_cast<long>(ref.size()));
+    std::fseek(tf, 0, SEEK_SET);
+    std::vector<uint8_t> got(static_cast<size_t>(size));
+    REQUIRE(std::fread(got.data(), 1, got.size(), tf) == got.size());
+    std::fclose(tf);
+
+    CHECK(got == ref); // byte-for-byte the path arm's output
+
+    // The tag set the task names, verified once through the fd bytes:
+    // BlackLevel, WhiteLevel, CFAPattern, ColorMatrix1, ActiveArea,
+    // TimeCodes, FrameRate.
+    const auto tags = parseIfd(got);
+    const Tag black = get(tags, 50714);
+    CHECK(black.type == 3);
+    CHECK(black.count == 4);
+    CHECK(tagLong(tags, 50717) == 1023u);
+    const Tag pat = get(tags, 33422);
+    CHECK(pat.type == 1);
+    CHECK(pat.count == 4);
+    CHECK(pat.value[0] == 0); // RGGB
+    const Tag cm = get(tags, 50721);
+    CHECK(cm.type == 10);
+    CHECK(cm.count == 9);
+    const Tag area = get(tags, 50829);
+    CHECK(area.type == 4);
+    CHECK(area.count == 4);
+    CHECK(rd32(area.value, 8) == 48u);
+    CHECK(rd32(area.value, 12) == 64u);
+    const Tag tc = get(tags, 51043);
+    CHECK(tc.type == 1);
+    CHECK(tc.count == 8);
+    CHECK(std::memcmp(tc.value.data(), code, 8) == 0);
+    const Tag fr = get(tags, 51044);
+    CHECK(fr.type == 5);
+    CHECK(rd32(fr.value, 0) == 25u);
+    CHECK(rd32(fr.value, 4) == 1u);
+    // The CFA strip is the source pixels, byte-identical.
+    const uint32_t stripOff = tagLong(tags, 273);
+    CHECK(std::memcmp(got.data() + stripOff, pixels.data(),
+                      pixels.size() * 2) == 0);
+
+    std::remove("/tmp/seq-fd-ref.dng");
+}
+
+TEST_CASE("fd_arm_rejects_the_same_inputs_and_reports_bad_fd") {
+    const FrameInfo frame = seqFrame();
+    const RawMeta meta = seqMeta();
+    std::vector<uint16_t> pixels = seqPixels(0);
+
+    // Empty frame: the same Unsupported as the path arm.
+    FrameInfo zero = frame;
+    zero.width = 0;
+    zero.height = 0;
+    const Result<void> empty = writeCfaDngToFd(1, pixels.data(), zero, meta,
+                                               DngExtraMeta{}, DngSequenceMeta{});
+    CHECK(!empty.isOk());
+    CHECK(empty.code == ErrorCode::Unsupported);
+
+    // A closed fd: an honest IoError, never a crash.
+    int bad[2] = {-1, -1};
+    if (::pipe(bad) == 0) {
+        ::close(bad[0]);
+        ::close(bad[1]);
+        const Result<void> r = writeCfaDngToFd(
+            bad[1], pixels.data(), frame, meta,
+            DngExtraMeta{}, DngSequenceMeta{});
+        CHECK(!r.isOk());
+        CHECK(r.code == ErrorCode::IoError);
+        CHECK(r.detail.find("fd write") != std::string::npos);
+    }
 }
