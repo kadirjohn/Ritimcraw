@@ -159,6 +159,38 @@ inline int axisCandidates(uint32_t u, bool hasLeft, bool hasRight,
     return 1;
 }
 
+// Per-column feather/ramp cache for the merge loop (D4 night-e6b, idea 2
+// "blok esleme/kuvvet tablolarinin onhesabi" applied to the OBMC axis):
+// axisCandidates(uX, hasLeft, hasRight) is a pure function of the
+// pixel's position within its 128-px block column, and the whole 128-px
+// run of a block computes the SAME candidate pair (offs fixed, weights a
+// linear ramp of uX). The old loop recomputed both float divisions for
+// every pixel of every row; the merge loop now fills this cache once per
+// row (w entries: the frame edge blocks clamp, so the last block's ramp
+// covers the tail) and reads plain floats inside the x loop. The values
+// are EXACTLY the values axisCandidates returned before — the same
+// expressions, evaluated once per column instead of once per pixel-row —
+// so the merge output is bit-identical (pinned by
+// merge_rows_ab_bit_identical against temporalMergeRowsReference, which
+// keeps the per-pixel recompute).
+struct ColumnCandidates {
+    int offs[2];
+    float wts[2];
+    int count = 1;
+};
+
+inline void fillColumnCandidates(std::vector<ColumnCandidates>& cols,
+                                 uint32_t w, uint32_t maxBx) {
+    cols.resize(w);
+    for (uint32_t x = 0; x < w; ++x) {
+        const uint32_t bx = std::min(x >> kBlockCfaShift, maxBx);
+        const uint32_t uX = x & (kBlockCfa - 1);
+        ColumnCandidates& c = cols[x];
+        c.count = axisCandidates(uX, bx > 0, bx + 1 < maxBx + 1,
+                                 c.offs, c.wts);
+    }
+}
+
 // One neighbor's full evaluation, shared by prev/next.
 struct NeighborEval {
     bool present = false;
@@ -601,6 +633,13 @@ void temporalMergeRows(const uint16_t* center, const uint16_t* prev,
     // own partial sums, combined in ROW ORDER below, so serial and parallel runs report identical
     // numbers and the output pixels are bit-identical to the old single-loop code (pinned by
     // merge_output_is_identical_serial_and_parallel_and_pinned).
+    // D4 idea 2: the per-column OBMC candidates are position-pure, so one
+    // cache is built once per call and SHARED read-only by every row (the
+    // row loop only reads it). This removes the per-pixel
+    // axisCandidates recompute (2 float divisions + branches per pixel)
+    // from the innermost loop without touching any arithmetic order.
+    std::vector<ColumnCandidates> cols;
+    fillColumnCandidates(cols, w, maxBx);
     parallelForRows(h, [&](size_t rowBegin, size_t rowEnd) {
     for (uint32_t y = static_cast<uint32_t>(rowBegin); y < static_cast<uint32_t>(rowEnd); ++y) {
         double wSumPrev = 0.0;
@@ -613,10 +652,10 @@ void temporalMergeRows(const uint16_t* center, const uint16_t* prev,
         const int ncy = axisCandidates(uY, by > 0, by + 1 < maxBy + 1, offY, wY);
         for (uint32_t x = 0; x < w; ++x) {
             const uint32_t bx = std::min(x >> kBlockCfaShift, maxBx);
-            const uint32_t uX = x & (kBlockCfa - 1);
-            int offX[2];
-            float wX[2];
-            const int ncx = axisCandidates(uX, bx > 0, bx + 1 < maxBx + 1, offX, wX);
+            const ColumnCandidates& cc = cols[x];
+            const int ncx = cc.count;
+            const int* offX = cc.offs;
+            const float* wX = cc.wts;
             const int slot = cellSlot(x, y);
             const float cSignal = normSignal(center[row + x], meta, slot);
             // Per-pixel guard sigma (same for every candidate block of
