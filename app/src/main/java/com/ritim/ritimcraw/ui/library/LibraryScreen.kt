@@ -722,8 +722,9 @@ private fun LibraryScreenContent(
                                 LibraryGridRows.of(
                                     sources = visible,
                                     aspects = visible.map {
-                                        ThumbnailRow.placeholderAspect(
-                                            it.width, it.height, it.manualRotationDeg,
+                                        ThumbnailRow.effectiveAspect(
+                                            it.width, it.height,
+                                            it.containerOrientationDeg, it.manualRotationDeg,
                                         )
                                     },
                                     columns = gridColumns,
@@ -1393,6 +1394,7 @@ private fun LibraryRow(
         frameWidth = source.width,
         frameHeight = source.height,
         manualRotationDeg = source.manualRotationDeg,
+        containerOrientationDeg = source.containerOrientationDeg,
         accessLost = accessLost,
         accessLostLine = when (status) {
             LibraryRowModel.RowStatus.LOST -> stringResource(R.string.library_row_access_lost)
@@ -1582,7 +1584,14 @@ private fun LibraryGridCell(
         // is ever cropped). The decode: the SAME produceState/BitmapFactory
         // off-UI-thread pattern the list rows run (cancels when the cell
         // leaves composition).
-        val bitmap by produceState<Bitmap?>(initialValue = null, thumbnailPath) {
+        // Keyed on the rotation too: a regenerated icon keeps its path, and
+        // a bitmap decoded for the OLD orientation must not outlive the
+        // record's new one (its aspect would disagree with the row's).
+        val bitmap by produceState<Bitmap?>(
+            initialValue = null,
+            thumbnailPath, source.manualRotationDeg, source.containerOrientationDeg,
+        ) {
+            value = null
             value = withContext(Dispatchers.IO) {
                 try {
                     thumbnailPath?.let { BitmapFactory.decodeFile(it) }
@@ -1595,7 +1604,10 @@ private fun LibraryGridCell(
         val aspect = if (b != null) {
             b.width.toFloat() / b.height.coerceAtLeast(1)
         } else {
-            ThumbnailRow.placeholderAspect(source.width, source.height, source.manualRotationDeg)
+            ThumbnailRow.effectiveAspect(
+                source.width, source.height,
+                source.containerOrientationDeg, source.manualRotationDeg,
+            )
         }
         val tile = ThumbnailRow.rowTile(aspect, rowAspect)
         Box(

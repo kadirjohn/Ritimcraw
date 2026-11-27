@@ -72,6 +72,15 @@ data class MediaSource(
      */
     val manualRotationDeg: Int = 0,
     /**
+     * The container orientation the open session reported for the clip
+     * (0/90/180/270, [RotationState.effectiveDeg]'s first argument), -1
+     * while not probed yet. [width]/[height] are the STORED (unrotated)
+     * frame size, so the Library's effective aspect needs this next to
+     * [manualRotationDeg] (a phone clip stored 1920x1080 with orientation
+     * 90 is a portrait tile). Persisted only when known (>= 0).
+     */
+    val containerOrientationDeg: Int = -1,
+    /**
      * The id of the imported sidecar .gcsv gyro log attached to this clip
      * (GYRO PHASE 5, stabilization): a GyroStore entry id, blank when no
      * log is attached. The attachment — not the log itself — lives on the
@@ -429,6 +438,7 @@ class SourceRepository(
         frameCount: Int,
         cfa: String,
         durationUs: Long,
+        containerOrientationDeg: Int = -1,
     ): MediaSource? {
         val sources = load().toMutableList()
         val index = sources.indexOfFirst { it.id == id }
@@ -440,6 +450,11 @@ class SourceRepository(
             frameCount = if (frameCount > 0) frameCount else current.frameCount,
             cfa = if (cfa.isNotBlank()) cfa else current.cfa,
             durationUs = if (durationUs > 0L) durationUs else current.durationUs,
+            containerOrientationDeg = if (containerOrientationDeg >= 0) {
+                RotationState.normalize(containerOrientationDeg)
+            } else {
+                current.containerOrientationDeg
+            },
         )
         if (updated == current) return current
         sources[index] = updated
@@ -668,6 +683,9 @@ class SourceRepository(
                     // pre-rotation files stay byte-identical.
                     sb.append(",\"manualRotationDeg\":").append(s.manualRotationDeg)
                 }
+                if (s.containerOrientationDeg >= 0) {
+                    sb.append(",\"containerOrientationDeg\":").append(s.containerOrientationDeg)
+                }
                 if (s.gyroId.isNotBlank()) {
                     // Attached sidecar gyro log (GYRO PHASE 5); omitted while
                     // blank (never attached) so pre-gyro files stay
@@ -750,6 +768,9 @@ class SourceRepository(
                     // feature; 0 = never rotated (the container orientation
                     // alone decides the display).
                     manualRotationDeg = (m["manualRotationDeg"] as? Double)?.toInt() ?: 0,
+                    // Absent until the generation pass probed it; -1 = unknown.
+                    containerOrientationDeg =
+                        (m["containerOrientationDeg"] as? Double)?.toInt() ?: -1,
                     // Absent in records written before GYRO PHASE 5; blank =
                     // no sidecar gyro log attached (stabilization stays a
                     // no-op).

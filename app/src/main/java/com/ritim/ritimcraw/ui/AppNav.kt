@@ -880,6 +880,7 @@ fun AppNav(
         } catch (e: Exception) {
             null
         }
+        var probedOrientation = -1
         thumbnails.generate(
             ClipThumbnails.PendingClip(
                 media = source,
@@ -893,9 +894,11 @@ fun AppNav(
                         -1
                     }
                 },
+                onOrientation = { probedOrientation = it },
                 onStats = { w, h, frames, durationUs ->
                     val updated = stores.sources.backfillStats(
                         source.id, w, h, frames, "", durationUs,
+                        containerOrientationDeg = probedOrientation,
                     )
                     if (updated != null && updated != source) {
                         sources = stores.sources.all()
