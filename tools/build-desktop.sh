@@ -70,6 +70,20 @@ CORE_OBJS+=("$BUILD/core_Loudness.o")
 # desktop, phone and any later JNI wiring (ImageStabPlan precedent).
 "$CXX" "${FLAGS[@]}" -ffp-contract=off "${INCLUDES[@]}" -c "$ROOT/core/src/Resample.cpp" -o "$BUILD/core_Resample.o"
 CORE_OBJS+=("$BUILD/core_Resample.o")
+# Dynamics.cpp + Ducking.cpp (E5-C core, unwired): the compressor/gate/
+# limiter/ducking ports run in f32 like the crate's dynamics modules,
+# but their gain laws (one-pole envelopes, the sliding-min limiter, the
+# box-filter moving average, the envelope prefix sums) chain
+# multiplies into adds that fp-contract may fuse differently per
+# target. The block-size invariance tests (test_dynamics) pin
+# bit-identical output across block cuts, so these TUs opt out of FMA
+# contraction like Loudness/Resample above (same reasoning: the
+# desktop numbers must reproduce on the NDK build, whose flags this
+# script does not control).
+"$CXX" "${FLAGS[@]}" -ffp-contract=off "${INCLUDES[@]}" -c "$ROOT/core/src/Dynamics.cpp" -o "$BUILD/core_Dynamics.o"
+CORE_OBJS+=("$BUILD/core_Dynamics.o")
+"$CXX" "${FLAGS[@]}" -ffp-contract=off "${INCLUDES[@]}" -c "$ROOT/core/src/Ducking.cpp" -o "$BUILD/core_Ducking.o"
+CORE_OBJS+=("$BUILD/core_Ducking.o")
 # Yuv.cpp is the byte-exact twin of export/YuvConverter.kt: its chroma
 # multiply-add chain must round exactly where the Kotlin float ops round,
 # so this TU alone opts out of FMA contraction (-ffp-contract=off).
@@ -303,6 +317,21 @@ echo "== building tests =="
 # (unwired filmcraft audio-dsp port) — synthetic only, no cwd needs.
 "$CXX" "${FLAGS[@]}" "${INCLUDES[@]}" "$ROOT/core/tests/test_resample.cpp" \
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_resample"
+# test_dynamics: E5-C compressor/gate/limiter port (unwired filmcraft
+# audio-dsp vectors) — the crate's dynamics.rs suite plus the port's
+# block-size invariance, NaN/silence safety and ceiling vectors.
+# -ffp-contract=off matches the Dynamics.cpp build so the test's
+# expected values round the way the port does (Yuv.cpp precedent).
+"$CXX" "${FLAGS[@]}" -ffp-contract=off "${INCLUDES[@]}" "$ROOT/core/tests/test_dynamics.cpp" \
+  "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_dynamics"
+# test_ducking: E5-C offline ducking analysis port (unwired filmcraft
+# audio-dsp vectors) — envelope/activity/keyframes, synthetic only.
+"$CXX" "${FLAGS[@]}" -ffp-contract=off "${INCLUDES[@]}" "$ROOT/core/tests/test_ducking.cpp" \
+  "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_ducking"
+# test_audio_fx: the E5-C skeleton (ParamSpec/ParamValues/Smoothed) —
+# the crate's smooth.rs suite plus sanitize/clamp semantics vectors.
+"$CXX" "${FLAGS[@]}" -ffp-contract=off "${INCLUDES[@]}" "$ROOT/core/tests/test_audio_fx.cpp" \
+  "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_audio_fx"
 # bench_develop: M1 developCpu serial-vs-parallel measurement on the real
 # clip. The measured case is RAWEDIT_REALCLIP-gated (2 GB fixture, decode
 # is slow); without the gate the doctest prints a SKIP line. Runs from the
@@ -413,6 +442,12 @@ echo "== running test_develop_stripes =="
 "$BUILD/test_develop_stripes"
 echo "== running test_resample =="
 "$BUILD/test_resample"
+echo "== running test_dynamics =="
+"$BUILD/test_dynamics"
+echo "== running test_ducking =="
+"$BUILD/test_ducking"
+echo "== running test_audio_fx =="
+"$BUILD/test_audio_fx"
 echo "== running bench_develop (real-clip case needs RAWEDIT_REALCLIP=1) =="
 (cd "$ROOT" && "$BUILD/bench_develop")
 
