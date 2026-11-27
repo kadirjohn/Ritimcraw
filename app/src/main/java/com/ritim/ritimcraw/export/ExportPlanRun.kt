@@ -138,6 +138,14 @@ class ExportPlanRun(
     private fun encoders(): List<EncoderFacts> =
         factsCache ?: runCatching { facts() }.getOrDefault(emptyList()).also { factsCache = it }
 
+    /**
+     * (G4) The device's encoder facts the HLG gate's probe fold reads
+     * ([HevcProbeSource.fromFacts]) — the same cached facts the planner
+     * resolves against, exposed read-only so the two can never disagree
+     * about which facts a verdict was built from.
+     */
+    fun currentFacts(): List<EncoderFacts> = encoders()
+
     fun note(step: String) {
         trail += step
         diag(step)
@@ -174,6 +182,31 @@ class ExportPlanRun(
         fixUsed = true
         extraIssues += ExportIssue(ExportIssue.Kind.TEN_BIT_UNAVAILABLE, ExportIssue.Severity.WARNING, listOf(reason), eight)
         note("fix: 10-bit -> 8-bit")
+        return true
+    }
+
+    /**
+     * (G4/E2) The HLG trial encode refused ([reason]) before the first
+     * frame: re-plan as SDR, ONCE (the run's single plan fix — the same
+     * slot [fixToEightBit] uses, the two failures being mutually
+     * exclusive on one run: a trial-refused plan was HLG, a
+     * ten-bit-refused plan was 10-bit SDR). The issue stays on the report
+     * so the file's SDR range is explained, never a silent fallback (the
+     * plan's K2 rule: the refusal says WHAT failed; the SDR fix is the
+     * planner's own DYNAMIC_RANGE_UNAVAILABLE offer, applied).
+     * False when the fix was already used.
+     */
+    fun fixHlgTrialRefused(reason: String): Boolean {
+        note("hlg trial refused: $reason")
+        if (fixUsed) { note("no second fix: the plan was already fixed once"); return false }
+        val sdr = (relaxed ?: settings).copy(dynamicRange = ExportDynamicRange.SDR)
+        relaxed = sdr
+        fixUsed = true
+        extraIssues += ExportIssue(
+            ExportIssue.Kind.DYNAMIC_RANGE_UNAVAILABLE, ExportIssue.Severity.WARNING,
+            listOf("HLG", reason), sdr,
+        )
+        note("fix: HLG -> SDR (the trial encode refused)")
         return true
     }
 

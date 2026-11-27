@@ -82,12 +82,16 @@ internal object ExportSheetState {
     // ---- the settings list (P2) ----
 
     /** The settings-list rows; each is one 56dp line, the tappable ones open a sub-page. */
-    enum class Row { FORMAT, PRESET, RESOLUTION, FRAME_RATE, CODEC, BIT_DEPTH, BITRATE, RATE_MODE, KEYFRAME, PROFILE, AUDIO, LOUDNESS, AUDIO_FORMAT }
+    enum class Row { FORMAT, PRESET, RESOLUTION, FRAME_RATE, CODEC, BIT_DEPTH, DYNAMIC_RANGE, BITRATE, RATE_MODE, KEYFRAME, PROFILE, AUDIO, LOUDNESS, AUDIO_FORMAT }
 
     /**
      * The always-visible rows, in order. An encoded clip offers MP4 only, so
      * its Format row is gone (not disabled): one choice is nothing to choose.
      * Bit depth stays (disabled, with its reason) so the owner sees why.
+     * Dynamic range (G4) is also always shown — disabled with the honest
+     * reason when the HLG gate cannot be verified on this device (the same
+     * "shows why" rule as bit depth), never hidden: the row IS the SDR/HLG
+     * choice and the user must see SDR is what they get.
      */
     fun mainRows(encodedSource: Boolean): List<Row> = buildList {
         if (!encodedSource) add(Row.FORMAT)
@@ -96,6 +100,7 @@ internal object ExportSheetState {
         add(Row.FRAME_RATE)
         add(Row.CODEC)
         add(Row.BIT_DEPTH)
+        add(Row.DYNAMIC_RANGE)
     }
 
     /** The rows under the collapsed Advanced section, in order. */
@@ -196,4 +201,20 @@ internal object ExportSheetState {
 
     /** The bitrate row's value: "75 Mb/s" from the plan (what will really be used). */
     fun bitrateValue(plan: ExportPlan): String = ExportText.mbps(plan.bitrateBps.toLong()) + " Mb/s"
+
+    // ---- dynamic range (G4) ----
+
+    /**
+     * The HLG gate's honest state for the sheet's DYNAMIC_RANGE row, a
+     * PURE function of the plan (the single resolved truth): the row is
+     * OPEN when the plan resolved HLG without the wall's issue, and
+     * CLOSED (greyed, its reason shown) otherwise — including a plan
+     * whose HLG degraded to SDR (DYNAMIC_RANGE_UNAVAILABLE) and a plan
+     * that never carried HLG (SDR request or no gate: the wall's own
+     * issue or an SDR plan, both closed).
+     */
+    fun hlgSelectable(plan: ExportPlan?): Boolean =
+        plan != null &&
+            plan.effective.dynamicRange == com.ritim.ritimcraw.export.ExportDynamicRange.HLG &&
+            plan.issues.none { it.kind == com.ritim.ritimcraw.export.ExportIssue.Kind.DYNAMIC_RANGE_UNAVAILABLE }
 }

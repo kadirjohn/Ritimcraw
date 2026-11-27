@@ -48,6 +48,7 @@ import com.ritim.ritimcraw.R
 import com.ritim.ritimcraw.export.BitrateLevel
 import com.ritim.ritimcraw.export.EncoderFacts
 import com.ritim.ritimcraw.export.ExportCodec
+import com.ritim.ritimcraw.export.ExportDynamicRange
 import com.ritim.ritimcraw.export.ExportContext
 import com.ritim.ritimcraw.export.ExportIssue
 import com.ritim.ritimcraw.export.ExportPlan
@@ -79,7 +80,7 @@ import java.util.Locale
  * decision 2026-11-23): the clip's own rate and the source audio format are
  * carried through.
  */
-internal enum class ExportPage { FORMAT, PRESET, RESOLUTION, FRAME_RATE, CODEC, BIT_DEPTH, BITRATE, RATE_MODE, KEYFRAME, PROFILE, AUDIO, LOUDNESS, AUDIO_FORMAT }
+internal enum class ExportPage { FORMAT, PRESET, RESOLUTION, FRAME_RATE, CODEC, BIT_DEPTH, DYNAMIC_RANGE, BITRATE, RATE_MODE, KEYFRAME, PROFILE, AUDIO, LOUDNESS, AUDIO_FORMAT }
 
 /** One resolution choice as the sub-page lists it (built by [rememberResolutionUi]). */
 internal class ResolutionChoiceUi(
@@ -277,6 +278,11 @@ private fun MainList(
                     supporting = if (encodedSource) stringResource(R.string.export_bit_depth_encoded_reason) else null,
                     enabled = !encodedSource,
                     onClick = { onOpen(ExportPage.BIT_DEPTH) },
+                )
+                ExportSheetState.Row.DYNAMIC_RANGE -> if (subject != null) SettingRow(
+                    label = stringResource(R.string.export_dynamic_range),
+                    value = ExportText.dynamicRange(settings.dynamicRange),
+                    onClick = { onOpen(ExportPage.DYNAMIC_RANGE) },
                 )
                 else -> Unit
             }
@@ -705,6 +711,49 @@ private fun SubPage(
                 }
                 OptionRow("$d-bit", hint, selected = settings.bitDepth == d, enabled = ok) {
                     apply(settings.copy(bitDepth = d, profile = null))
+                }
+            }
+        }
+        ExportPage.DYNAMIC_RANGE -> PageFrame(
+            stringResource(R.string.export_dynamic_range),
+            stringResource(R.string.export_help_dynamic_range),
+            onBack,
+        ) {
+            // The gate's honest state, a PURE read of the CURRENT plan
+            // (ExportSheetState.hlgSelectable — the single resolved
+            // truth; the row never re-derives the gate).
+            val hlgGateOpen = ExportSheetState.hlgSelectable(planFor(settings))
+            for (range in listOf(ExportDynamicRange.SDR, ExportDynamicRange.HLG)) {
+                val hint = when {
+                    range == ExportDynamicRange.SDR -> stringResource(R.string.export_dynamic_range_sdr_hint)
+                    hlgGateOpen -> stringResource(R.string.export_dynamic_range_hlg_hint)
+                    // The honest "not available" state: the wall text (the
+                    // row shows WHY the choice is off, exactly as bit depth's).
+                    else -> stringResource(R.string.export_dynamic_range_unavailable)
+                }
+                val enabled = range == ExportDynamicRange.SDR || hlgGateOpen || settings.dynamicRange == range
+                OptionRow(
+                    ExportText.dynamicRange(range),
+                    hint,
+                    selected = settings.dynamicRange == range,
+                    enabled = enabled,
+                ) {
+                    when (range) {
+                        ExportDynamicRange.SDR -> apply(settings.copy(dynamicRange = range))
+                        // HLG IS a HEVC Main10 job: the pick moves the codec
+                        // and depth with it (the plan's own pinned fold) and
+                        // resets the profile — the CODEC/BIT_DEPTH rows above
+                        // re-render from the same settings, so the sheet never
+                        // disagrees with what the plan will resolve.
+                        else -> apply(
+                            settings.copy(
+                                dynamicRange = range,
+                                codec = ExportCodec.HEVC,
+                                bitDepth = 10,
+                                profile = null,
+                            ),
+                        )
+                    }
                 }
             }
         }

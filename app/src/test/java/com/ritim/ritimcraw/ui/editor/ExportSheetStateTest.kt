@@ -2,6 +2,7 @@ package com.ritim.ritimcraw.ui.editor
 
 import com.ritim.ritimcraw.data.RotationState
 import com.ritim.ritimcraw.export.ExportPreset
+import com.ritim.ritimcraw.export.ExportSettings
 import com.ritim.ritimcraw.export.ExportRateMode
 import com.ritim.ritimcraw.export.ExportResolution
 import com.ritim.ritimcraw.export.ExportSheetModel
@@ -122,8 +123,10 @@ class ExportSheetStateTest {
 
     @Test
     fun the_main_and_advanced_rows_cover_every_option_once_in_the_spec_order() {
+        // G4: DYNAMIC_RANGE joins the main rows (after BIT_DEPTH — the
+        // range rides the codec/depth pair). The advanced set is unchanged.
         assertEquals(
-            listOf("FORMAT", "PRESET", "RESOLUTION", "FRAME_RATE", "CODEC", "BIT_DEPTH"),
+            listOf("FORMAT", "PRESET", "RESOLUTION", "FRAME_RATE", "CODEC", "BIT_DEPTH", "DYNAMIC_RANGE"),
             ExportSheetState.mainRows(false).map { it.name },
         )
         // test change (E5, night D2): the loudness target row joins the
@@ -150,9 +153,61 @@ class ExportSheetStateTest {
         assertEquals("-23", ExportSheetState.loudnessValue(-23f))
     }
 
-    // (merged G1+G2) the read-only test moved: AUDIO_FORMAT (E5-B) and
-    // FRAME_RATE (E1f-2) both became pickers — see
-    // no_row_is_read_only_any_more below.
+    // (merged G1+G2+G4) the read-only test moved: AUDIO_FORMAT (E5-B) and
+    // FRAME_RATE (E1f-2) both became pickers and G4's own
+    // only_the_clip_derived_rows_are_read_only was superseded by the same
+    // merged truth — see no_row_is_read_only_any_more below.
+
+    // ---- G4: the DYNAMIC_RANGE row is always shown ----
+
+    @Test
+    fun an_encoded_clip_still_lists_the_dynamic_range_row() {
+        // G4: the row is always shown — disabled with the reason when the
+        // gate cannot be verified (the bit-depth row's own rule).
+        val enc = ExportSheetState.mainRows(true)
+        assertTrue(ExportSheetState.Row.DYNAMIC_RANGE in enc)
+    }
+
+    // ---- hlgSelectable (G4): the DYNAMIC_RANGE row's pure gate state ----
+
+    @Test
+    fun hlg_is_selectable_only_when_the_plan_resolved_hlg_without_the_wall() {
+        val hlg = ExportSettings(
+            codec = com.ritim.ritimcraw.export.ExportCodec.HEVC, bitDepth = 10,
+            dynamicRange = com.ritim.ritimcraw.export.ExportDynamicRange.HLG,
+        )
+        val facts = listOf(
+            com.ritim.ritimcraw.export.EncoderFacts(
+                "c2.qti.hevc.encoder", "video/hevc", hardware = true,
+                profiles = setOf(1, 2), colorFormats = setOf(0x7F000789, 54),
+                bitrateModes = setOf(1, 2), bitrateRangeBps = 1_000_000..160_000_000,
+                maxWidth = 8192, maxHeight = 8192,
+                features = setOf("hlg-editing"),
+            ),
+        )
+        val subject = ExportSheetModel.Subject(width = 3840, height = 2160, fps = 30.0, durationSec = 10.0)
+        val gate = com.ritim.ritimcraw.export.HevcProbeSource.fromFacts(facts, 3840, 2160, 30.0, 37)
+        // Open: the plan resolved HLG with no wall issue.
+        val open = ExportSheetModel.plan(
+            hlg, subject, facts,
+            com.ritim.ritimcraw.export.ExportContext(tenBitPathAvailable = true, hlgGate = gate),
+        )
+        assertTrue(ExportSheetState.hlgSelectable(open))
+    }
+
+    @Test
+    fun hlg_is_not_selectable_when_the_wall_degraded_the_plan() {
+        val hlg = ExportSettings(
+            codec = com.ritim.ritimcraw.export.ExportCodec.HEVC, bitDepth = 10,
+            dynamicRange = com.ritim.ritimcraw.export.ExportDynamicRange.HLG,
+        )
+        val subject = ExportSheetModel.Subject(width = 3840, height = 2160, fps = 30.0, durationSec = 10.0)
+        // No gate: the E1 wall degrades HLG to SDR (DYNAMIC_RANGE_UNAVAILABLE).
+        val walled = ExportSheetModel.plan(hlg, subject, emptyList())
+        assertFalse(ExportSheetState.hlgSelectable(walled))
+        // A null plan (no subject yet) is closed too — never a guess.
+        assertFalse(ExportSheetState.hlgSelectable(null))
+    }
 
     // ---- (E5-B, night G1) the audio-format row's value ----
 

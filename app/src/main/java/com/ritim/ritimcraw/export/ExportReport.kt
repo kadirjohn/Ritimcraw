@@ -205,6 +205,14 @@ object ExportText {
         else -> mime
     }
 
+    /** The dynamic range's short row label ("SDR"/"HLG"; proper names, not localized). */
+    fun dynamicRange(range: com.ritim.ritimcraw.export.ExportDynamicRange): String = when (range) {
+        com.ritim.ritimcraw.export.ExportDynamicRange.SDR -> "SDR"
+        com.ritim.ritimcraw.export.ExportDynamicRange.HLG -> "HLG"
+        com.ritim.ritimcraw.export.ExportDynamicRange.HDR10 -> "HDR10"
+        com.ritim.ritimcraw.export.ExportDynamicRange.DV -> "DV"
+    }
+
     /** 29.97 -> "29.97", 30.0 -> "30". */
     fun fps(fps: Double): String =
         if (kotlin.math.abs(fps - Math.round(fps)) < 1e-6) Math.round(fps).toString()
