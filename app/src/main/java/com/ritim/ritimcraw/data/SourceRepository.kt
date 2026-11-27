@@ -90,6 +90,14 @@ data class MediaSource(
      * manualRotationDeg shape).
      */
     val gyroId: String = "",
+    /**
+     * The file name this clip was imported under (owner request
+     * 2026-11-26): written ONCE, at import or at the lazy backfill, and
+     * never overwritten by a later rename (the app's or the file's).
+     * Blank = unknown (the info sheet hides the row). Persisted only when
+     * non-blank so older project.json files stay byte-identical.
+     */
+    val originalName: String = "",
 ) {
     /** True when the engine pass has filled in the format-line stats. */
     val hasStats: Boolean
@@ -283,6 +291,7 @@ class SourceRepository(
                 access = Access.OK,
                 displayName = name ?: existing.displayName,
                 kind = if (existing.kind == updatedKind) existing.kind else updatedKind,
+                originalName = existing.originalName.ifBlank { name ?: "" },
             )
             sources[sources.indexOf(existing)] = updated
             write(sources)
@@ -295,6 +304,7 @@ class SourceRepository(
             kind = nameKind ?: kind,
             access = Access.OK,
             displayName = name ?: "",
+            originalName = name ?: "",
         )
         sources.add(source)
         write(sources)
@@ -398,6 +408,120 @@ class SourceRepository(
     }
 
     /**
+     * Lazily fills [MediaSource.originalName] for a record written before
+     * the field existed: the file's CURRENT name is taken as the original
+     * only when it is provably the original, i.e. the app-side name is
+     * blank or equals it (an app-only rename in the past means the
+     * original is unknowable, so it stays blank rather than guessed).
+     * Never overwrites a non-blank value. Returns the (possibly updated)
+     * record, or null when it is missing.
+     */
+    fun backfillOriginalName(id: String): MediaSource? {
+        val sources = load().toMutableList()
+        val index = sources.indexOfFirst { it.id == id }
+        if (index < 0) return null
+        val current = sources[index]
+        if (current.originalName.isNotBlank()) return current
+        val fileName = try {
+            resolver.displayName(current.uri)
+        } catch (e: Exception) {
+            null
+        }
+        if (fileName.isNullOrBlank()) return current
+        if (current.displayName.isNotBlank() && current.displayName != fileName) return current
+        val updated = current.copy(originalName = fileName)
+        sources[index] = updated
+        write(sources)
+        return updated
+    }
+
+    /**
+     * Applies a successful (or partially successful) file rename in ONE
+     * project.json write: the record's [MediaSource.uri] moves to
+     * [newUri] and the app-side name becomes [name]. The id is
+     * fingerprint-derived (content, not path), so grades, nodes, gyro
+     * attachment, proxy cache (fingerprint-keyed) and exports (sourceId-
+     * keyed) need no migration. [MediaSource.originalName] is frozen
+     * first (backfill rule) so a rename can never lose it.
+     */
+    fun applyFileRename(id: String, newUri: String, name: String): MediaSource? {
+        val sources = load().toMutableList()
+        val index = sources.indexOfFirst { it.id == id }
+        if (index < 0) return null
+        val current = sources[index]
+        val original = current.originalName.ifBlank {
+            val fileName = try {
+                resolver.displayName(current.uri)
+            } catch (e: Exception) {
+                null
+            }
+            if (!fileName.isNullOrBlank() &&
+                (current.displayName.isBlank() || current.displayName == fileName)
+            ) fileName else ""
+        }
+        val updated = current.copy(
+            uri = newUri,
+            displayName = name.trim().ifBlank { current.displayName },
+            originalName = original,
+            access = Access.OK,
+        )
+        sources[index] = updated
+        write(sources)
+        return updated
+    }
+
+    /**
+     * The rename that also renames the real file (owner request
+     * 2026-11-26). Order: app-name validation, then the file rename
+     * through [renamer] (main + same-stem .gcsv, rollback on sidecar
+     * failure, never overwriting), then ONE atomic project.json write that
+     * moves the record's uri and name together. A refusal leaves both the
+     * files and the app name untouched. When files cannot be renamed here
+     * (unlisted folder, no write grant, provider refuses) the app-only
+     * rename still happens (APP_ONLY). The id is content-derived, so the
+     * grade, gyro attachment, proxy and exports keep resolving.
+     */
+    fun renameWithFile(id: String, typed: String, renamer: SourceFileRenamer?): ClipRenameResult {
+        // Freeze the original name FIRST: once the file is renamed the old
+        // uri no longer resolves, so the file name could not be read later.
+        val current = backfillOriginalName(id)
+            ?: return ClipRenameResult(RenameStatus.MISSING, null)
+        val name = when (val v = ClipNameRules.validate(typed, current.displayOrId)) {
+            is ClipNameRules.Result.Ok -> v.name
+            ClipNameRules.Result.Unchanged -> return ClipRenameResult(RenameStatus.UNCHANGED, current)
+            else -> return ClipRenameResult(RenameStatus.REFUSED_INVALID, current)
+        }
+        val fileName = try {
+            resolver.displayName(current.uri)
+        } catch (e: Exception) {
+            null
+        }
+        val outcome = if (renamer == null || fileName.isNullOrBlank()) {
+            FileRenameOutcome.Unsupported
+        } else {
+            SourceFileRename.apply(renamer, current.uri, fileName, name)
+        }
+        return when (outcome) {
+            is FileRenameOutcome.Renamed -> ClipRenameResult(
+                RenameStatus.FILE_RENAMED, applyFileRename(id, outcome.newUri, name),
+            )
+            is FileRenameOutcome.Partial -> ClipRenameResult(
+                RenameStatus.PARTIAL, applyFileRename(id, outcome.newUri, name),
+            )
+            FileRenameOutcome.InvalidName ->
+                ClipRenameResult(RenameStatus.REFUSED_INVALID, current)
+            FileRenameOutcome.TargetExists ->
+                ClipRenameResult(RenameStatus.REFUSED_EXISTS, current)
+            FileRenameOutcome.SidecarAmbiguous ->
+                ClipRenameResult(RenameStatus.REFUSED_SIDECAR_AMBIGUOUS, current)
+            FileRenameOutcome.SidecarFailedRolledBack ->
+                ClipRenameResult(RenameStatus.REFUSED_SIDECAR_FAILED, current)
+            FileRenameOutcome.Unsupported ->
+                ClipRenameResult(RenameStatus.APP_ONLY, rename(id, name))
+        }
+    }
+
+    /**
      * Renames a clip (owner request 2026-11-15, the folder-import name
      * dialog): the user-edited name replaces the resolver-derived
      * [MediaSource.displayName] — the record's id, fingerprint and grade
@@ -417,7 +541,19 @@ class SourceRepository(
         val current = sources[index]
         if (trimmed.isBlank()) return current
         if (trimmed == current.displayName) return current
-        val updated = current.copy(displayName = trimmed)
+        // Freeze the original name before the app-side name changes, while
+        // the old name still proves what the file was called.
+        val original = current.originalName.ifBlank {
+            val fileName = try {
+                resolver.displayName(current.uri)
+            } catch (e: Exception) {
+                null
+            }
+            if (!fileName.isNullOrBlank() &&
+                (current.displayName.isBlank() || current.displayName == fileName)
+            ) fileName else ""
+        }
+        val updated = current.copy(displayName = trimmed, originalName = original)
         sources[index] = updated
         write(sources)
         return updated
@@ -692,6 +828,11 @@ class SourceRepository(
                     // byte-identical.
                     sb.append(",\"gyroId\":").append(jsonString(s.gyroId))
                 }
+                if (s.originalName.isNotBlank()) {
+                    // The import-time file name (owner request 2026-11-26);
+                    // omitted while unknown so older files stay byte-identical.
+                    sb.append(",\"originalName\":").append(jsonString(s.originalName))
+                }
                 sb.append('}')
             }
             sb.append(']')
@@ -775,6 +916,7 @@ class SourceRepository(
                     // no sidecar gyro log attached (stabilization stays a
                     // no-op).
                     gyroId = m["gyroId"] as? String ?: "",
+                    originalName = m["originalName"] as? String ?: "",
                 )
             }
         }
