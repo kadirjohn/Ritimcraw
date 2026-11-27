@@ -1,4 +1,5 @@
 #include <rawedit/Source.h>
+#include <rawedit/ScreenOrientation.h>
 
 #include <motioncam/Decoder.hpp>
 
@@ -23,6 +24,7 @@ struct SourceImpl {
     ContainerIdentity identity;
     CfaPattern cfa = CfaPattern::RGGB;
     int sensorOrientation = 0;
+    mutable std::string orientationWarning;  // first unrecognised per-frame orientation code, see Source.h
     int fd = -1;  // the dup'd descriptor the decoder's FILE* wraps
 };
 
@@ -309,6 +311,8 @@ int Source::reopenIndependentFd() const {
 #endif
 }
 
+std::string Source::orientationWarning() const { return mImpl->orientationWarning; }
+
 size_t Source::frameCount() const {
     return mImpl->decoder->getFrames().size();
 }
@@ -348,8 +352,22 @@ FrameInfo Source::frameInfo(size_t i) const {
     // Use the full frame until a real padded fixture lands.
     info.activeArea = Rect{0, 0, width, height};
 
+    // The frame's "orientation" is MotionCam's screen-orientation code, not degrees (ScreenOrientation.h).
+    // No key: the container's sensorOrientation, as before. An unknown code falls back to the same value and
+    // is reported through orientationWarning() so the caller logs it; it never becomes a silent "no rotation".
     int orientation = mImpl->sensorOrientation;
-    getJson(meta, "orientation", orientation);
+    if (meta.contains("orientation")) {
+        int code = 0;
+        getJson(meta, "orientation", code);
+        const ResolvedOrientation r = resolveMotionCamOrientation(code, mImpl->sensorOrientation);
+        if (r.recognised) {
+            orientation = r.rotationDeg;
+        } else if (mImpl->orientationWarning.empty()) {
+            mImpl->orientationWarning = "unknown MotionCam orientation code " + std::to_string(code) +
+                                        " (sensorOrientation " + std::to_string(mImpl->sensorOrientation) +
+                                        "): using the container sensorOrientation";
+        }
+    }
     info.orientationDeg = orientation;
 
     // Per-frame RAW levels (owner request 2026-11-11 section 3): Android
