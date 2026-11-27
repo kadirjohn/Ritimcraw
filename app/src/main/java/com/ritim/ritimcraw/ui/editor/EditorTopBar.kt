@@ -190,6 +190,13 @@ fun EditorTopBar(
     // persisted-format pattern). Default no-op keeps every call site
     // without the feature working.
     onExportCinemaDng: (com.ritim.ritimcraw.export.CinemaDngSettings) -> Unit = {},
+    // ---- Proxy ----
+    // The thin status under the clip name (None = nothing) and the info sheet's
+    // Create/Delete proxy items (the "..." menu); hidden while the proxy mode is Off.
+    proxyStatus: com.ritim.ritimcraw.proxy.ProxyStatus = com.ritim.ritimcraw.proxy.ProxyStatus.None,
+    proxyMenuVisible: Boolean = false,
+    onCreateProxy: () -> Unit = {},
+    onDeleteProxy: () -> Unit = {},
 ) {
     var exportSheetOpen by remember { mutableStateOf(false) }
     var infoSheetOpen by remember { mutableStateOf(false) }
@@ -212,15 +219,19 @@ fun EditorTopBar(
                 contentDescription = stringResource(R.string.editor_back),
             )
         }
-        Text(
-            text = sourceId,
-            style = MaterialTheme.typography.titleMedium,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier
+        Column(
+            Modifier
                 .weight(1f)
                 .padding(start = 4.dp, end = 8.dp),
-        )
+        ) {
+            Text(
+                text = sourceId,
+                style = MaterialTheme.typography.titleMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            com.ritim.ritimcraw.ui.components.ProxyStatusLabel(proxyStatus)
+        }
         // Grade undo/redo (feature N7): two always-composed IconButtons
         // after the name, disabled at the history's bounds — the same
         // 48dp IconButton convention as Export, vendored glyphs (see
@@ -289,6 +300,16 @@ fun EditorTopBar(
             },
             currentName = sourceId,
             onRenameClip = onRenameClip,
+            proxyMenuVisible = proxyMenuVisible,
+            proxyStatus = proxyStatus,
+            onCreateProxy = {
+                infoSheetOpen = false
+                onCreateProxy()
+            },
+            onDeleteProxy = {
+                infoSheetOpen = false
+                onDeleteProxy()
+            },
             onDismiss = { infoSheetOpen = false },
         )
     }
@@ -1060,6 +1081,10 @@ private fun ClipInfoSheet(
     onDevelopFrame: () -> Unit,
     currentName: String,
     onRenameClip: (String) -> Boolean,
+    proxyMenuVisible: Boolean,
+    proxyStatus: com.ritim.ritimcraw.proxy.ProxyStatus,
+    onCreateProxy: () -> Unit,
+    onDeleteProxy: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     var saveDialogOpen by remember { mutableStateOf(false) }
@@ -1095,6 +1120,25 @@ private fun ClipInfoSheet(
                 .heightIn(min = 48.dp)
                 .clickable(role = androidx.compose.ui.semantics.Role.Button) { renameOpen = true },
         )
+        if (proxyMenuVisible) {
+            // Per-clip proxy action (Ask / Automatic only): create when none is ready or
+            // queued, delete when there is something to remove or stop. One row, never both.
+            val canCreate = com.ritim.ritimcraw.proxy.ProxyImportDecision.canCreate(proxyStatus)
+            ListItem(
+                headlineContent = {
+                    Text(
+                        stringResource(
+                            if (canCreate) R.string.proxy_action_create else R.string.proxy_action_delete,
+                        ),
+                    )
+                },
+                modifier = Modifier
+                    .heightIn(min = 48.dp)
+                    .clickable(role = androidx.compose.ui.semantics.Role.Button) {
+                        if (canCreate) onCreateProxy() else onDeleteProxy()
+                    },
+            )
+        }
         ClipInfoRow(
             label = stringResource(R.string.editor_clip_info_resolution),
             value = if (info.width > 0 && info.height > 0) {

@@ -119,6 +119,8 @@ class ProxyRuntime(
     private val playbackEnabled: () -> Boolean = { true },
     /** A build for this fingerprint reached Ready (the screen marks its switch-pending state). */
     private val onProxyReady: (fingerprint: String) -> Unit = {},
+    /** The proxy status of this fingerprint may have changed (queue, progress, terminal): the UI re-reads [statusOf]. */
+    private val onStatusChanged: (fingerprint: String) -> Unit = {},
 ) {
     val queue = ProxyStateMap()
     val cache: ProxyCache
@@ -133,6 +135,11 @@ class ProxyRuntime(
     private var monitorJob: Job? = null
     @Volatile private var slowPace = false
     @Volatile private var running = false
+    private val filesDir: java.io.File = context.applicationContext.filesDir
+    private val percentByFp = java.util.concurrent.ConcurrentHashMap<String, Int>()
+    @Volatile private var currentFp: String? = null
+    private val progressLog = ProxyProgressLogThrottle(10)
+    private var lastNotifiedPercent = -1
 
     init {
         val app = context.applicationContext
@@ -146,11 +153,15 @@ class ProxyRuntime(
             encoder = encoder,
             specFor = { key -> jobFor(key.fingerprint)?.takeIf { it.first.key() == key }?.second },
             pacer = { if (slowPace) Thread.sleep(SLOW_SLICE_MS) },
+            onProgress = { done, total -> onBuildProgress(done, total) },
             onTerminal = { key, state, _ ->
+                logTerminal(key, state)
                 if (state == ProxyState.Ready) {
                     synchronized(gates) { gates[key.fingerprint] }?.onBuildLanded()
                     onProxyReady(key.fingerprint)
                 }
+                percentByFp.remove(key.fingerprint)
+                onStatusChanged(key.fingerprint)
             },
         )
         // Crash-leftover sweep (plan section 3.3): every *.tmp and every
@@ -191,8 +202,82 @@ class ProxyRuntime(
     /** A direct enqueue for an existing signature. */
     fun enqueue(sig: ProxySignature, front: Boolean = false): Boolean {
         val ok = queue.enqueue(sig.key(), front)
-        if (ok) kick()
+        ProxyLog.d("enqueue ${sig.sourceFingerprint.take(8)} front=$front accepted=$ok queue=${queue.queued().size}")
+        if (ok) {
+            onStatusChanged(sig.sourceFingerprint)
+            kick()
+        }
         return ok
+    }
+
+    /** The clip's measured facts (null while unknown), for the mode decision. */
+    fun clipInfoOf(fingerprint: String): ProxyClipInfo? = clipInfoFor(fingerprint)
+
+    /** True when a proxy is built, queued or building for the clip (not Failed/Cancelled/None). */
+    fun isBuiltOrQueued(fingerprint: String): Boolean = when (statusOf(fingerprint)) {
+        ProxyStatus.None, ProxyStatus.Failed -> false
+        else -> true
+    }
+
+    /** The clip's proxy status for the UI (library row, editor). Cheap: queue lookup + one manifest check. */
+    fun statusOf(fingerprint: String): ProxyStatus {
+        val sig = jobFor(fingerprint)?.first ?: return ProxyStatus.None
+        val key = sig.key()
+        val state = queue.state(key)
+        val hasPlayable = state != ProxyState.Building && state != ProxyState.Queued && cache.peekPlayable(key) != null
+        return ProxyStatusMapper.of(state, hasPlayable, percentByFp[fingerprint])
+    }
+
+    /**
+     * Manual "Create proxy" (any clip kind, MCRAW included: the opt-in route; the auto
+     * rule does not apply). The user is waiting, so it goes to the FRONT lane, and a
+     * clip that failed this session may be retried. The caller hides it while the mode is Off.
+     */
+    fun createManual(fingerprint: String): Boolean {
+        if (!playbackEnabled()) return false
+        val job = jobFor(fingerprint) ?: return false
+        queue.forgiveFailures(job.first.key())
+        return enqueue(job.first, front = true)
+    }
+
+    /** Manual "Delete proxy": stops a queued/building job and removes the built file(s). */
+    fun deleteProxy(fingerprint: String) {
+        cancel(fingerprint)
+        val removed = cache.clearClip(fingerprint)
+        jobFor(fingerprint)?.first?.key()?.let { queue.reset(it) }
+        ProxyLog.d("delete ${fingerprint.take(8)} removedEntries=$removed total=${cache.totalBytes()}B dir=${ProxyDirs.cacheDir(filesDir)}")
+        onStatusChanged(fingerprint)
+    }
+
+    /** Mode switched to Off: drop every queued job and stop the running build (built files stay, unused). */
+    fun stopAll() {
+        val queued = queue.queued()
+        queued.forEach { queue.cancelled(it) }
+        if (running) engine.requestCancel(ProxyBuildEngine.CancelReason.USER)
+        ProxyLog.d("stopAll cancelledQueued=${queued.size} runningStopped=$running")
+        queued.forEach { onStatusChanged(it.fingerprint) }
+    }
+
+    private fun onBuildProgress(done: Long, total: Long) {
+        val fp = currentFp ?: return
+        val pct = ProxyStatusMapper.percent(done, total)
+        percentByFp[fp] = pct
+        if (pct != lastNotifiedPercent) {
+            lastNotifiedPercent = pct
+            onStatusChanged(fp)
+        }
+        if (progressLog.shouldLog(pct)) ProxyLog.d("progress ${fp.take(8)} $pct% ($done/$total frames)")
+    }
+
+    private fun logTerminal(key: ProxyKey, state: ProxyState) {
+        val fp = key.fingerprint.take(8)
+        when (state) {
+            ProxyState.Ready ->
+                ProxyLog.d("ready $fp clipBytes=${cache.bytesForClip(key.fingerprint)} total=${cache.totalBytes()}B dir=${ProxyDirs.cacheDir(filesDir)}")
+            ProxyState.Failed ->
+                ProxyLog.d("failed $fp reason=${queue.failureReason(key)} dir=${ProxyDirs.cacheDir(filesDir)}")
+            else -> ProxyLog.d("terminal $fp state=$state")
+        }
     }
 
     /** User cancel of one fingerprint's queued/building job (the storage page's button). */
@@ -202,6 +287,7 @@ class ProxyRuntime(
             engine.requestCancel(ProxyBuildEngine.CancelReason.USER)
         } else {
             queue.cancelled(key)
+            onStatusChanged(fingerprint)
         }
     }
 
@@ -219,10 +305,18 @@ class ProxyRuntime(
      * [closePlaybackProxy] releases it.
      */
     fun openPlaybackProxy(fingerprint: String): Int {
-        if (!playbackEnabled()) return -1
+        if (!playbackEnabled()) {
+            ProxyLog.d("playback ${fingerprint.take(8)} source=original (proxy mode off)")
+            return -1
+        }
         val job = jobFor(fingerprint) ?: return -1
         val gate = synchronized(gates) { gates.getOrPut(fingerprint) { ProxyPlaybackGate(cache, inUse, playbackEnabled) } }
-        val entry = gate.open(job.first) ?: return -1
+        val entry = gate.open(job.first)
+        if (entry == null) {
+            ProxyLog.d("playback ${fingerprint.take(8)} source=original (no playable proxy)")
+            return -1
+        }
+        ProxyLog.d("playback ${fingerprint.take(8)} source=proxy file=${entry.file.name}")
         return try {
             android.os.ParcelFileDescriptor.open(
                 entry.file,
@@ -249,6 +343,7 @@ class ProxyRuntime(
                 android.os.ParcelFileDescriptor.MODE_READ_ONLY,
             ).detachFd()
             gate.swapped(entry)
+            ProxyLog.d("playback ${fingerprint.take(8)} switched original->proxy file=${entry.file.name}")
             fd
         } catch (e: Exception) {
             -1
@@ -266,6 +361,8 @@ class ProxyRuntime(
         for (kick in drive) {
             var go = true
             while (go && scope.isActive) {
+                // Mode Off: nothing starts (a queue left over from before the switch just parks).
+                if (!playbackEnabled()) break
                 val state = power.state()
                 val (step, job) = runnerOps.act(state, power.playing())
                 when (step) {
@@ -285,9 +382,18 @@ class ProxyRuntime(
         running = true
         slowPace = false
         foreground.start(jobId, job.key.fingerprint)
+        currentFp = job.key.fingerprint
+        lastNotifiedPercent = -1
+        progressLog.reset()
+        ProxyLog.d("build start ${job.key.fingerprint.take(8)} queueLeft=${queue.queued().size}")
+        onStatusChanged(job.key.fingerprint)
         try {
             engine.run(job)
         } finally {
+            currentFp = null
+            percentByFp.remove(job.key.fingerprint)
+            // an interrupted (re-queued) build never reaches onTerminal: refresh its status here
+            onStatusChanged(job.key.fingerprint)
             running = false
             slowPace = false
             foreground.stop(jobId)

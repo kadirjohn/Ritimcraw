@@ -44,19 +44,35 @@ object FeatureFlags {
     const val PROXY_PRODUCTION_DEFAULT = false
 
     /**
-     * The proxy flag as the app reads it: the compiled default, or, in DEBUG
-     * builds only, `adb shell setprop debug.ritim.proxy 1` for a device test
-     * (read once per process; staging/release never read the property, the
-     * same rule as the native debug.ritim.* switches). One flag governs the
-     * runtime start, the auto-enqueue AND playback use of proxies: off means
-     * already-generated proxies are ignored too.
+     * Debug-only force: `adb shell setprop debug.ritim.proxy 1` (read once per
+     * process; staging/release never read the property, the same rule as the
+     * native debug.ritim.* switches). It lifts a stored OFF to AUTOMATIC.
      */
-    val proxyEnabled: Boolean by lazy {
+    private val debugProxyForced: Boolean by lazy {
         resolveProxyEnabled(
             PROXY_PRODUCTION_DEFAULT,
             com.ritim.ritimcraw.BuildConfig.DEBUG,
         ) { readSystemProperty("debug.ritim.proxy") }
     }
+
+    /**
+     * The user's stored proxy mode (Settings), pushed here by AppNav at start and
+     * on every change. This, not the compile-time default, is the source of truth.
+     */
+    @Volatile
+    var storedProxyMode: com.ritim.ritimcraw.proxy.ProxyMode = com.ritim.ritimcraw.proxy.ProxyMode.DEFAULT
+
+    /** The mode in force: the stored choice, with the debug property OR'd in. */
+    val effectiveProxyMode: com.ritim.ritimcraw.proxy.ProxyMode
+        get() = com.ritim.ritimcraw.proxy.ProxyMode.effective(storedProxyMode, debugProxyForced)
+
+    /**
+     * The proxy flag as the app reads it: one flag governs the runtime start, the
+     * enqueue AND playback use of proxies; off means already-generated proxies are
+     * ignored too.
+     */
+    val proxyEnabled: Boolean
+        get() = effectiveProxyMode != com.ritim.ritimcraw.proxy.ProxyMode.OFF
 
     /** Pure resolution (JVM-testable): the property can only ever TURN ON, and only in debug. */
     fun resolveProxyEnabled(default: Boolean, isDebug: Boolean, prop: () -> String?): Boolean =

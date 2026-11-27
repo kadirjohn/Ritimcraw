@@ -860,4 +860,26 @@
     <string name="cube_export_state_chain">The grade\'s node chain could not be baked (%1$s).</string>
     <string name="cube_export_state_write">Could not write the file (%1$s). Pick another location and try again.</string>
     <string name="cube_export_state_bake">The bake was refused (%1$s). Cap the chain at 8 nodes and try again.</string>
+    <!-- Proxy UX: mode setting, prompt, status, manual actions -->
+    <string name="settings_proxy_mode">Proxy mode</string>
+    <string name="settings_proxy_mode_hint_off">Off · originals only</string>
+    <string name="settings_proxy_mode_hint_ask">Ask after import</string>
+    <string name="settings_proxy_mode_hint_auto">Automatic for 8K and 4K 60 clips</string>
+    <string name="settings_proxy_mode_about">About proxy mode</string>
+    <string name="settings_proxy_mode_info">Proxies are lighter copies that play smoothly. Off builds and uses none. Ask offers them after an import. Automatic builds them for 8K and high frame rate 4K clips in the background.</string>
+    <string name="settings_proxy_mode_off">Off</string>
+    <string name="settings_proxy_mode_ask">Ask</string>
+    <string name="settings_proxy_mode_auto">Automatic</string>
+    <plurals name="proxy_ask_prompt">
+        <item quantity="one">Create proxy for %1$d clip?</item>
+        <item quantity="other">Create proxy for %1$d clips?</item>
+    </plurals>
+    <string name="proxy_ask_action">Create</string>
+    <string name="proxy_status_queued">Proxy queued</string>
+    <string name="proxy_status_preparing">Proxy preparing %1$d%%</string>
+    <string name="proxy_status_ready">Proxy ready</string>
+    <string name="proxy_status_failed">Proxy failed</string>
+    <string name="proxy_action_create">Create proxy</string>
+    <string name="proxy_action_delete">Delete proxy</string>
+    <string name="proxy_menu_more">Proxy actions</string>
 </resources>

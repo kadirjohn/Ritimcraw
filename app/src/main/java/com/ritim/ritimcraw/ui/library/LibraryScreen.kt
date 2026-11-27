@@ -64,6 +64,9 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.Composable
+import com.ritim.ritimcraw.proxy.ProxyStatus
+import com.ritim.ritimcraw.ui.components.ProxyStatusLabel
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
@@ -281,6 +284,12 @@ fun LibraryScreen(
     onSortKeyChange: (LibrarySortKey?) -> Unit = {},
     onSortAscendingChange: (Boolean) -> Unit = {},
     onViewModeChange: (LibraryViewMode) -> Unit = {},
+    // Proxy: the clip's status line (None = nothing shown), whether the manual
+    // Create/Delete proxy menu exists (hidden while the proxy mode is Off), and its actions.
+    proxyStatusFor: (sourceId: String) -> ProxyStatus = { ProxyStatus.None },
+    proxyMenuVisible: Boolean = false,
+    onCreateProxy: (ids: List<String>) -> Unit = {},
+    onDeleteProxy: (ids: List<String>) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     // The screen's REAL content width (owner request 2026-11-26: the grid
@@ -319,6 +328,10 @@ fun LibraryScreen(
             onSortKeyChange = onSortKeyChange,
             onSortAscendingChange = onSortAscendingChange,
             onViewModeChange = onViewModeChange,
+            proxyStatusFor = proxyStatusFor,
+            proxyMenuVisible = proxyMenuVisible,
+            onCreateProxy = onCreateProxy,
+            onDeleteProxy = onDeleteProxy,
         )
     }
 }
@@ -352,6 +365,10 @@ private fun LibraryScreenContent(
     onSortKeyChange: (LibrarySortKey?) -> Unit,
     onSortAscendingChange: (Boolean) -> Unit,
     onViewModeChange: (LibraryViewMode) -> Unit,
+    proxyStatusFor: (sourceId: String) -> ProxyStatus,
+    proxyMenuVisible: Boolean,
+    onCreateProxy: (ids: List<String>) -> Unit,
+    onDeleteProxy: (ids: List<String>) -> Unit,
 ) {
     var filter by remember { mutableStateOf(LibraryFilter.ALL) }
     // The visible list: filter first (the chips' unchanged rule), then the
@@ -626,6 +643,37 @@ private fun LibraryScreenContent(
                         )
                     }
                 }
+                if (proxyMenuVisible) {
+                    // The clip long-press menu's proxy actions: long-press selects, this overflow
+                    // creates or deletes the proxies of the selected clips.
+                    var proxyMenuOpen by remember { mutableStateOf(false) }
+                    Box {
+                        IconButton(onClick = { proxyMenuOpen = true }) {
+                            Icon(
+                                Icons.Filled.MoreVert,
+                                contentDescription = stringResource(R.string.proxy_menu_more),
+                            )
+                        }
+                        DropdownMenu(expanded = proxyMenuOpen, onDismissRequest = { proxyMenuOpen = false }) {
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.proxy_action_create)) },
+                                onClick = {
+                                    proxyMenuOpen = false
+                                    onCreateProxy(selection.toList())
+                                    selectedIds = emptySet()
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.proxy_action_delete)) },
+                                onClick = {
+                                    proxyMenuOpen = false
+                                    onDeleteProxy(selection.toList())
+                                    selectedIds = emptySet()
+                                },
+                            )
+                        }
+                    }
+                }
                 IconButton(onClick = { confirmDeleteOpen = true }) {
                     Icon(
                         Icons.Filled.Delete,
@@ -776,6 +824,7 @@ private fun LibraryScreenContent(
                                         columns = gridColumns,
                                         thumbnailAt = thumbnailAt,
                                         thumbnailRevision = thumbnailRevision,
+                                        proxyStatusFor = proxyStatusFor,
                                         selecting = selecting,
                                         selectedIds = selectedIds,
                                         onToggleSelected = { id ->
@@ -826,6 +875,7 @@ private fun LibraryScreenContent(
                                     thumbnailPath = remember(thumbnailRevision) {
                                         thumbnailAt(source.id)
                                     },
+                                    proxyStatus = proxyStatusFor(source.id),
                                     selected = source.id in selection,
                                     selecting = selecting,
                                     showDivider = source !== visible.lastOrNull(),
@@ -1358,6 +1408,7 @@ private fun matches(filter: LibraryFilter, s: MediaSource): Boolean = when (filt
 private fun LibraryRow(
     source: MediaSource,
     thumbnailPath: String?,
+    proxyStatus: ProxyStatus,
     selected: Boolean,
     selecting: Boolean,
     showDivider: Boolean,
@@ -1450,7 +1501,11 @@ private fun LibraryRow(
                     )
                 }
             }
-            null -> null
+            null -> if (proxyStatus != ProxyStatus.None) {
+                { ProxyStatusLabel(proxyStatus) }
+            } else {
+                null
+            }
         },
     )
 }
@@ -1477,6 +1532,7 @@ private fun LibraryGridRowCells(
     columns: Int,
     thumbnailAt: (id: String) -> String?,
     thumbnailRevision: Int,
+    proxyStatusFor: (id: String) -> ProxyStatus,
     selecting: Boolean,
     selectedIds: Set<String>,
     onToggleSelected: (id: String) -> Unit,
@@ -1501,6 +1557,7 @@ private fun LibraryGridRowCells(
                     thumbnailPath = remember(thumbnailRevision) {
                         thumbnailAt(source.id)
                     },
+                    proxyStatus = proxyStatusFor(source.id),
                     selected = source.id in selectedIds,
                     selecting = selecting,
                     onToggleSelected = { onToggleSelected(source.id) },
@@ -1558,6 +1615,7 @@ private fun LibraryGridCell(
     source: MediaSource,
     rowAspect: Float,
     thumbnailPath: String?,
+    proxyStatus: ProxyStatus,
     selected: Boolean,
     selecting: Boolean,
     onToggleSelected: () -> Unit,
@@ -1678,6 +1736,21 @@ private fun LibraryGridCell(
                         ),
                         color = MaterialTheme.colorScheme.onSurface,
                     )
+                }
+            }
+            if (proxyStatus != ProxyStatus.None) {
+                // The thin proxy status rides the tile's bottom-start corner, the duration badge's twin.
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .padding(6.dp)
+                        .heightIn(min = 18.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.surfaceContainerHighest)
+                        .padding(horizontal = 6.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    ProxyStatusLabel(proxyStatus)
                 }
             }
             if (selecting) {

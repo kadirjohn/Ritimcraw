@@ -851,4 +851,26 @@
     <string name="cube_export_state_chain">Grade\'in node zinciri pişirilemedi (%1$s).</string>
     <string name="cube_export_state_write">Dosya yazılamadı (%1$s). Başka bir konum seçip tekrar deneyin.</string>
     <string name="cube_export_state_bake">Pişirme reddedildi (%1$s). Zinciri 8 node ile sınırlayıp tekrar deneyin.</string>
+    <!-- Proxy UX: mode setting, prompt, status, manual actions -->
+    <string name="settings_proxy_mode">Proxy modu</string>
+    <string name="settings_proxy_mode_hint_off">Kapalı · yalnızca özgün dosyalar</string>
+    <string name="settings_proxy_mode_hint_ask">İçe aktarmadan sonra sor</string>
+    <string name="settings_proxy_mode_hint_auto">8K ve 4K 60 klipler için otomatik</string>
+    <string name="settings_proxy_mode_about">Proxy modu hakkında</string>
+    <string name="settings_proxy_mode_info">Proxy, akıcı oynatan daha hafif kopyadır. Kapalıyken hiçbiri üretilmez veya kullanılmaz. Sor, içe aktarmadan sonra önerir. Otomatik, 8K ve yüksek kare hızlı 4K klipler için arka planda üretir.</string>
+    <string name="settings_proxy_mode_off">Kapalı</string>
+    <string name="settings_proxy_mode_ask">Sor</string>
+    <string name="settings_proxy_mode_auto">Otomatik</string>
+    <plurals name="proxy_ask_prompt">
+        <item quantity="one">%1$d klip için proxy oluşturulsun mu?</item>
+        <item quantity="other">%1$d klip için proxy oluşturulsun mu?</item>
+    </plurals>
+    <string name="proxy_ask_action">Oluştur</string>
+    <string name="proxy_status_queued">Proxy sırada</string>
+    <string name="proxy_status_preparing">Proxy hazırlanıyor %1$d%%</string>
+    <string name="proxy_status_ready">Proxy hazır</string>
+    <string name="proxy_status_failed">Proxy başarısız</string>
+    <string name="proxy_action_create">Proxy oluştur</string>
+    <string name="proxy_action_delete">Proxy sil</string>
+    <string name="proxy_menu_more">Proxy işlemleri</string>
 </resources>

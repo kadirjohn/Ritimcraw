@@ -101,6 +101,13 @@ class ProxyStateMap {
         frontQueue.addFirst(key)
     }
 
+    /** A user-requested retry: forget the session failure count so [enqueue] accepts [key] again. */
+    fun forgiveFailures(key: ProxyKey) = synchronized(lock) {
+        failures.remove(key)
+        reasons.remove(key)
+        if (states[key] == ProxyState.Failed) states.remove(key)
+    }
+
     /** Forget [key] (entry deleted). Failure history is kept so a twice-failed clip is not retried this session. */
     fun reset(key: ProxyKey) = synchronized(lock) { forget(key); states.remove(key) }
 
