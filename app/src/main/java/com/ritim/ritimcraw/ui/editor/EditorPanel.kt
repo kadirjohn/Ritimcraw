@@ -15,6 +15,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.AnchoredDraggableState
 import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.anchoredDraggable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.WindowInsets
@@ -289,6 +290,7 @@ fun EditorCategoryRail(
 fun EditorPanelHandle(
     dragState: AnchoredDraggableState<PanelState>,
     modifier: Modifier = Modifier,
+    interactionSource: MutableInteractionSource? = null,
 ) {
     val handleDescription = stringResource(R.string.editor_panel_handle)
     Box(
@@ -303,6 +305,7 @@ fun EditorPanelHandle(
                 // smaller offsets, so the direction is reversed — the same
                 // convention ModalBottomSheet uses for its sheet drag.
                 reverseDirection = true,
+                interactionSource = interactionSource,
             )
             .semantics { contentDescription = handleDescription },
         contentAlignment = Alignment.TopCenter,
@@ -377,6 +380,7 @@ fun EditorPanelSheet(
     scrollState: ScrollState,
     modifier: Modifier = Modifier,
     landscape: Boolean = false,
+    dragInteractionSource: MutableInteractionSource? = null,
     header: (@Composable () -> Unit)? = null,
     pinnedContent: (@Composable () -> Unit)? = null,
     content: @Composable () -> Unit,
@@ -422,7 +426,7 @@ fun EditorPanelSheet(
                     .then(if (landscape) Modifier.fillMaxHeight() else Modifier),
             ) {
                 if (!landscape) {
-                    EditorPanelHandle(dragState)
+                    EditorPanelHandle(dragState, interactionSource = dragInteractionSource)
                 }
                 // Landscape header (owner request 2026-11-11d section 17.3):
                 // the full-height column has no drag handle, so the hide

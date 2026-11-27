@@ -124,6 +124,39 @@ object PreviewSurfaceRatio {
         }
 
     /**
+     * Full display aspect ratio (width / height) of the preview surface box:
+     *  - When [frameAlreadyEffective] is true (GPU window serving: its draw and
+     *    stats pack already apply containerOrientation + manualRotation) and the
+     *    published frame carries shape, its own aspect is already effective.
+     *  - Otherwise falls back through [of] using CONTAINER-upright source dims
+     *    ([sourceWidth]x[sourceHeight] turned by [containerOrientationDeg]),
+     *    then applies [manualRotationDeg] via [withManualRotation].
+     */
+    fun displayRatio(
+        frameWidth: Int,
+        frameHeight: Int,
+        sourceWidth: Int,
+        sourceHeight: Int,
+        containerOrientationDeg: Int,
+        manualRotationDeg: Int,
+        frameAlreadyEffective: Boolean,
+    ): Float {
+        if (frameAlreadyEffective && carriesShape(frameWidth, frameHeight)) {
+            return frameWidth.toFloat() / frameHeight
+        }
+        val uprightSource = com.ritim.ritimcraw.data.RotationState.rotatedDims(
+            sourceWidth, sourceHeight, containerOrientationDeg,
+        )
+        val uprightRatio = of(
+            frameWidth = frameWidth,
+            frameHeight = frameHeight,
+            sourceWidth = uprightSource.width,
+            sourceHeight = uprightSource.height,
+        )
+        return withManualRotation(uprightRatio, manualRotationDeg)
+    }
+
+    /**
      * The size the preview surface may claim inside a bounded region
      * (owner finding 2026-11-11 E1: "dikey görünümü açınca malesef ki
      * sağ üstteki üç nokta ile belirtilen menü kayboldu" — the portrait
@@ -253,6 +286,10 @@ fun PreviewSurface(
     accessLost: Boolean,
     sourceWidth: Int,
     sourceHeight: Int,
+    // Container orientation (0/90/180/270 CW) from the open preview session so
+    // the fallback box shape before a frame carries dims (e.g. GPU preview with
+    // scopes off publishing 1x1) matches the clip's container-upright shape.
+    containerOrientationDeg: Int = 0,
     // Manual rotation delta (owner request 2026-11-11 section 5): the
     // pixels arrive ALREADY upright (the native develop rotates by the
     // container orientation — per-frame override included), so the display
@@ -335,16 +372,27 @@ fun PreviewSurface(
     var zoomPan by rememberSaveable(clipKey, stateSaver = ZoomPanStateSaver) {
         mutableStateOf(ZoomPan.State())
     }
+    val uprightSource = RotationState.rotatedDims(sourceWidth, sourceHeight, containerOrientationDeg)
     val uprightRatio = PreviewSurfaceRatio.of(
+        frameWidth = frame?.width ?: 0,
+        frameHeight = frame?.height ?: 0,
+        sourceWidth = uprightSource.width,
+        sourceHeight = uprightSource.height,
+    )
+    // Quarter-turn deltas swap the box's shape; the CPU Image inside rotates
+    // by the delta and scales to cover (fills exactly in the steady state —
+    // see RotationState.quarterTurnDisplayScale). When the GPU window serves,
+    // GlesPreviewSession folds container + manual rotation natively into its
+    // draw/stats passes because Android's SurfaceView ignores rotationZ.
+    val displayRatio = PreviewSurfaceRatio.displayRatio(
         frameWidth = frame?.width ?: 0,
         frameHeight = frame?.height ?: 0,
         sourceWidth = sourceWidth,
         sourceHeight = sourceHeight,
+        containerOrientationDeg = containerOrientationDeg,
+        manualRotationDeg = manualRotationDeg,
+        frameAlreadyEffective = gpuWindowServing,
     )
-    // Quarter-turn deltas swap the box's shape; the Image inside rotates
-    // by the delta and scales to cover (fills exactly in the steady
-    // state — see RotationState.quarterTurnDisplayScale).
-    val displayRatio = PreviewSurfaceRatio.withManualRotation(uprightRatio, manualRotationDeg)
     val coverScale = RotationState.quarterTurnDisplayScale(uprightRatio, manualRotationDeg)
     Surface(
         color = MaterialTheme.colorScheme.surfaceContainerLowest,
@@ -548,18 +596,15 @@ fun PreviewSurface(
                             view.setTag(R.id.preview_surface_frozen, false)
                         }
                     },
-                    // The transform rides the AndroidView exactly as on
-                    // the Image: the §6 order (rotation + cover scale
-                    // about the content center, then zoom, then pan in the
-                    // box's screen space) — the GPU window's pixels land
-                    // where the CPU Image's would, so every overlay's
-                    // coordinate space is unchanged.
+                    // Android's SurfaceView ignores View/graphicsLayer rotationZ,
+                    // so GlesPreviewSession folds manualRotationDeg directly into
+                    // its GL window pass. The box is already at displayRatio, so
+                    // only user zoom/pan rides this layer.
                     modifier = Modifier
                         .fillMaxSize()
                         .graphicsLayer {
-                            rotationZ = manualRotationDeg.toFloat()
-                            scaleX = coverScale * zoomPan.zoom
-                            scaleY = coverScale * zoomPan.zoom
+                            scaleX = zoomPan.zoom
+                            scaleY = zoomPan.zoom
                             translationX = zoomPan.panX * size.width
                             translationY = zoomPan.panY * size.height
                         },

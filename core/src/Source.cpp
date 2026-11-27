@@ -311,6 +311,8 @@ int Source::reopenIndependentFd() const {
 #endif
 }
 
+int Source::sensorOrientationDeg() const { return mImpl->sensorOrientation; }
+
 std::string Source::orientationWarning() const { return mImpl->orientationWarning; }
 
 size_t Source::frameCount() const {

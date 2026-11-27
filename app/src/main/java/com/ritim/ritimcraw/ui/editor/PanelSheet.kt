@@ -134,6 +134,15 @@ object PanelSheet {
     const val EXPANDED_FRACTION = 0.72f
 
     /**
+     * Minimum share of the free region reserved for a tall/portrait preview
+     * (whose full-width height exceeds the region, so [previewClaimPx] returns
+     * 0). Keeping at least 48% for the preview caps EXPANDED at 52% so the
+     * portrait video stays comfortably readable and overlay buttons never wrap
+     * or collide (owner feedback 2026-11-27).
+     */
+    const val PORTRAIT_MIN_PREVIEW_FRACTION = 0.48f
+
+    /**
      * The minimum panel height the anchors guarantee even when the
      * preview's claim eats the whole region (owner spec 2026-11-12 section
      * 3: the panel states stay usable on every device). Three 48dp slider
@@ -197,6 +206,24 @@ object PanelSheet {
         if (regionWidthPx <= 0 || regionHeightPx <= 0 || ratio <= 0f) return 0
         val fullWidthHeight = (regionWidthPx / ratio).toInt()
         return if (fullWidthHeight <= regionHeightPx) fullWidthHeight else 0
+    }
+
+    /**
+     * Effective preview height claim for the panel anchors:
+     *  - width-bound (landscape) clips keep [previewClaimPx] verbatim;
+     *  - tall (portrait) clips whose full-width height exceeds the region
+     *    reserve [PORTRAIT_MIN_PREVIEW_FRACTION] of [regionHeightPx] so
+     *    EXPANDED cannot crush the portrait preview into a narrow strip.
+     */
+    fun effectivePreviewClaimPx(
+        regionWidthPx: Int,
+        regionHeightPx: Int,
+        ratio: Float,
+    ): Int {
+        if (regionWidthPx <= 0 || regionHeightPx <= 0 || ratio <= 0f) return 0
+        val widthBound = previewClaimPx(regionWidthPx, regionHeightPx, ratio)
+        if (widthBound > 0) return widthBound
+        return (regionHeightPx * PORTRAIT_MIN_PREVIEW_FRACTION).roundToInt()
     }
 
     /**

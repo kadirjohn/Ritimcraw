@@ -1035,6 +1035,16 @@ class NativeSource private constructor(
         ): DoubleArray?
 
         /**
+         * Sidecar .gcsv gravity orientation delta (0/90/180/270) relative to
+         * the clip's metadata fallback rotation, or -1 when gravity is not
+         * decidable (caller keeps the MotionCam screen-code fallback).
+         */
+        @JvmStatic private external fun nativeGcsvGravityDelta(
+            fd: Int,
+            gcsvText: String,
+        ): Int
+
+        /**
          * Container identity probe (IN-13 metadata extraction): statelessly
          * opens the clip behind [fd] and returns the container's
          * camera/lens identity keys as a [ContainerIdentityK] — the fields
@@ -1593,6 +1603,8 @@ class NativeSource private constructor(
 
         /** F1-8e: the Runnable the OpenDRT bake thread runs once per published table (null clears); see jni_bridge.cpp. */
         @JvmStatic private external fun nativePreviewSessionSetDrtReadyListener(sessionHandle: Long, listener: Runnable?)
+
+        @JvmStatic private external fun nativePreviewSessionSetManualRotation(sessionHandle: Long, rotationDeg: Int)
 
         /** See [nativePreviewSessionInitNodes]. [drtUniforms] is required when the wire declares the OpenDRT output. */
         @JvmStatic private external fun nativePreviewSessionSetColorModelChain(
@@ -2261,6 +2273,17 @@ class NativeSource private constructor(
         }
 
         /**
+         * JNI bridge: manual-rotation delta (0/90/180/270) from sidecar .gcsv
+         * gravity over the clip's metadata fallback, or -1 when undecidable.
+         */
+        internal fun jniGcsvGravityDelta(fd: Int, gcsvText: String): Int {
+            if (!nativeAvailable) {
+                throw IllegalStateException(nativeUnavailableMessage)
+            }
+            return nativeGcsvGravityDelta(fd, gcsvText)
+        }
+
+        /**
          * JNI bridge: see nativeContainerIdentity. Throws
          * IllegalStateException when the .so is absent; null otherwise
          * means the open failed (the extractor maps that to UNKNOWN
@@ -2907,6 +2930,12 @@ class NativeSource private constructor(
         internal fun jniPreviewSessionSetDrtReadyListener(sessionHandle: Long, listener: Runnable?) {
             if (!nativeAvailable) throw IllegalStateException(nativeUnavailableMessage)
             nativePreviewSessionSetDrtReadyListener(sessionHandle, listener)
+        }
+
+        /** Sets the GPU preview session's manual rotation delta (0/90/180/270 CW) folded into the window/stats passes. */
+        internal fun jniPreviewSessionSetManualRotation(sessionHandle: Long, rotationDeg: Int) {
+            if (!nativeAvailable) throw IllegalStateException(nativeUnavailableMessage)
+            nativePreviewSessionSetManualRotation(sessionHandle, rotationDeg)
         }
 
         /** The develop session's NODES programs (see [jniPreviewSessionInitNodes]); [ok, uniformVectors, textureUnits]. */

@@ -69,6 +69,8 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -1146,6 +1148,22 @@ fun ClipEditorScreen(
             mutableStateOf(PanelBehavior.defaultOpenFor(sourceWidth, sourceHeight, manualRotationDeg))
         }
         val panelDrag = rememberPanelDragState(panelState)
+        val panelDragInteraction = remember { MutableInteractionSource() }
+        val panelDragging by panelDragInteraction.collectIsDraggedAsState()
+        // True whenever the panel offset is off its settled anchor (covers both manual finger
+        // drags and the 1-frame handoff between finger-up and settle-animation start, without
+        // recomposing per drag frame).
+        val panelOffAnchor by remember(panelDrag) {
+            derivedStateOf {
+                if (panelDrag.anchors.size == 0) {
+                    false
+                } else {
+                    val off = panelDrag.offset
+                    val settled = panelDrag.anchors.positionOf(panelDrag.settledValue)
+                    !off.isNaN() && !settled.isNaN() && kotlin.math.abs(off - settled) > 1f
+                }
+            }
+        }
         // ---- B13 panel-jank diagnosis counters (DEBUG-only) ----
         // One PanelAnimTrace per editor open, counting (a) preview render
         // requests and (b) SurfaceView resizes inside each panel ANIMATION
@@ -1485,28 +1503,30 @@ fun ClipEditorScreen(
         // publish (no RAW fetch before a frame exists). Keyed to the
         // clip like `frame` — a switch resets both.
         var renderedFrameIndex by remember(sourceId) { mutableStateOf(-1) }
+        var containerOrientationDeg by remember(sourceId) { mutableStateOf(0) }
+        var gpuWindowLive by remember(sourceId) { mutableStateOf(false) }
         // ---- Preview claim (owner layout-refactor spec 2026-11-12, §2) ----
         // The root-cause fix's input: the display ratio the preview surface
         // will shape itself by — the SAME chain the surface uses
-        // (rendered frame dims > persisted import stats > 16:9), then the
-        // manual-rotation swap — so the claim and the surface always
+        // (rendered frame dims > container-upright import stats > 16:9), then
+        // the manual-rotation swap — so the claim and the surface always
         // agree on the clip's shape. Computed from the same values the
         // surface reads, never from a separate measurement of the surface
         // itself (that would race the first frame).
-        val previewDisplayRatio = PreviewSurfaceRatio.withManualRotation(
-            PreviewSurfaceRatio.of(
-                frameWidth = frame?.width ?: 0,
-                frameHeight = frame?.height ?: 0,
-                sourceWidth = sourceWidth,
-                sourceHeight = sourceHeight,
-            ),
-            manualRotationDeg,
+        val previewDisplayRatio = PreviewSurfaceRatio.displayRatio(
+            frameWidth = frame?.width ?: 0,
+            frameHeight = frame?.height ?: 0,
+            sourceWidth = sourceWidth,
+            sourceHeight = sourceHeight,
+            containerOrientationDeg = containerOrientationDeg,
+            manualRotationDeg = manualRotationDeg,
+            frameAlreadyEffective = gpuWindowLive,
         )
         // The height a width-bound clip needs in the free region: the full
         // width's aspect height when it fits (landscape footage), else 0
         // (a taller-than-region clip can never be width-bound, so there is
         // no width to preserve — the legacy flex behavior applies).
-        val previewClaimPx = PanelSheet.previewClaimPx(
+        val previewClaimPx = PanelSheet.effectivePreviewClaimPx(
             regionWidthPx = previewRegionWidth,
             regionHeightPx = freeRegionPx,
             ratio = previewDisplayRatio,
@@ -1591,7 +1611,6 @@ fun ClipEditorScreen(
             fullResAllowed = gpuActive &&
                 renderBackend == RenderBackend.GPU_EXPERIMENTAL,
         )
-        var gpuWindowLive by remember(sourceId) { mutableStateOf(false) }
         // The acknowledged EGL attachment, set after the SurfaceHolder
         // lifecycle handoff completes: gpuWindowLive is servedByGpuWindow
         // AND this, so the Image
@@ -2421,6 +2440,7 @@ fun ClipEditorScreen(
             val s = opened.getOrNull()
             if (s != null) {
                 session = s
+                containerOrientationDeg = s.orientationDeg
                 sessionRender = true
                 // Real timestamps for the transport (fetched once on the
                 // engine thread; ptsUs[i] is frame i's pts) — identical
@@ -3020,7 +3040,8 @@ fun ClipEditorScreen(
                             val encIn = s.gpuInput(req.frameIndex, req.grade, req.chainWire, req.maxDim)
                             if (encIn != null) {
                                 try {
-                                    gpuCropParams = GpuCropMap.requestCrop(req.grade, currentManualRotationDeg)
+                                    runCatching { NativeSource.jniPreviewSessionSetManualRotation(gpu.handle, 0) }
+                                    gpuCropParams = GpuCropMap.requestCrop(req.grade, 0)
                                     gpuCropActive = gpuCropParams != null
                                     val chainOk = runCatching {
                                         NativeSource.jniPreviewSessionSetColorModelChain(
@@ -3142,9 +3163,15 @@ fun ClipEditorScreen(
                             // folds. The hoisted pair feeds the publish fold
                             // below (the declarations live at the dispatch
                             // prelude — the fold is outside this block).
-                            gpuCropParams = GpuCropMap.requestCrop(
-                                req.grade, currentManualRotationDeg,
-                            )
+                            // Fold manualRotationDeg into the GPU session itself (SurfaceView ignores
+                            // graphicsLayer rotationZ), so the GPU window & stats draw directly in
+                            // effective-upright space and crop needs no inverse mapRect.
+                            runCatching {
+                                NativeSource.jniPreviewSessionSetManualRotation(
+                                    gpu.handle, currentManualRotationDeg,
+                                )
+                            }
+                            gpuCropParams = GpuCropMap.requestCrop(req.grade, 0)
                             gpuCropActive = gpuCropParams != null
                             // F1-6 (color model v2): the grade's chain rides
                             // the session's setColorModelChain door BEFORE the
@@ -3491,9 +3518,13 @@ fun ClipEditorScreen(
                                     // as it always did.
                                     if (!servedByGpuWindow || !gpuCropActive) {
                                         if (PreviewSurfaceRatio.carriesShape(f.width, f.height)) {
-                                            effectiveDims = RotationState.rotatedDims(
-                                                f.width, f.height, currentManualRotationDeg,
-                                            )
+                                            effectiveDims = if (servedByGpuWindow) {
+                                                RotationState.Dims(f.width, f.height)
+                                            } else {
+                                                RotationState.rotatedDims(
+                                                    f.width, f.height, currentManualRotationDeg,
+                                                )
+                                            }
                                         }
                                     }
                                     // A1 async stats (owner request 2026-11-23,
@@ -4332,6 +4363,7 @@ fun ClipEditorScreen(
                     accessLost = accessLost,
                     sourceWidth = sourceWidth,
                     sourceHeight = sourceHeight,
+                    containerOrientationDeg = containerOrientationDeg,
                     // Manual rotation (§5): the display turns ONLY this
                     // delta — the native develop already renders
                     // container-upright pixels, so there is never a double
@@ -4381,7 +4413,7 @@ fun ClipEditorScreen(
                     // must never block on the engine.
                     gpuWindowActive = gpuActive,
                     gpuWindowServing = gpuWindowLive,
-                    freezeSurfaceSize = panelDrag.isAnimationRunning || barAnimating || panelSlideAnimating,
+                    freezeSurfaceSize = panelDragging || panelOffAnchor || panelDrag.isAnimationRunning || barAnimating || panelSlideAnimating,
                     // B13 diagnosis: count every surfaceChanged into the open
                     // panel-animation window (see panelAnimTrace above). The
                     // window is the same isAnimationRunning signal the freeze
@@ -5810,6 +5842,7 @@ fun ClipEditorScreen(
                 EditorPanelSheet(
                     dragState = panelDrag,
                     scrollState = activePanelScrollState,
+                    dragInteractionSource = panelDragInteraction,
                     // NaN guard: the offset is uninitialized until the
                     // first updateAnchors lands (getOffset returns NaN
                     // before then), so the first frame composes the

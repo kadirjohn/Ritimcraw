@@ -40,6 +40,13 @@ interface EditorPreviewSession : AutoCloseable {
     val height: Int get() = 0
 
     /**
+     * Container orientation in degrees CW to upright (0/90/180/270), resolved
+     * from the clip's metadata (MCRAW screen code / sensorOrientation, or
+     * encoded KEY_ROTATION). 0 when unknown.
+     */
+    val orientationDeg: Int get() = 0
+
+    /**
      * The container's RAW white level (owner request 2026-11-11 section 3):
      * what the clip info sheet shows as "RAW white level". 0 means unknown
      * (the default — the row hides; encoded sessions stay 0, the MCRAW
@@ -321,6 +328,7 @@ class EncodedPreviewSession private constructor(
     override val frames: Int,
     override val width: Int,
     override val height: Int,
+    override val orientationDeg: Int,
     private val engine: ExecutorService,
     private val sampleRate: Int,
     private val channels: Int,
@@ -573,6 +581,7 @@ class EncodedPreviewSession private constructor(
                                 info.frameCount,
                                 info.width,
                                 info.height,
+                                info.orientationDeg,
                                 engine,
                                 info.sampleRate,
                                 info.channels,

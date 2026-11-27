@@ -170,6 +170,9 @@ public:
     // zeroed FrameInfo rather than throwing.
     FrameInfo frameInfo(size_t i) const;
 
+    // Container-level Camera2 SENSOR_ORIENTATION (degrees, typically 90 on rear phone cameras).
+    int sensorOrientationDeg() const;
+
     // Non-empty when a frame's MotionCam "orientation" code was not one of the known screen-orientation codes
     // (ScreenOrientation.h): the first such frame's code, for the caller to log. Empty otherwise. Set by
     // frameInfo(); the rotation used for such a frame is the container's sensorOrientation (the same fallback

@@ -23,6 +23,7 @@
 #include <new>
 #include <map>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -42,6 +43,7 @@
 #include <rawedit/OpticalSync.h>
 #include <rawedit/Result.h>
 #include <rawedit/RawStats.h>
+#include <rawedit/ScreenOrientation.h>
 #include <rawedit/Source.h>
 #include <rawedit/Stabilization.h>
 #include <rawedit/CubeExport.h>
@@ -3083,6 +3085,52 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativeLutProbe(
 // the screen probes on the attach click, so it is safe from any thread and
 // never poisons a render (the nativeLutProbe contract).
 
+// Sidecar .gcsv gravity orientation (owner decision 2026-11-27, ScreenOrientation.h).
+// Priority: 1. .gcsv accelerometer gravity (first second), 2. MotionCam screen-orientation code fallback.
+// Takes the clip's fd and a prefix (header + first ~1-2 s) of the matching .gcsv text so the caller
+// never copies files into GyroStore or depends on the gyro-stabilization feature flag.
+// Returns the manual-rotation DELTA (0/90/180/270) turning the clip's metadata fallback rotation into
+// what gravity says, or -1 when gravity is not decidable (caller keeps the metadata fallback).
+JNIEXPORT jint JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativeGcsvGravityDelta(
+        JNIEnv* env, jclass, jint fd, jstring gcsvText) {
+    if (gcsvText == nullptr) return -1;
+    const char* chars = env->GetStringUTFChars(gcsvText, nullptr);
+    if (chars == nullptr) return -1;
+    const std::string text(chars);
+    env->ReleaseStringUTFChars(gcsvText, chars);
+    if (text.empty()) return -1;
+
+    auto opened = rawedit::Source::open(static_cast<int>(fd));
+    if (!opened.isOk()) return -1;
+    std::unique_ptr<rawedit::Source> src = std::move(*opened.value);
+    const int own = src->frameInfo(0).orientationDeg;
+    logOrientationWarning(*src);
+
+    std::istringstream stream(text);
+    auto parsed = rawedit::parseGcsv(stream);
+    if (!parsed.isOk()) {
+        __android_log_print(ANDROID_LOG_WARN, "ritim-orient",
+                            "gcsv gravity: log unreadable (%s): keeping metadata fallback %d",
+                            parsed.detail.c_str(), own);
+        return -1;
+    }
+
+    const rawedit::ResolvedOrientation g =
+        rawedit::gravityRotationFromImu(*parsed.value, src->sensorOrientationDeg());
+    const int delta = rawedit::orientationDeltaFromGravity(own, g);
+    if (delta < 0) {
+        __android_log_print(ANDROID_LOG_INFO, "ritim-orient",
+                            "gcsv gravity: not decidable (flat/front/no-accel): keeping metadata fallback %d",
+                            own);
+        return -1;
+    }
+    __android_log_print(ANDROID_LOG_INFO, "ritim-orient",
+                        "gcsv gravity: gravity=%d metadataFallback=%d -> manualDelta=%d",
+                        g.rotationDeg, own, delta);
+    return delta;
+}
+
 JNIEXPORT jdoubleArray JNICALL
 Java_com_ritim_ritimcraw_engine_NativeSource_nativeGyroSyncProbe(
         JNIEnv* env, jclass, jint fd, jstring gyroPath) {
@@ -5592,6 +5640,21 @@ Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionSetDrtReadyList
         if (cbEnv->ExceptionCheck()) cbEnv->ExceptionClear();
         if (attached) ref->vm->DetachCurrentThread();
     });
+}
+
+JNIEXPORT void JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativePreviewSessionSetManualRotation(
+        JNIEnv*, jclass, jlong sessionHandle, jint rotationDeg) {
+    gles::PreviewSession* session = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(gRegistryMutex);
+        if (sessionHandle > 0 && sessionHandle <= kMaxPreviewSessions) {
+            session = gPreviewSessions[sessionHandle - 1].get();
+        }
+    }
+    if (session != nullptr) {
+        session->setManualRotation(static_cast<int>(rotationDeg));
+    }
 }
 
 JNIEXPORT jboolean JNICALL

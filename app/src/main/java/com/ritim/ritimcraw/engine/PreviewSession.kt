@@ -53,7 +53,17 @@ class PreviewSession private constructor(
     override val height: Int,
     private val engine: ExecutorService,
     override val rawWhiteLevel: Int,
+    override val orientationDeg: Int,
 ) : EditorPreviewSession {
+
+    private constructor(
+        handle: Long,
+        frameCount: Int,
+        width: Int,
+        height: Int,
+        engine: ExecutorService,
+        rawWhiteLevel: Int,
+    ) : this(handle, frameCount, width, height, engine, rawWhiteLevel, 0)
 
     override val frames: Int get() = frameCount
 
@@ -640,6 +650,7 @@ class PreviewSession private constructor(
                     info[3],
                     engine,
                     info[6],
+                    info[5],
                 )
             )
         }

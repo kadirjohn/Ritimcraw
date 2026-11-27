@@ -329,6 +329,11 @@ public:
     // for ONE redraw; it must only post work). Empty clears it. Thread-safe.
     void setDrtReadyCallback(std::function<void()> cb);
 
+    // Manual quarter-turn rotation delta (0/90/180/270 CW) folded onto req.info.orientationDeg inside the
+    // GPU window and stats passes, because Android's SurfaceView ignores View/graphicsLayer rotationZ.
+    // Thread-safe (relaxed atomic).
+    void setManualRotation(int deg);
+
     // See the destructor. Callable from the owning thread.
     void close();
 

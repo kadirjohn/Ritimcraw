@@ -222,6 +222,27 @@ class PanelSheetTest {
         assertEquals(0, PanelSheet.previewClaimPx(regionWidthPx = 393, regionHeightPx = 628, ratio = -1f))
     }
 
+    @Test
+    fun effective_preview_claim_preserves_landscape_and_caps_portrait_expanded() {
+        // Landscape 16:9 keeps exact width-bound claim
+        assertEquals(
+            221,
+            PanelSheet.effectivePreviewClaimPx(regionWidthPx = 393, regionHeightPx = 628, ratio = 16f / 9f),
+        )
+        // Portrait 9:16 taller than region (393 / (9/16) = 698 > 628) reserves 48% of region height
+        // -> EXPANDED caps at 52% (327), NORMAL stays 44% (276)
+        val claim = PanelSheet.effectivePreviewClaimPx(regionWidthPx = 393, regionHeightPx = 628, ratio = 9f / 16f)
+        assertEquals(301, claim)
+        val anchors = PanelSheet.anchorHeights(
+            availableHeightPx = 628,
+            collapsedHeightPx = 48,
+            previewClaimPx = claim,
+            minPanelHeightPx = 192,
+        )
+        assertEquals(276f, anchors.getValue(PanelState.NORMAL), 0.5f)
+        assertEquals(327f, anchors.getValue(PanelState.EXPANDED), 0.5f)
+    }
+
     // ---- the anchor cap (region minus claim, floored at MIN_PANEL_HEIGHT) ----
 
     @Test

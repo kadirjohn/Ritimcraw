@@ -462,6 +462,7 @@ struct PreviewSession::Impl {
     uint64_t colorChainHash = 0;
     int colorOutputMode = 0;
     bool colorNodesActive = false;
+    std::atomic<int> manualRotationDeg{0};
     bool closeRequested = false;
     // Latched RENDER failure (the header's failure semantics; surface
     // failures never touch this).
@@ -1127,9 +1128,11 @@ void PreviewSession::Impl::runJob(const PreviewFrameRequest& req,
     // comment); develReallocated is the real once-per-dims state worth
     // reporting, the frame the develop texture was deleted + re-created.
     const bool developReallocatedThisFrame = r.developReallocated;
-    // The orientation fold's input, normalized exactly like
-    // developToArgb's.
-    const int orient = ((req.info.orientationDeg % 360) + 360) % 360;
+    // The orientation fold's input: container orientation + manual rotation delta, normalized to
+    // 0/90/180/270. Folding the manual delta here lets the SurfaceView present upright pixels directly
+    // (Android's SurfaceView ignores Compose graphicsLayer rotationZ).
+    const int orient =
+        (((req.info.orientationDeg + manualRotationDeg.load(std::memory_order_relaxed)) % 360) + 360) % 360;
     // THE A2 CROP FRAME PLAN (owner request 2026-11-23, guide A2): the
     // pure planner's verdict for THIS frame — the cropped output dims,
     // the auto-zoom and the cos/sin pair every crop uniform below reads.
@@ -2318,6 +2321,12 @@ bool PreviewSession::healthy() const {
     if (impl_ == nullptr) return false;
     std::lock_guard<std::mutex> lock(impl_->mutex);
     return impl_->healthyFlag;
+}
+
+void PreviewSession::setManualRotation(int deg) {
+    if (impl_ == nullptr) return;
+    const int norm = ((deg % 360) + 360) % 360;
+    impl_->manualRotationDeg.store(norm, std::memory_order_relaxed);
 }
 
 std::string PreviewSession::failureDetail() const {

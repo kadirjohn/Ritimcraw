@@ -78,6 +78,7 @@ import com.ritim.ritimcraw.data.GradeK
 import com.ritim.ritimcraw.data.LibraryPrefsStore
 import com.ritim.ritimcraw.data.audio.AudioStore
 import com.ritim.ritimcraw.data.CollectionRefresh
+import com.ritim.ritimcraw.data.GcsvOrientation
 import com.ritim.ritimcraw.data.GradeStore
 import com.ritim.ritimcraw.data.GyroFolderStore
 import com.ritim.ritimcraw.data.GyroMatcher
@@ -1010,6 +1011,87 @@ fun AppNav(
         }
         stores.gyroFolder.put(uri.toString())
         gyroFolder = uri.toString()
+    }
+
+    /**
+     * Resolves MCRAW clip orientation from a sibling .gcsv's accelerometer
+     * gravity (owner decision 2026-11-27: trust .gcsv gravity first; fall back
+     * to MotionCam's screen-orientation code when absent or undecidable).
+     *
+     * Runs independently of [FeatureFlags.GYRO_STABILIZATION_ENABLED] and
+     * without copying logs into GyroStore. Searches [importFolder] and
+     * [gyroFolder] for a sibling .gcsv matching [matchName], reads only the
+     * header + first ~1-2 s of rows, and persists any non-zero delta over the
+     * clip's metadata fallback into `manualRotationDeg` (never overriding an
+     * existing user rotation). Returns the latest [MediaSource] so the caller
+     * can generate the thumbnail with the final upright angle.
+     */
+    suspend fun resolveGcsvOrientation(
+        source: MediaSource,
+        matchName: String,
+        prelistedLogs: List<GyroTree.GcsvDocument>? = null,
+    ): MediaSource {
+        if (source.kind != SourceKind.MCRAW) return source
+        if (source.manualRotationDeg != 0) return source
+        if (matchName.isBlank()) return source
+        val folders = GcsvOrientation.candidateFolders(importFolder, gyroFolder)
+        val delta = withContext(Dispatchers.IO) {
+            val matchedDoc = if (prelistedLogs != null) {
+                when (val m = GyroMatcher.match(matchName, prelistedLogs.map { it.displayName })) {
+                    is GyroMatcher.Match.One -> prelistedLogs.firstOrNull { it.displayName == m.name }
+                    else -> null
+                }
+            } else {
+                var found: GyroTree.GcsvDocument? = null
+                for (folder in folders) {
+                    val logs = try {
+                        GyroTree.listGcsv(context, folder)
+                    } catch (_: Exception) {
+                        continue
+                    }
+                    when (val m = GyroMatcher.match(matchName, logs.map { it.displayName })) {
+                        is GyroMatcher.Match.One -> {
+                            found = logs.firstOrNull { it.displayName == m.name }
+                            if (found != null) break
+                        }
+                        else -> Unit
+                    }
+                }
+                found
+            } ?: return@withContext -1
+            val gcsvPrefix = try {
+                context.contentResolver.openInputStream(Uri.parse(matchedDoc.uri))?.use { input ->
+                    GcsvOrientation.readPrefix(input)
+                }
+            } catch (_: Exception) {
+                null
+            }
+            if (gcsvPrefix.isNullOrBlank()) return@withContext -1
+            val fd = try {
+                context.contentResolver
+                    .openFileDescriptor(Uri.parse(source.uri), "r")
+                    ?.detachFd() ?: -1
+            } catch (_: Exception) {
+                -1
+            }
+            if (fd < 0) return@withContext -1
+            try {
+                NativeSource.jniGcsvGravityDelta(fd, gcsvPrefix)
+            } catch (_: Throwable) {
+                -1
+            } finally {
+                runCatching { ParcelFileDescriptor.adoptFd(fd).close() }
+            }
+        }
+        val newRotation = GcsvOrientation.decideManualRotation(source.manualRotationDeg, delta)
+            ?: return stores.sources.get(source.id) ?: source
+        val updated = stores.sources.setManualRotation(source.id, newRotation)
+        if (updated != null) {
+            thumbnailStore.remove(source.id)
+            sources = stores.sources.all()
+            return updated
+        }
+        return source
     }
 
     /**
@@ -2525,7 +2607,10 @@ fun AppNav(
                                 try {
                                     val imported = stores.sources.import(uri)
                                     sources = stores.sources.all()
-                                    scope.launch { generateThumbnail(imported) }
+                                    scope.launch {
+                                        val resolved = resolveGcsvOrientation(imported, imported.displayName)
+                                        generateThumbnail(resolved)
+                                    }
                                     // IN-13: the metadata probe runs after the
                                     // import, alongside the thumbnail — it
                                     // never blocks the import announcement and
@@ -2732,12 +2817,17 @@ fun AppNav(
                             onImportFromFolder = { uri, kind, editedName ->
                                 try {
                                     val imported = stores.sources.import(uri, kind)
+                                    val matchName = imported.displayName
                                     thumbnailStore.removeFolder(uri)
                                     if (editedName != null) {
                                         stores.sources.rename(imported.id, editedName)
                                     }
                                     sources = stores.sources.all()
-                                    scope.launch { generateThumbnail(imported) }
+                                    val current = stores.sources.get(imported.id) ?: imported
+                                    scope.launch {
+                                        val resolved = resolveGcsvOrientation(current, matchName)
+                                        generateThumbnail(resolved)
+                                    }
                                     scope.launch { probeMetadata(imported) }
                                     scope.launch {
                                         val withGyro = autoMatchGyro(imported)
@@ -2771,6 +2861,17 @@ fun AppNav(
                                 var importedCount = 0
                                 var failedCount = 0
                                 var firstError: Throwable? = null
+                                val batchGcsvLogs: List<GyroTree.GcsvDocument>? =
+                                    GcsvOrientation.candidateFolders(importFolder, gyroFolder)
+                                        .flatMap { folder ->
+                                            try {
+                                                GyroTree.listGcsv(context, folder)
+                                            } catch (_: Exception) {
+                                                emptyList()
+                                            }
+                                        }
+                                        .distinctBy { it.displayName }
+                                        .takeIf { it.isNotEmpty() }
                                 for (doc in docs) {
                                     try {
                                         // The per-file persistable grant: the
@@ -2798,7 +2899,15 @@ fun AppNav(
                                         // preview (no-op when none existed).
                                         thumbnailStore.removeFolder(doc.uri)
                                         sources = stores.sources.all()
-                                        scope.launch { generateThumbnail(imported) }
+                                        val docName = doc.displayName
+                                        scope.launch {
+                                            val resolved = resolveGcsvOrientation(
+                                                imported,
+                                                docName,
+                                                prelistedLogs = batchGcsvLogs,
+                                            )
+                                            generateThumbnail(resolved)
+                                        }
                                         scope.launch { probeMetadata(imported) }
                                         // Quiet per-file: the gyro match still
                                         // runs (it attaches whatever it finds
