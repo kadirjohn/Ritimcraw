@@ -37,12 +37,12 @@ class CinemaDngPlanTest {
             String.format(java.util.Locale.ROOT, "%.1f GiB", r58 / g))
 
         val r5 = CinemaDngPlan.estimatedBytes(9000, 3840, 2160)
-        // The document's ~139 (its own rounding of 138,9): both forms
-        // pinned so the number is traceable either way.
+        // The document's ~139 GiB: the raw estimate is 139,046 GiB, so
+        // both roundings agree with the document's own ~139.
+        assertEquals("139.0 GiB",
+            String.format(java.util.Locale.ROOT, "%.1f GiB", r5 / g))
         assertEquals("139 GiB",
             String.format(java.util.Locale.ROOT, "%.0f GiB", r5 / g))
-        assertEquals("138.9 GiB",
-            String.format(java.util.Locale.ROOT, "%.1f GiB", r5 / g))
 
         // The per-frame size the document quotes (~15,8 MiB): the raw
         // frame bytes.
@@ -104,9 +104,10 @@ class CinemaDngPlanTest {
         assertEquals(100, CinemaDngPlan.frameCount(0, -1, 100))
         // An inclusive span: 10..20 = 11 frames.
         assertEquals(11, CinemaDngPlan.frameCount(10, 20, 100))
-        // The span clamps to the clip's end.
-        assertEquals(11, CinemaDngPlan.frameCount(90, -1, 100))
-        assertEquals(11, CinemaDngPlan.frameCount(90, 500, 100))
+        // The span clamps to the clip's end: 90..99 (last = first
+        // frame 90, clip end 99) = 10 frames.
+        assertEquals(10, CinemaDngPlan.frameCount(90, -1, 100))
+        assertEquals(10, CinemaDngPlan.frameCount(90, 500, 100))
         // The first frame past the clip's end: nothing usable.
         assertEquals(CinemaDngPlan.REJECT, CinemaDngPlan.frameCount(100, -1, 100))
         assertEquals(CinemaDngPlan.REJECT, CinemaDngPlan.frameCount(101, 200, 100))
@@ -127,10 +128,10 @@ class CinemaDngPlanTest {
         val required = 1000L
         assertTrue(CinemaDngPlan.storageGate(999, required) is StorageGate.Locked)
         assertTrue(CinemaDngPlan.storageGate(0, required) is StorageGate.Locked)
-        // Exactly required: LOCK too (the plan's rule is a strict < —
-        // the headroom is already IN required; free == required leaves
-        // no room for the WAV).
-        assertTrue(CinemaDngPlan.storageGate(1000, required) is StorageGate.Locked)
+        // Exactly required: WARN, not LOCK — the plan's rule is a strict
+        // "< gerekli" for the lock, and free == required is past it while
+        // still under the x1,5 multiple (the WAV rides in the headroom).
+        assertTrue(CinemaDngPlan.storageGate(1000, required) is StorageGate.Warn)
     }
 
     @Test
@@ -186,10 +187,11 @@ class CinemaDngPlanTest {
             CinemaDngPlan.requiredBytes(100, 1920, 1080),
             plan.requiredBytes,
         )
-        // WAV: 100/30 s x 48000 x 2 ch x 2 bytes, rounded up.
+        // WAV: 100/30 s x 48000 x 2 ch x 2 bytes, rounded up (Long to
+        // Long — the helper's own rounding, not a Double equality).
         assertEquals(
             ceil(100.0 / 30.0 * 48000 * 2 * 2.0),
-            plan.wavBytes.toDouble(),
+            plan.wavBytes,
         )
         assertTrue(plan.storage is StorageGate.Ok)
         assertTrue(plan.exportable)
