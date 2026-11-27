@@ -1,6 +1,7 @@
 package com.ritim.ritimcraw.data
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -739,6 +740,210 @@ class SourceRepositoryTest {
             .backfillDisplayName(blank.id)
         assertEquals("", stillBlank?.displayName)
         assertEquals(blank.id, stillBlank?.displayOrId)
+    }
+
+    // ---- first-open kind self-heal (owner request 2026-11-27, M9) ----
+
+    @Test
+    fun backfill_display_name_heals_an_old_record_kind_from_the_name() {
+        // The M1-before world: the import fell to the MCRAW default (no
+        // name resolved), the record sat in project.json with kind=MCRAW,
+        // and normal usage never re-imports it — the first open is the
+        // file's one honest moment to name itself again. Both fields heal
+        // together: the name fills, the kind follows the name's rule.
+        val file = projectFile()
+        val old = SourceRepository(FakeResolver("clip".toByteArray()), file)
+            .import("content://clip/1")
+        assertEquals(SourceKind.MCRAW, old.kind)
+        assertEquals("", old.displayName)
+
+        // First open: the resolver now names the document — an .mp4.
+        val named = FakeResolver(
+            "clip".toByteArray(),
+            names = mapOf("content://clip/1" to "video.mp4"),
+        )
+        val filled = SourceRepository(named, file).backfillDisplayName(old.id)
+
+        assertEquals("video.mp4", filled?.displayName)
+        assertEquals(SourceKind.ENCODED, filled?.kind)
+        // Persisted: a fresh repository reads the corrected record.
+        val reloaded = SourceRepository(FakeResolver(), file).all().single()
+        assertEquals("video.mp4", reloaded.displayName)
+        assertEquals(SourceKind.ENCODED, reloaded.kind)
+    }
+
+    @Test
+    fun backfill_heals_the_kind_when_the_name_is_already_filled() {
+        // The second shape of the same bug: the name backfilled on an
+        // earlier open (the pre-M9 backfill only filled the name — rename
+        // models it exactly: a filled name, the kind untouched), but the
+        // kind kept the MCRAW default — the owner's exact row, an .mov
+        // name wearing the blue MCRAW badge. The name's rule is the truth.
+        val file = projectFile()
+        val repo = SourceRepository(FakeResolver("clip".toByteArray()), file)
+        val old = repo.import("content://clip/1")
+        assertEquals(SourceKind.MCRAW, old.kind)
+        // The record got a display name without ever re-importing.
+        repo.rename(old.id, "drive.mov")
+        assertEquals("drive.mov", repo.all().single().displayName)
+        assertEquals(SourceKind.MCRAW, repo.all().single().kind)
+
+        // First open: the resolver names the document again.
+        val named = FakeResolver(
+            "clip".toByteArray(),
+            names = mapOf("content://clip/1" to "drive.mov"),
+        )
+        val filled = SourceRepository(named, file).backfillDisplayName(old.id)
+
+        assertEquals(SourceKind.ENCODED, filled?.kind)
+        // The FILLED name is never overwritten (the record's own name).
+        assertEquals("drive.mov", filled?.displayName)
+        // Persisted: a fresh repository reads the corrected kind.
+        assertEquals(
+            SourceKind.ENCODED,
+            SourceRepository(FakeResolver(), file).all().single().kind,
+        )
+    }
+
+    @Test
+    fun backfill_never_touches_the_kind_when_the_name_is_unresolvable() {
+        // The M1 guard, mirrored: an unresolvable name is NO evidence —
+        // it must not override what the record already knows (an ENCODED
+        // record never drags back to the MCRAW default, and a blank name
+        // stays blank).
+        val file = projectFile()
+        // A record the M1 import rule already classified correctly.
+        val named = FakeResolver(
+            "clip".toByteArray(),
+            names = mapOf("content://clip/1" to "beach.mp4"),
+        )
+        val imported = SourceRepository(named, file).import("content://clip/1")
+        assertEquals(SourceKind.ENCODED, imported.kind)
+
+        // First open with a resolver that cannot name the document.
+        val still = SourceRepository(FakeResolver("clip".toByteArray()), file)
+            .backfillDisplayName(imported.id)
+        assertEquals(SourceKind.ENCODED, still?.kind)
+        assertEquals("beach.mp4", still?.displayName)
+
+        // And the blank-name shape: no evidence, both fields untouched.
+        val file2 = File(tmp.root, "project2.json")
+        val blankRecord = SourceRepository(FakeResolver("clip".toByteArray()), file2)
+            .import("content://clip/1")
+        assertEquals(SourceKind.MCRAW, blankRecord.kind)
+        val untouched = SourceRepository(FakeResolver("clip".toByteArray()), file2)
+            .backfillDisplayName(blankRecord.id)
+        assertEquals(SourceKind.MCRAW, untouched?.kind)
+        assertEquals("", untouched?.displayName)
+    }
+
+    @Test
+    fun backfill_equal_kind_is_a_noop_and_writes_nothing() {
+        // The no-op guard: a record whose resolved name's kind already
+        // matches must not rewrite project.json (byte-identical file) —
+        // .mcraw name + MCRAW record is the unchanged shape.
+        val file = projectFile()
+        val named = FakeResolver(
+            "clip".toByteArray(),
+            names = mapOf("content://clip/1" to "sunset.mcraw"),
+        )
+        val repo = SourceRepository(named, file)
+        val imported = repo.import("content://clip/1")
+        assertEquals(SourceKind.MCRAW, imported.kind)
+        val before = file.readText()
+
+        val filled = repo.backfillDisplayName(imported.id)
+
+        assertEquals(imported, filled) // the record came back unchanged
+        assertEquals(before, file.readText()) // and nothing was written
+    }
+
+    // ---- batched heal pass (M9, the Library's bounded route) ----
+
+    @Test
+    fun backfill_records_heals_a_slice_with_one_write() {
+        // The Library's bounded per-open pass: two old misclassified
+        // records + one already-correct record; the pass names its slice
+        // (the two old ids), heals both, skips the healthy one, and ONE
+        // write lands it all.
+        val file = projectFile()
+        val resolver = FakeResolver(
+            blobs = mapOf(
+                "content://clip/mp4" to "mp4-bytes".toByteArray(),
+                "content://clip/mov" to "mov-bytes".toByteArray(),
+                "content://clip/mcraw" to "mcraw-bytes".toByteArray(),
+            ),
+        )
+        // The old world: no names resolved, all classified MCRAW.
+        val repo = SourceRepository(resolver, file)
+        val mp4 = repo.import("content://clip/mp4")
+        val mov = repo.import("content://clip/mov")
+        val mcraw = repo.import("content://clip/mcraw")
+        assertEquals(listOf(SourceKind.MCRAW, SourceKind.MCRAW, SourceKind.MCRAW), repo.all().map { it.kind })
+
+        // The pass with the names now available, bounded to the slice.
+        resolver.names = mapOf(
+            "content://clip/mp4" to "beach.mp4",
+            "content://clip/mov" to "drive.mov",
+            "content://clip/mcraw" to "sunset.mcraw",
+        )
+        val changed = repo.backfillRecords(ids = listOf(mp4.id, mov.id))
+
+        assertTrue(changed)
+        // Both slice records healed; the out-of-slice record untouched.
+        val after = repo.all().associateBy { it.id }
+        assertEquals(SourceKind.ENCODED, after[mp4.id]?.kind)
+        assertEquals("beach.mp4", after[mp4.id]?.displayName)
+        assertEquals(SourceKind.ENCODED, after[mov.id]?.kind)
+        assertEquals("drive.mov", after[mov.id]?.displayName)
+        assertEquals(SourceKind.MCRAW, after[mcraw.id]?.kind)
+        // Persisted: a fresh repository reads the healed slice.
+        val reloaded = SourceRepository(FakeResolver(), file).all().associateBy { it.id }
+        assertEquals(SourceKind.ENCODED, reloaded[mp4.id]?.kind)
+        assertEquals(SourceKind.ENCODED, reloaded[mov.id]?.kind)
+        assertEquals(SourceKind.MCRAW, reloaded[mcraw.id]?.kind)
+    }
+
+    @Test
+    fun backfill_records_nothing_to_heal_writes_nothing() {
+        // Every record already correct (names + kinds): the pass is a
+        // no-op — project.json stays byte-identical.
+        val file = projectFile()
+        val resolver = FakeResolver(
+            blobs = mapOf(
+                "content://clip/mp4" to "mp4-bytes".toByteArray(),
+                "content://clip/mcraw" to "mcraw-bytes".toByteArray(),
+            ),
+            names = mapOf(
+                "content://clip/mp4" to "beach.mp4",
+                "content://clip/mcraw" to "sunset.mcraw",
+            ),
+        )
+        val repo = SourceRepository(resolver, file)
+        repo.import("content://clip/mp4") // ENCODED from the name
+        repo.import("content://clip/mcraw") // MCRAW from the name
+        val before = file.readText()
+
+        assertFalse(repo.backfillRecords())
+
+        assertEquals(before, file.readText())
+    }
+
+    @Test
+    fun backfill_records_unresolvable_names_touch_nothing() {
+        // The M1 guard, mirrored to the batch: no name evidence, no
+        // change — false returned, file untouched.
+        val file = projectFile()
+        val repo = SourceRepository(FakeResolver("clip".toByteArray()), file)
+        val imported = repo.import("content://clip/1")
+        assertEquals(SourceKind.MCRAW, imported.kind)
+        val before = file.readText()
+
+        assertFalse(repo.backfillRecords())
+
+        assertEquals(before, file.readText())
+        assertEquals(SourceKind.MCRAW, repo.all().single().kind)
+        assertEquals("", repo.all().single().displayName)
     }
 
     // ---- manual rotation (owner request 2026-11-11 section 5) ----
