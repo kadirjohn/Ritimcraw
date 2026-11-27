@@ -344,7 +344,7 @@ class EncodedPreviewSessionTest {
                 handedChannels = ch
                 audio
             },
-            audioFacts = 48_000 to 2, // the ORIGINAL's facts, handed in by the caller
+            audioFacts = { 48_000 to 2 }, // the ORIGINAL's facts, handed in by the caller
         ).getOrThrow()
 
         val opened = session.openAudio { 42 } // the ORIGINAL's fd comes from the provider
@@ -365,7 +365,7 @@ class EncodedPreviewSessionTest {
             fd = 7,
             engine,
             newSource = { fake },
-            audioFacts = 48_000 to 2,
+            audioFacts = { 48_000 to 2 },
         ).getOrThrow()
 
         assertNull(session.openAudio { -1 })
@@ -373,6 +373,52 @@ class EncodedPreviewSessionTest {
     }
 
     // ---- PreviewSessions factory: routing + fd ownership ----
+
+    @Test
+    fun factory_evaluates_the_audio_facts_after_the_fd_provider_ran() = runBlocking {
+        // G3 (the auditor's re-verify finding): the screen's
+        // openedFromProxy flag flips INSIDE its fdProvider lambda, so the
+        // facts argument CANNOT be an eager value — it would be read before
+        // fdProvider ever ran (always false, always null, the clip still
+        // silent). The FACTS-AFTER-FD contract: the factory evaluates the
+        // facts lambda AFTER `val fd = fdProvider()`. This test pins BOTH
+        // halves: the lambda RAN (factsSeen left its sentinel) and it saw
+        // the flag fdProvider set (48_000 to 2, not null). An eager
+        // `audioFacts = if (openedFromProxy) ... else null` argument never
+        // calls the lambda, factsSeen keeps its sentinel, and this test is
+        // RED.
+        var openedFromProxy = false
+        var factsSeen: Pair<Int, Int>? = Pair(-1, -1) // sentinel: the lambda did NOT run
+        var factsCalls = 0
+        val developer = FakeDeveloper(result = frame(4, 4) { 0xFF010101.toInt() })
+        val fake = fakeSource(pts = longArrayOf(0, 33_333), developer = developer)
+        val outcome = PreviewSessions.open(
+            path = SourcePath.ENCODED,
+            fdProvider = {
+                // the flag flips INSIDE the provider — exactly like the
+                // screen's proxy fd resolution
+                openedFromProxy = true
+                7
+            },
+            engine = engine,
+            newEncodedSource = { fake },
+            audioFacts = {
+                // reads the flag fdProvider set: only correct if this lambda
+                // runs AFTER the fd resolved
+                factsCalls++
+                factsSeen = if (openedFromProxy) 48_000 to 2 else null
+                factsSeen
+            },
+        )
+        val session = outcome.getOrThrow()
+        // 1. the factory EVALUATED the facts lambda (an eager argument never
+        //    would — the whole finding)
+        assertEquals(1, factsCalls)
+        // 2. at evaluation time the fdProvider had already run: the flag it
+        //    set WAS visible, so the facts are the ORIGINAL's, not null
+        assertEquals(48_000 to 2, factsSeen)
+        session.close()
+    }
 
     @Test
     fun factory_negative_fd_fails_with_the_open_error() = runBlocking {

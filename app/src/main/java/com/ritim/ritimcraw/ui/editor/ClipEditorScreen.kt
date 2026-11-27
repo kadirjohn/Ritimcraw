@@ -2248,9 +2248,15 @@ fun ClipEditorScreen(
             // short-circuit to SILENCE (the auditor's finding). The
             // ORIGINAL's facts (proxyAudioFacts) ride the open, and the
             // audio DESCRIPTOR is untouched: audio.start below still takes
-            // sourceFdProvider — the ORIGINAL's fd. audioFacts is non-null
-            // IFF a proxy opened; the two facts stay consistent because the
-            // same fd resolution decides both.
+            // sourceFdProvider — the ORIGINAL's fd.
+            //
+            // EVALUATION TIME (the auditor's re-verify finding): the
+            // openedFromProxy flag flips INSIDE the fdProvider lambda, so an
+            // EAGER `audioFacts = if (openedFromProxy) ...` argument would
+            // read it before fdProvider ever ran — always false, always
+            // null, the clip still silent. The facts must be a LAMBDA the
+            // factory evaluates AFTER `val fd = fdProvider()` (the
+            // facts-after-fd contract, PreviewSessions.open).
             var openedFromProxy = false
             val opened = PreviewSessions.open(
                 path = sourcePath,
@@ -2264,7 +2270,7 @@ fun ClipEditorScreen(
                     }
                 },
                 engine = PreviewRenderer.previewEngine,
-                audioFacts = if (openedFromProxy) proxyAudioFacts else null,
+                audioFacts = { if (openedFromProxy) proxyAudioFacts else null },
             )
             val s = opened.getOrNull()
             if (s != null) {
