@@ -38,8 +38,14 @@ object LibraryRowModel {
      * PresetNameDialog "never localized" convention) and is derived from
      * the record's KIND — never by parsing the display name, which a
      * rename can have changed to anything.
+     *
+     * MOTIONCAM (owner request 2026-11-27, M2): the MCRAW badge's own
+     * style — the fixed MotionCam blue pill (FormatBadgeStyle.MOTIONCAM,
+     * FileListRow's one theme-independent treatment), so the native
+     * format's badge keeps MotionCam's color in every theme, monet and
+     * custom alike.
      */
-    enum class BadgeStyle { HIGHLIGHTED, NEUTRAL }
+    enum class BadgeStyle { HIGHLIGHTED, NEUTRAL, MOTIONCAM }
 
     /** The badge a source's row shows: its style plus its (non-localized) text. */
     data class Badge(val style: BadgeStyle, val text: String)

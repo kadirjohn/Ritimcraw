@@ -1375,6 +1375,10 @@ private fun LibraryRow(
                 style = when (b.style) {
                     LibraryRowModel.BadgeStyle.HIGHLIGHTED -> FormatBadgeStyle.HIGHLIGHTED
                     LibraryRowModel.BadgeStyle.NEUTRAL -> FormatBadgeStyle.NEUTRAL
+                    // The fixed MotionCam blue rides through untouched
+                    // (M2): the pill's MOTIONCAM branch carries the color,
+                    // the mapping only forwards the decision.
+                    LibraryRowModel.BadgeStyle.MOTIONCAM -> FormatBadgeStyle.MOTIONCAM
                 },
                 text = b.text,
             )
