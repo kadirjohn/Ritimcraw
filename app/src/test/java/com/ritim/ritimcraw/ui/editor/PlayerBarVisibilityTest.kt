@@ -23,6 +23,8 @@ class PlayerBarVisibilityTest {
         assertNull(v.msUntilHide(0))
         assertFalse(v.tick(10_000))
         assertTrue(v.visible)
+        // The toggle close half lives in the same gate: setting OFF means a
+        // visible-bar tap still does nothing at all.
         assertEquals(TapResult.NONE, v.onVideoTap(10))
         assertEquals(TapResult.NONE, v.onVideoTap(20))
     }
@@ -69,21 +71,27 @@ class PlayerBarVisibilityTest {
     }
 
     @Test
-    fun matrix_every_state_hides_shows_and_double_taps() {
+    fun matrix_every_state_toggles_hides_shows_and_double_taps() {
         for (playing in listOf(true, false)) {
             val v = on(playing = playing)
             assertTrue(v.tick(3000))
             assertFalse(v.visible)
-            // single tap shows, restarts, never toggles
+            // single tap on the hidden bar shows it, never toggles
             assertEquals(TapResult.NONE, v.onVideoTap(4000))
             assertTrue(v.visible)
             assertEquals(3000L, v.msUntilHide(4000))
-            // quick second tap toggles playback
+            // quick second tap (inside the window) toggles playback
             assertEquals(TapResult.TOGGLE_PLAYBACK, v.onVideoTap(4100))
             // seek / bar touch restarts the timer
             v.onBarInteraction(5000)
             assertFalse(v.tick(7999))
             assertTrue(v.tick(8000))
+            // and once hidden again, a later single tap RE-OPENS (fresh
+            // window), while the next one after a pause CLOSES
+            assertEquals(TapResult.NONE, v.onVideoTap(9000))
+            assertTrue(v.visible)
+            assertEquals(TapResult.HIDE, v.onVideoTap(9500))
+            assertFalse(v.visible)
         }
     }
 
@@ -141,12 +149,16 @@ class PlayerBarVisibilityTest {
     }
 
     @Test
-    fun tap_while_visible_restarts_timer_and_never_pauses() {
+    fun tap_while_visible_closes_the_bar_immediately() {
+        // Owner request 2026-11-27: the tap that opens the bar closes it
+        // again — no waiting for the hide timeout.
         val v = on()
-        assertEquals(TapResult.NONE, v.onVideoTap(2000))
-        assertEquals(3000L, v.msUntilHide(2000))
-        assertFalse(v.tick(4999))
-        assertTrue(v.visible)
+        assertTrue(v.visible) // fresh bar: visible from composition
+        assertEquals(TapResult.HIDE, v.onVideoTap(2000))
+        assertFalse(v.visible)
+        assertNull(v.msUntilHide(2000))
+        assertFalse(v.tick(60_000))
+        assertFalse(v.visible)
     }
 
     @Test
@@ -159,44 +171,61 @@ class PlayerBarVisibilityTest {
     }
 
     @Test
-    fun double_tap_toggles_playback() {
+    fun double_tap_toggles_playback_not_the_bar() {
+        // A tap INSIDE the double-tap window on a visible bar is still a
+        // playback toggle — the bar must NOT close on it.
         val v = on()
-        assertEquals(TapResult.NONE, v.onVideoTap(1000))
-        assertEquals(TapResult.TOGGLE_PLAYBACK, v.onVideoTap(1200))
+        v.tick(3000) // hidden: the first tap opens the window
+        assertEquals(TapResult.NONE, v.onVideoTap(4000))
+        assertEquals(TapResult.TOGGLE_PLAYBACK, v.onVideoTap(4100))
         assertTrue(v.visible)
     }
 
     @Test
-    fun slow_second_tap_is_not_a_double_tap() {
+    fun slow_second_tap_is_not_a_double_tap_it_closes_the_bar() {
+        // Outside the 300 ms window a tap on the visible bar is the
+        // toggle's close half, never a playback toggle.
         val v = on()
-        assertEquals(TapResult.NONE, v.onVideoTap(1000))
-        assertEquals(TapResult.NONE, v.onVideoTap(1301))
+        v.tick(3000) // hidden: the first tap opens
+        assertEquals(TapResult.NONE, v.onVideoTap(4000))
+        assertEquals(TapResult.HIDE, v.onVideoTap(4301)) // 301 ms later: not a pair
+        assertFalse(v.visible)
     }
 
     @Test
     fun triple_tap_does_not_chain_toggles() {
+        // From hidden: open, quick-toggle — and the third tap (the window
+        // died with the toggle, the bar is still up) CLOSES the bar, never
+        // a chained second playback toggle. A fourth quick tap then pairs
+        // with nothing: it re-opens.
         val v = on()
-        v.onVideoTap(1000)
-        assertEquals(TapResult.TOGGLE_PLAYBACK, v.onVideoTap(1100))
-        assertEquals(TapResult.NONE, v.onVideoTap(1200))
+        v.tick(3000)
+        assertEquals(TapResult.NONE, v.onVideoTap(4000))
+        assertEquals(TapResult.TOGGLE_PLAYBACK, v.onVideoTap(4100))
+        assertEquals(TapResult.HIDE, v.onVideoTap(4200))
+        assertFalse(v.visible)
+        assertEquals(TapResult.NONE, v.onVideoTap(4300))
+        assertTrue(v.visible)
     }
 
     @Test
     fun double_tap_works_while_paused() {
         val v = on(playing = false)
-        v.onVideoTap(100)
-        assertEquals(TapResult.TOGGLE_PLAYBACK, v.onVideoTap(250))
+        v.tick(3000) // hidden: the first tap opens the window
+        assertEquals(TapResult.NONE, v.onVideoTap(4000))
+        assertEquals(TapResult.TOGGLE_PLAYBACK, v.onVideoTap(4100))
         assertTrue(v.visible)
     }
 
     @Test
     fun double_tap_that_starts_playback_shows_bar_briefly() {
         val v = on(playing = false)
-        v.onVideoTap(100)
-        v.onVideoTap(250)
-        v.setPlaying(true, 250)
+        v.tick(3000)
+        assertEquals(TapResult.NONE, v.onVideoTap(4000))
+        assertEquals(TapResult.TOGGLE_PLAYBACK, v.onVideoTap(4100))
+        v.setPlaying(true, 4100)
         assertTrue(v.visible)
-        assertEquals(3000L, v.msUntilHide(250))
+        assertEquals(3000L, v.msUntilHide(4100))
     }
 
     @Test
@@ -231,35 +260,49 @@ class PlayerBarVisibilityTest {
     @Test
     fun the_double_tap_window_closes_exactly_at_double_tap_ms() {
         // <= doubleTapMs IS a double tap: taps exactly 300 ms apart toggle.
+        // Both taps start from a HIDDEN bar (the open is the window's base).
         val v = on()
-        assertEquals(TapResult.NONE, v.onVideoTap(1000))
-        assertEquals(TapResult.TOGGLE_PLAYBACK, v.onVideoTap(1300)) // exactly the boundary
-        // ... and one millisecond later is NOT
+        v.tick(3000)
+        assertEquals(TapResult.NONE, v.onVideoTap(4000))
+        assertEquals(TapResult.TOGGLE_PLAYBACK, v.onVideoTap(4300)) // exactly the boundary
+        // ... and one millisecond later is NOT a double tap — it CLOSES
         val w = on()
-        assertEquals(TapResult.NONE, w.onVideoTap(1000))
-        assertEquals(TapResult.NONE, w.onVideoTap(1301))
+        w.tick(3000)
+        assertEquals(TapResult.NONE, w.onVideoTap(4000))
+        assertEquals(TapResult.HIDE, w.onVideoTap(4301))
+        assertFalse(w.visible)
         // a custom window is honoured at ITS boundary too
         val x = PlayerBarVisibility(doubleTapMs = 100)
         x.setAutoHide(true, 0); x.setPlaying(true, 0)
-        assertEquals(TapResult.NONE, x.onVideoTap(0))
-        assertEquals(TapResult.TOGGLE_PLAYBACK, x.onVideoTap(100))
+        x.tick(3000)
+        assertEquals(TapResult.NONE, x.onVideoTap(4000))
+        assertEquals(TapResult.TOGGLE_PLAYBACK, x.onVideoTap(4100))
     }
 
     @Test
     fun the_double_tap_window_reopens_after_a_toggle_and_after_a_setting_flip() {
         // A toggle CONSUMES the window (lastTapMs = null): the next tap starts a fresh
-        // one — a fourth quick tap toggles again, it never chains a triple.
+        // one — a toggle pair, then a close, then a NEW pair toggles again; it never
+        // chains a triple. Starts from a hidden bar (on() shows it; the first tap
+        // would close it instead of opening a window).
         val v = on()
-        v.onVideoTap(1000)
-        assertEquals(TapResult.TOGGLE_PLAYBACK, v.onVideoTap(1200))
-        assertEquals(TapResult.NONE, v.onVideoTap(1250))
-        assertEquals(TapResult.TOGGLE_PLAYBACK, v.onVideoTap(1450)) // a new window, a new pair
-        // setAutoHide clears the window from BOTH sides (lastTapMs = null on flip)
+        v.tick(3000) // hidden
+        assertEquals(TapResult.NONE, v.onVideoTap(4000)) // opens + window @4000
+        assertEquals(TapResult.TOGGLE_PLAYBACK, v.onVideoTap(4100)) // window pair
+        assertTrue(v.visible) // the toggle's caller keeps the bar up
+        assertEquals(TapResult.HIDE, v.onVideoTap(5000)) // later tap closes
+        assertEquals(TapResult.NONE, v.onVideoTap(6000)) // fresh reopen, fresh window
+        assertEquals(TapResult.TOGGLE_PLAYBACK, v.onVideoTap(6200)) // a new pair toggles
+        // setAutoHide clears the window from BOTH sides (lastTapMs = null on flip):
+        // the flip re-shows the bar, so the next tap CLOSES it (window long dead),
+        // it is never a playback toggle.
         val w = on()
-        w.onVideoTap(1000)
-        w.setAutoHide(false, 1100)
-        w.setAutoHide(true, 1150)
-        assertEquals(TapResult.NONE, w.onVideoTap(1250)) // not a double tap: the window died with the flip
+        w.tick(3000) // hidden
+        w.onVideoTap(4000) // opens
+        w.setAutoHide(false, 4100) // re-shows, window dies
+        w.setAutoHide(true, 4150) // timer on
+        assertEquals(TapResult.HIDE, w.onVideoTap(4250)) // not a double tap: the window died with the flip
+        assertFalse(w.visible)
     }
 
     @Test
@@ -341,20 +384,22 @@ class PlayerBarVisibilityTest {
 
     @Test
     fun tap_then_hold_then_two_more_taps_is_a_fresh_window_not_a_toggle() {
-        // The full gesture chain: tap (window opens), hold on the bar (interaction, no
-        // window change), then two quick taps — the FIRST tap after the hold starts a NEW
-        // window (the 300 ms from IT), so the pair toggles on the second. The toggle
-        // itself does NOT re-show (the caller's setPlaying does); the timer keeps the
-        // LAST interaction base, so the hide lands on it, not on the tap.
+        // The full gesture chain: tap (CLOSES the visible bar now), hold on the bar
+        // (re-shows it — an interaction), then two quick taps — the hold re-showed the
+        // bar, so the FIRST tap after the hold CLOSES it again (window long dead), and
+        // the second tap RE-OPENS as a fresh single tap. No playback toggle chains.
         val v = on()
-        assertEquals(TapResult.NONE, v.onVideoTap(1000))
+        assertEquals(TapResult.HIDE, v.onVideoTap(1000))
+        assertFalse(v.visible)
         v.setBarPressed(true, 1100)
-        v.setBarPressed(false, 4000) // 3000 ms later: the old window (1000+300) is long dead
-        assertEquals(TapResult.NONE, v.onVideoTap(4100))
-        assertEquals(TapResult.TOGGLE_PLAYBACK, v.onVideoTap(4300))
-        assertTrue(v.visible) // shown by the taps themselves (and setBarPressed)
-        assertEquals(2800L, v.msUntilHide(4300)) // base 4100, NOT the toggle's 4300
-        assertTrue(v.tick(7100))
+        assertTrue(v.visible) // the bar touch re-shows
+        v.setBarPressed(false, 4000)
+        assertEquals(TapResult.HIDE, v.onVideoTap(4100))
+        assertFalse(v.visible)
+        assertEquals(TapResult.NONE, v.onVideoTap(4300)) // fresh window: re-opens
+        assertTrue(v.visible)
+        assertEquals(3000L, v.msUntilHide(4300))
+        assertTrue(v.tick(7300))
         assertFalse(v.visible)
     }
 
@@ -394,5 +439,70 @@ class PlayerBarVisibilityTest {
         c.setAutoHide(false, 0)
         assertTrue(c.visible)
         assertNull(c.msUntilHide(0))
+    }
+
+    // ---- Toggle close (owner request 2026-11-27) ----
+
+    @Test
+    fun the_full_toggle_cycle_hidden_shows_visible_closes_and_repeats() {
+        // "media player'a tek dokunuş bar'ı açıyor, tekrar dokunmak kapatır":
+        // open, close, open, close — every other single tap flips the bar,
+        // and no playback toggle ever fires on the slow rhythm.
+        val v = on()
+        v.tick(3000) // hidden by timeout
+        assertEquals(TapResult.NONE, v.onVideoTap(4000)) // open
+        assertTrue(v.visible)
+        assertEquals(TapResult.HIDE, v.onVideoTap(5000)) // close
+        assertFalse(v.visible)
+        assertEquals(TapResult.NONE, v.onVideoTap(6000)) // open again
+        assertTrue(v.visible)
+        assertEquals(3000L, v.msUntilHide(6000))
+        assertEquals(TapResult.HIDE, v.onVideoTap(7000)) // close again
+        assertFalse(v.visible)
+    }
+
+    @Test
+    fun the_close_consumes_the_double_tap_window_so_a_quick_reopen_never_toggles_playback() {
+        // close @1000, quick reopen @1200 (inside the window): a fresh
+        // single tap, NOT a playback toggle; a quick THIRD tap would then
+        // pair with the reopen and toggle — that is the owner's existing
+        // double-tap affordance, unchanged.
+        val v = on()
+        assertEquals(TapResult.HIDE, v.onVideoTap(1000))
+        assertEquals(TapResult.NONE, v.onVideoTap(1200))
+        assertTrue(v.visible)
+        assertEquals(TapResult.TOGGLE_PLAYBACK, v.onVideoTap(1300))
+    }
+
+    @Test
+    fun a_tap_during_a_bar_hold_never_closes_the_bar() {
+        // A finger on the bar (slider mid-drag, a button mid-press) keeps
+        // it alive: a video tap during the hold shows, never closes.
+        val v = on()
+        v.setBarPressed(true, 100)
+        assertEquals(TapResult.NONE, v.onVideoTap(200))
+        assertTrue(v.visible)
+        assertFalse(v.tick(5000))
+        assertTrue(v.visible)
+        v.setBarPressed(false, 5000)
+        assertEquals(TapResult.HIDE, v.onVideoTap(5100)) // free to close after release
+        assertFalse(v.visible)
+    }
+
+    @Test
+    fun closing_then_the_timeout_path_is_untouched() {
+        // The close half never disturbs the auto-hide: a bar left alone
+        // still hides on the timer, and a bar closed by hand stays closed.
+        val v = on()
+        assertFalse(v.tick(2999))
+        assertTrue(v.visible)
+        assertTrue(v.tick(3000))
+        assertFalse(v.visible)
+        assertEquals(TapResult.NONE, v.onVideoTap(3100)) // reopen
+        assertEquals(TapResult.HIDE, v.onVideoTap(4000)) // close well past the window
+        assertFalse(v.visible)
+        assertNull(v.msUntilHide(3200))
+        assertFalse(v.tick(10_000))
+        assertFalse(v.visible)
     }
 }
