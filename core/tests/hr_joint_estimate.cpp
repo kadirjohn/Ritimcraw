@@ -203,8 +203,9 @@ Err measure(const ImageF& out, const ImageF& truth, float truthScale, int minCli
 // The scale decision of the reference for one (c, r) pair at pixel (x, y), rebuilt from the
 // same expressions (9x9 integral of ok/ratio sums; block neighbourhoods for the coarser
 // scales). Returns the scale index that supplied rho, or -1 when no scale had support, and
-// the 9x9 valid-sample count W.
-int scaleAt(const ImageF& img, const std::vector<uint8_t>& clipped, int c, int r, uint32_t px, uint32_t py, double& w9) {
+// the valid-sample count of the 9x9 window (w9) and of the CHOSEN scale's neighbourhood (wChosen).
+int scaleAt(const ImageF& img, const std::vector<uint8_t>& clipped, int c, int r, uint32_t px, uint32_t py,
+            double& w9, double* wChosen = nullptr) {
     const uint32_t w = img.w, h = img.h;
     auto ok = [&](uint32_t x, uint32_t y) {
         const size_t i = (size_t(y) * w + x) * 3;
@@ -220,7 +221,10 @@ int scaleAt(const ImageF& img, const std::vector<uint8_t>& clipped, int c, int r
             for (int x = x0; x <= x1; ++x)
                 if (ok(uint32_t(x), uint32_t(y))) ++cnt;
         w9 = cnt;
-        if (cnt >= kScales[0].minSupport) return 0;
+        if (cnt >= kScales[0].minSupport) {
+            if (wChosen) *wChosen = cnt;
+            return 0;
+        }
     }
     for (int s = 1; s < 5; ++s) {
         const int b = kScales[s].param;
@@ -237,7 +241,10 @@ int scaleAt(const ImageF& img, const std::vector<uint8_t>& clipped, int c, int r
                     for (uint32_t x = uint32_t(xx * b); x < xEnd; ++x)
                         if (ok(x, y)) ++cnt;
             }
-        if (cnt >= kScales[s].minSupport) return s;
+        if (cnt >= kScales[s].minSupport) {
+            if (wChosen) *wChosen = cnt;
+            return s;
+        }
     }
     return -1;
 }
@@ -248,7 +255,7 @@ const char* kChan = "RGB";
 
 int main(int argc, char** argv) {
     if (argc < 2) {
-        std::fprintf(stderr, "usage: hr_joint_estimate pairs|support|m1 [drift=0.08]\n");
+        std::fprintf(stderr, "usage: hr_joint_estimate pairs|support|bandstats|m1 [drift=0.08]\n");
         return 2;
     }
     const std::string mode = argv[1];
@@ -336,6 +343,307 @@ int main(int argc, char** argv) {
     std::printf("2-channel mask pixels with the G reference: %ld of %ld\n", gRef, total2);
 
     if (mode == "pairs") return 0;
+
+    // The reference's own ratio at one pixel: scaleAt finds the scale, then the ok-vc/ok-vr
+    // sums are re-walked over that scale's neighbourhood (the reference's exact sums).
+    auto rhoAt = [&](int c, int r, uint32_t x, uint32_t y, int& scl, double& wChosen, double& rho) -> bool {
+        const uint32_t w = img.w, h = img.h;
+        auto ok = [&](uint32_t xx, uint32_t yy) {
+            const size_t i = (size_t(yy) * w + xx) * 3;
+            const float vc = img.rgb[i + c], vr = img.rgb[i + r];
+            return !clipped[i + c] && !clipped[i + r] && vr > 1e-4 && vc >= 0.0f;
+        };
+        double w9 = 0, wc = 0;
+        const int s = scaleAt(img, clipped, c, r, x, y, w9, &wc);
+        if (s < 0) { scl = -1; wChosen = 0; rho = -1; return false; }
+        scl = s; wChosen = wc;
+        double a = 0, b = 0;
+        if (s == 0) {
+            const int y0 = std::max(0, int(y) - 4), y1 = std::min(int(h) - 1, int(y) + 4);
+            const int x0 = std::max(0, int(x) - 4), x1 = std::min(int(w) - 1, int(x) + 4);
+            for (int yy = y0; yy <= y1; ++yy)
+                for (int xx = x0; xx <= x1; ++xx) {
+                    const size_t i = (size_t(yy) * w + xx) * 3;
+                    if (!ok(uint32_t(xx), uint32_t(yy))) continue;
+                    a += double(img.rgb[i + c]); b += double(img.rgb[i + r]);
+                }
+        } else {
+            const int bsz = kScales[s].param;
+            const int by = int(y / uint32_t(bsz)), bx = int(x / uint32_t(bsz));
+            const int bw = int((w + bsz - 1) / bsz), bh = int((h + bsz - 1) / bsz);
+            for (int dy = -1; dy <= 1; ++dy)
+                for (int dx = -1; dx <= 1; ++dx) {
+                    const int yy = by + dy, xx = bx + dx;
+                    if (yy < 0 || yy >= bh || xx < 0 || xx >= bw) continue;
+                    const uint32_t yEnd = std::min(uint32_t((yy + 1) * bsz), h);
+                    const uint32_t xEnd = std::min(uint32_t((xx + 1) * bsz), w);
+                    for (uint32_t py = uint32_t(yy * bsz); py < yEnd; ++py)
+                        for (uint32_t px = uint32_t(xx * bsz); px < xEnd; ++px) {
+                            const size_t i = (size_t(py) * w + px) * 3;
+                            if (!ok(px, py)) continue;
+                            a += double(img.rgb[i + c]); b += double(img.rgb[i + r]);
+                        }
+                }
+        }
+        rho = b > 0 ? a / b : -1.0;
+        return rho > 0.0;
+    };
+
+    if (mode == "bandstats") {
+        // At every 2-channel band pixel: the three estimates the joint method combines — the
+        // two independent ratios (G->R, B->R; the reference is R everywhere in this band) and
+        // the pair ratio rho(G,B) — with each one's chosen scale, chosen-scale support W, and
+        // the ratio value itself. This is the input the weighting formula has to work with.
+        struct R3 {
+            long n = 0;
+            long scl[5] = {0, 0, 0, 0, 0};
+            double wSum = 0, wMin = 1e18, wMax = 0;
+            double rhoSum = 0, rhoMin = 1e18, rhoMax = 0;
+            // the ratio's error vs the scene truth at the pixel (log truth c / log truth r)
+            double errSum = 0, errAbsSum = 0;
+        };
+        R3 rGR, rBR, rGB;
+        for (uint32_t y = 2; y + 2 < kH; ++y)
+            for (uint32_t x = 2; x + 2 < kW; ++x) {
+                float sc[3];
+                sceneRgb(x, y, sc);
+                int nc = 0;
+                for (int c = 0; c < 3; ++c) nc += (sc[c] * kNeutral[c] >= 1.0f);
+                if (nc != 2 || nearAllClipped(x, y)) continue;
+                const size_t i = size_t(y) * kW + x;
+                const uint8_t* cf = &clipped[i * 3];
+                if (cf[0] + cf[1] + cf[2] != 2) continue;
+                int r;
+                if (!cf[1]) r = 1;
+                else r = (img.rgb[i * 3] >= img.rgb[i * 3 + 2]) ? (cf[0] ? 2 : 0) : (cf[2] ? 0 : 2);
+                // scene-truth ratios at this pixel (what each rho should be)
+                const double tGR = std::log(std::max(sc[1] / std::max(sc[r], 1e-6f), 1e-6f));
+                const double tBR = std::log(std::max(sc[2] / std::max(sc[r], 1e-6f), 1e-6f));
+                const double tGB = std::log(std::max(sc[1] / std::max(sc[2], 1e-6f), 1e-6f));
+                auto feed = [&](R3& st, int c, int rr, double tRho) {
+                    int scl; double wc, rho;
+                    if (!rhoAt(c, rr, x, y, scl, wc, rho)) return;
+                    ++st.n;
+                    ++st.scl[scl];
+                    st.wSum += wc; st.wMin = std::min(st.wMin, wc); st.wMax = std::max(st.wMax, wc);
+                    st.rhoSum += rho; st.rhoMin = std::min(st.rhoMin, rho); st.rhoMax = std::max(st.rhoMax, rho);
+                    const double err = std::log(rho) - tRho;
+                    st.errSum += err; st.errAbsSum += std::fabs(err);
+                };
+                feed(rGR, 1, r, tGR);
+                feed(rBR, 2, r, tBR);
+                feed(rGB, 1, 2, tGB);
+            }
+        const auto printR3 = [&](const char* name, const R3& st) {
+            if (!st.n) { std::printf("%-5s n=0\n", name); return; }
+            std::printf("%-5s n=%-5ld scale(9x9/8/32/128/512): %ld/%ld/%ld/%ld/%ld | W: mean=%.0f min=%.0f max=%.0f | rho: mean=%.4f min=%.4f max=%.4f | log-err vs truth: mean=%+.4f |mean|=%.4f\n",
+                        name, st.n, st.scl[0], st.scl[1], st.scl[2], st.scl[3], st.scl[4],
+                        st.wSum / st.n, st.wMin, st.wMax, st.rhoSum / st.n, st.rhoMin, st.rhoMax,
+                        st.errSum / st.n, st.errAbsSum / st.n);
+        };
+        std::printf("\n== the three ratios the joint estimate combines (2-channel band) ==\n");
+        printR3("rho GR", rGR);
+        printR3("rho BR", rBR);
+        printR3("rho GB", rGB);
+        // The scene's own ratio spread: how much the true ratios move across the band (the
+        // estimator's floor — a block-scale mean ratio cannot track intra-band drift).
+        double tGRs = 0, tGBs = 0, tGRm = 0, tGBm = 0; long tn = 0;
+        for (uint32_t y = 2; y + 2 < kH; ++y)
+            for (uint32_t x = 2; x + 2 < kW; ++x) {
+                float sc[3];
+                sceneRgb(x, y, sc);
+                int nc = 0;
+                for (int c = 0; c < 3; ++c) nc += (sc[c] * kNeutral[c] >= 1.0f);
+                if (nc != 2 || nearAllClipped(x, y)) continue;
+                const size_t i = size_t(y) * kW + x;
+                const uint8_t* cf = &clipped[i * 3];
+                if (cf[0] + cf[1] + cf[2] != 2) continue;
+                int r;
+                if (!cf[1]) r = 1;
+                else r = (img.rgb[i * 3] >= img.rgb[i * 3 + 2]) ? (cf[0] ? 2 : 0) : (cf[2] ? 0 : 2);
+                const double tGR = std::log(std::max(sc[1] / std::max(sc[r], 1e-6f), 1e-6f));
+                const double tGB = std::log(std::max(sc[1] / std::max(sc[2], 1e-6f), 1e-6f));
+                tGRs += tGR; tGBs += tGB; ++tn;
+                (void)tGRm; (void)tGBm;
+            }
+        if (tn) std::printf("scene-truth log(G/R) band mean=%.4f log(G/B) band mean=%.4f (n=%ld)\n", tGRs / tn, tGBs / tn, tn);
+        return 0;
+    }
+
+    if (mode == "sweep") {
+        // Variant trial, pure math on the measured band inputs (no Develop.cpp change): at every
+        // 2-channel band pixel gather (v_R, rho_GR, rho_BR, rho_GB, clipped px G/B, scene truth),
+        // then for each weighting compute e_G/e_B, apply the shipped caps (never below the
+        // clipped value, K=4 headroom) and measure EXACTLY the way the M1 test does.
+        struct Px {
+            float vR, pxG, pxB;      // reference value, clipped (lower-bound) values
+            double rhoGR, rhoBR, rhoGB;
+            double tG, tB;          // scene truth (WB camera space, unscaled by K)
+            double wGR, wBR, wGB;   // each ratio's chosen-scale support
+            int sGR, sBR, sGB;      // each ratio's chosen scale index (0=9x9 .. 4=512)
+        };
+        std::vector<Px> data;
+        for (uint32_t y = 2; y + 2 < kH; ++y)
+            for (uint32_t x = 2; x + 2 < kW; ++x) {
+                float sc[3];
+                sceneRgb(x, y, sc);
+                int nc = 0;
+                for (int c = 0; c < 3; ++c) nc += (sc[c] * kNeutral[c] >= 1.0f);
+                if (nc != 2 || nearAllClipped(x, y)) continue;
+                const size_t i = size_t(y) * kW + x;
+                const uint8_t* cf = &clipped[i * 3];
+                if (cf[0] + cf[1] + cf[2] != 2) continue;
+                int r;
+                if (!cf[1]) r = 1;
+                else r = (img.rgb[i * 3] >= img.rgb[i * 3 + 2]) ? (cf[0] ? 2 : 0) : (cf[2] ? 0 : 2);
+                if (r != 0) continue;  // this band references R (measured); keep the sweep exact
+                Px p;
+                p.vR = img.rgb[i * 3 + 0];
+                p.pxG = img.rgb[i * 3 + 1];
+                p.pxB = img.rgb[i * 3 + 2];
+                int s1 = -1, s2 = -1, s3 = -1;
+                double w1 = 0, w2 = 0, w3 = 0, rho1 = 0, rho2 = 0, rho3 = 0;
+                if (rhoAt(1, 0, x, y, s1, w1, rho1)) { p.rhoGR = rho1; p.wGR = w1; p.sGR = s1; } else p.rhoGR = -1;
+                if (rhoAt(2, 0, x, y, s2, w2, rho2)) { p.rhoBR = rho2; p.wBR = w2; p.sBR = s2; } else p.rhoBR = -1;
+                if (rhoAt(1, 2, x, y, s3, w3, rho3)) { p.rhoGB = rho3; p.wGB = w3; p.sGB = s3; } else p.rhoGB = -1;
+                if (p.rhoGR <= 0 || p.rhoBR <= 0 || p.rhoGB <= 0) continue;  // need all three (the joint path)
+                // scene truth in the WB camera space the estimator works in, calibrated on the
+                // unclipped R this pixel carries (vR tracks sc[0] linearly).
+                p.tG = p.vR * (sc[1] / std::max(sc[0], 1e-6f));
+                p.tB = p.vR * (sc[2] / std::max(sc[0], 1e-6f));
+                data.push_back(p);
+            }
+        std::printf("sweep pixels=%zu (all three ratios present, reference R)\n", data.size());
+
+        struct Res { double hueRG = 0, hueBG = 0, lin = 0; long n = 0; };
+        auto evaluate = [&](const char* name, auto estOf) {
+            Res res;
+            for (const Px& p : data) {
+                double eG, eB;
+                estOf(p, eG, eB);
+                // the shipped caps: never below the clipped value, headroom K=4
+                eG = std::max(double(p.pxG), eG);
+                eB = std::max(double(p.pxB), eB);
+                eG = std::min(eG, kHeadroom * double(p.pxG));
+                eB = std::min(eB, kHeadroom * double(p.pxB));
+                const double oRG = std::log(std::max(p.vR, 1e-6f) / std::max(eG, 1e-6));
+                const double oBG = std::log(std::max(eB, 1e-6) / std::max(eG, 1e-6));
+                const double tRG = std::log(std::max(p.vR, 1e-6f) / std::max(p.tG, 1e-6));
+                const double tBG = std::log(std::max(p.tB, 1e-6) / std::max(p.tG, 1e-6));
+                res.hueRG += std::fabs(oRG - tRG);
+                res.hueBG += std::fabs(oBG - tBG);
+                double sum = 0; int cnt = 0;
+                sum += std::fabs(eG - p.tG) / std::max(p.tG, 1e-6); ++cnt;
+                sum += std::fabs(eB - p.tB) / std::max(p.tB, 1e-6); ++cnt;
+                res.lin += sum / cnt;
+                ++res.n;
+            }
+            if (res.n) {
+                res.hueRG /= res.n; res.hueBG /= res.n; res.lin /= res.n;
+                std::printf("%-28s n=%-5ld hue R/G=%.4f hue B/G=%.4f lin=%.4f\n", name, res.n,
+                            res.hueRG, res.hueBG, res.lin);
+            }
+            return res;
+        };
+
+        std::printf("\n== variant sweep (M1 2-channel band; Neutral: hue R/G 0.0174 hue B/G 0.0174 lin 0.3747) ==\n");
+        // baseline: the shipped independent estimate
+        evaluate("independent (shipped)", [&](const Px& p, double& eG, double& eB) {
+            eG = double(p.vR) * p.rhoGR;
+            eB = double(p.vR) * p.rhoBR;
+        });
+        // the experiment patch's geometric-mean joint estimate
+        evaluate("geometric-mean (patch)", [&](const Px& p, double& eG, double& eB) {
+            const double gm = double(p.vR) * std::sqrt(p.rhoGR * p.rhoBR);
+            const double s12 = std::sqrt(p.rhoGB);
+            eG = gm * s12;
+            eB = gm / s12;
+        });
+        // weighted least squares in log space: W1/W2/W3 given per variant
+        auto wls = [&](double w1, double w2, double w3) {
+            return [w1, w2, w3](const Px& p, double& eG, double& eB) {
+                const double D = w1 * w2 + w1 * w3 + w2 * w3;
+                if (!(D > 0)) { eG = double(p.vR) * p.rhoGR; eB = double(p.vR) * p.rhoBR; return; }
+                const double a1 = std::log(double(p.vR) * p.rhoGR);
+                const double a2 = std::log(double(p.vR) * p.rhoBR);
+                const double a12 = std::log(p.rhoGB);
+                const double xG = (w1 * (w2 + w3) * a1 + w2 * w3 * (a2 + a12)) / D;
+                const double xB = (w1 * w3 * (a1 - a12) + w2 * (w1 + w3) * a2) / D;
+                eG = std::exp(xG);
+                eB = std::exp(xB);
+            };
+        };
+        evaluate("wls equal (1,1,1)", wls(1, 1, 1));
+        evaluate("wls support W", [&](const Px& p, double& eG, double& eB) {
+            const double w1 = p.wGR, w2 = p.wBR, w3 = p.wGB;
+            const double D = w1 * w2 + w1 * w3 + w2 * w3;
+            const double a1 = std::log(double(p.vR) * p.rhoGR);
+            const double a2 = std::log(double(p.vR) * p.rhoBR);
+            const double a12 = std::log(p.rhoGB);
+            const double xG = (w1 * (w2 + w3) * a1 + w2 * w3 * (a2 + a12)) / D;
+            const double xB = (w1 * w3 * (a1 - a12) + w2 * (w1 + w3) * a2) / D;
+            eG = std::exp(xG);
+            eB = std::exp(xB);
+        });
+        evaluate("wls sqrt-support W", [&](const Px& p, double& eG, double& eB) {
+            const double w1 = std::sqrt(p.wGR), w2 = std::sqrt(p.wBR), w3 = std::sqrt(p.wGB);
+            const double D = w1 * w2 + w1 * w3 + w2 * w3;
+            const double a1 = std::log(double(p.vR) * p.rhoGR);
+            const double a2 = std::log(double(p.vR) * p.rhoBR);
+            const double a12 = std::log(p.rhoGB);
+            const double xG = (w1 * (w2 + w3) * a1 + w2 * w3 * (a2 + a12)) / D;
+            const double xB = (w1 * w3 * (a1 - a12) + w2 * (w1 + w3) * a2) / D;
+            eG = std::exp(xG);
+            eB = std::exp(xB);
+        });
+        // sensitivity: the pair ratio's trust at fixed W1=W2=1
+        for (double w3 : {0.25, 0.5, 1.0, 2.0, 4.0, 8.0}) {
+            char name[64];
+            std::snprintf(name, sizeof name, "wls (1,1,%.2f)", w3);
+            evaluate(name, wls(1, 1, w3));
+        }
+        // independent-ratio trust at fixed pair weight
+        for (double w2 : {0.25, 0.5, 2.0, 4.0}) {
+            char name[64];
+            std::snprintf(name, sizeof name, "wls (1,%.2f,1)", w2);
+            evaluate(name, wls(1, w2, 1));
+        }
+        // measured-quality weights, no tuned constants:
+        //   density  — valid samples per covered pixel of the chosen scale's neighbourhood
+        //              (a coarse scale's huge area is trusted less per sample: bias grows with
+        //              the area a mean ratio averages over when the scene ratio drifts).
+        //   inverse-scale — trust ~ 1/scale-param (a ratio from a finer scale is localized).
+        evaluate("wls density", [&](const Px& p, double& eG, double& eB) {
+            auto dens = [](const Px&, double wSup, int scl) -> double {
+                if (scl <= 0) return wSup / 81.0;
+                const double b = double(kScales[scl].param);
+                return wSup / (9.0 * b * b);
+            };
+            const double w1 = dens(p, p.wGR, p.sGR), w2 = dens(p, p.wBR, p.sBR), w3 = dens(p, p.wGB, p.sGB);
+            const double D = w1 * w2 + w1 * w3 + w2 * w3;
+            if (!(D > 0)) { eG = double(p.vR) * p.rhoGR; eB = double(p.vR) * p.rhoBR; return; }
+            const double a1 = std::log(double(p.vR) * p.rhoGR);
+            const double a2 = std::log(double(p.vR) * p.rhoBR);
+            const double a12 = std::log(p.rhoGB);
+            const double xG = (w1 * (w2 + w3) * a1 + w2 * w3 * (a2 + a12)) / D;
+            const double xB = (w1 * w3 * (a1 - a12) + w2 * (w1 + w3) * a2) / D;
+            eG = std::exp(xG);
+            eB = std::exp(xB);
+        });
+        evaluate("wls inverse-scale", [&](const Px& p, double& eG, double& eB) {
+            auto invS = [](int scl) -> double { return scl <= 0 ? 1.0 / 9.0 : 1.0 / double(kScales[scl].param); };
+            const double w1 = invS(p.sGR), w2 = invS(p.sBR), w3 = invS(p.sGB);
+            const double D = w1 * w2 + w1 * w3 + w2 * w3;
+            const double a1 = std::log(double(p.vR) * p.rhoGR);
+            const double a2 = std::log(double(p.vR) * p.rhoBR);
+            const double a12 = std::log(p.rhoGB);
+            const double xG = (w1 * (w2 + w3) * a1 + w2 * w3 * (a2 + a12)) / D;
+            const double xB = (w1 * w3 * (a1 - a12) + w2 * (w1 + w3) * a2) / D;
+            eG = std::exp(xG);
+            eB = std::exp(xB);
+        });
+        return 0;
+    }
 
     if (mode == "support") {
         // Per (c, r) pair the recovery actually reads, at the band's consumer pixels: the 9x9
