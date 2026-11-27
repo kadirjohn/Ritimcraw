@@ -1131,6 +1131,17 @@ private fun ExportReportBlock(r: ExportReport) {
                         }
                         ExportRowModel.DetailLine.FIXED -> stringResource(R.string.exports_report_fixed)
                         ExportRowModel.DetailLine.CPU -> stringResource(R.string.exports_report_cpu)
+                        ExportRowModel.DetailLine.LOUDNESS_CAPPED -> stringResource(
+                            R.string.exports_report_loudness_capped,
+                            ExportText.db1(r.audioLufs ?: 0.0), ExportText.db1(r.audioDbtp ?: 0.0),
+                        )
+                        ExportRowModel.DetailLine.LOUDNESS_CEILING -> stringResource(
+                            R.string.exports_report_loudness_ceiling,
+                            ExportText.db1(r.audioLufs ?: 0.0), ExportText.db1(r.audioDbtp ?: 0.0),
+                        )
+                        ExportRowModel.DetailLine.TRUE_PEAK_OVER -> stringResource(
+                            R.string.exports_report_tp_over, ExportText.db1(r.audioDbtp ?: 0.0),
+                        )
                     },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,

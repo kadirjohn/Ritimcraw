@@ -1,11 +1,12 @@
 // E5 loudness normalization chain — implementation (D2, plan §4.1).
 // See AudioNormalize.h for the contract, the honesty rules and the
-// limiter-deferral note. The measurement is the E5-A port
+// limiter chain. The measurement is the E5-A port
 // (core/src/Loudness.cpp) reused through loudness_measure(); this TU
 // only owns the gain/clip/verify loop and the 16-bit requantization.
 
 #include <rawedit/AudioNormalize.h>
 
+#include <rawedit/Dynamics.h>
 #include <rawedit/Loudness.h>
 
 #include <algorithm>
@@ -110,55 +111,75 @@ NormalizeResult normalizePcm(const int16_t *pcm, std::size_t frames,
         return out;
     }
 
-    // The ceiling in linear terms (the hard-clip target, see the header's
-    // LIMITER NOTE: D1's look-ahead limiter replaces this clip at merge).
-    const double ceiling = std::pow(10.0, tp_dbtp / 20.0);
+    const double sr = static_cast<double>(sample_rate);
 
-    // Gain application: from the ORIGINAL planar samples, one clamped
-    // requantize per interleaved output sample.
-    const auto applyGain = [&](double gainDb) {
-        const double g = std::pow(10.0, gainDb / 20.0);
+    // Pre-limiter gain -> look-ahead Limiter at the true-peak ceiling ->
+    // latency-compensated (same length, same alignment) -> requantize.
+    // Always from the ORIGINAL samples (never a compounding gain).
+    const auto applyChain = [&](double gainDb) {
+        const float g = static_cast<float>(std::pow(10.0, gainDb / 20.0));
+        Limiter lim(static_cast<float>(sample_rate), static_cast<std::size_t>(channels));
+        lim.set_param("ceiling", static_cast<float>(std::min(0.0, std::max(-24.0, tp_dbtp))));
+        const std::size_t lat = lim.latency();
+        const std::size_t total = frames + lat;
+        std::vector<std::vector<float>> buf(ch, std::vector<float>(total, 0.0f));
+        std::vector<float *> ptrs(ch);
+        for (std::size_t c = 0; c < ch; ++c) {
+            for (std::size_t i = 0; i < frames; ++i) {
+                buf[c][i] = static_cast<float>(planar[c * frames + i]) * g;
+            }
+            ptrs[c] = buf[c].data();
+        }
+        lim.process(ptrs.data(), ch, total);
         for (std::size_t i = 0; i < frames; ++i) {
-            for (int c = 0; c < channels; ++c) {
-                const double x = planar[static_cast<std::size_t>(c) * frames + i];
-                const double y = std::min(ceiling, std::max(-ceiling, x * g));
-                out.pcm[i * ch + static_cast<std::size_t>(c)] = toPcm16(y);
+            for (std::size_t c = 0; c < ch; ++c) {
+                out.pcm[i * ch + c] = toPcm16(static_cast<double>(buf[c][i + lat]));
             }
         }
     };
 
-    double gain = normalizeGainDbPeakLimited(
-        s.integrated_lufs, target_lufs, s.true_peak_dbtp, tp_dbtp);
-    applyGain(gain);
-    out.report.applied_gain_db = gain;
-    out.report.iterations = 1;
+    const auto measureOut = [&]() {
+        return measure(deinterleave(out.pcm.data(), frames, channels), frames, channels, sr);
+    };
 
-    // PASS 3 — verify on what will actually be encoded (the requantized
-    // samples, as the writer will see them).
-    LoudnessSummary v = measure(deinterleave(out.pcm.data(), frames, channels),
-                                 frames, channels, static_cast<double>(sample_rate));
+    const double wanted = target_lufs - s.integrated_lufs;
+    double gain = std::min(wanted, kMaxNormalizeGainDb);
+    applyChain(gain);
+    LoudnessSummary v = measureOut();
+    int iterations = 1;
+
+    const double err1 = std::isfinite(v.integrated_lufs)
+        ? std::fabs(v.integrated_lufs - target_lufs) : HUGE_VAL;
+    if (err1 > 0.1 && std::isfinite(v.integrated_lufs)) {
+        // The one correction pass: move the pre-limiter gain by the
+        // residual, still capped; keep it only when it lands closer.
+        const double gain2 = std::min(gain + (target_lufs - v.integrated_lufs),
+                                      kMaxNormalizeGainDb);
+        if (gain2 != gain) {
+            const std::vector<int16_t> first = out.pcm;
+            applyChain(gain2);
+            LoudnessSummary v2 = measureOut();
+            iterations = 2;
+            if (std::isfinite(v2.integrated_lufs) &&
+                std::fabs(v2.integrated_lufs - target_lufs) < err1) {
+                gain = gain2;
+                v = v2;
+            } else {
+                out.pcm = first;
+            }
+        }
+    }
+
+    out.report.applied_gain_db = gain;
+    out.report.iterations = iterations;
     out.report.final_lufs = v.integrated_lufs;
     out.report.final_dbtp = v.true_peak_dbtp;
-
-    const bool converged =
-        std::isfinite(v.integrated_lufs) &&
-        std::fabs(v.integrated_lufs - target_lufs) <= 0.1;
-
-    if (!converged) {
-        // ONE correction pass (the second and last): fix the residual on
-        // the ORIGINAL samples (never a compounding gain), still
-        // peak-limited by the ceiling rule.
-        const double correction = normalizeGainDbPeakLimited(
-            v.integrated_lufs, target_lufs, v.true_peak_dbtp, tp_dbtp);
-        const double total = gain + correction;
-        applyGain(total);
-        out.report.applied_gain_db = total;
-        out.report.iterations = 2;
-
-        LoudnessSummary v2 = measure(deinterleave(out.pcm.data(), frames, channels),
-                                      frames, channels, static_cast<double>(sample_rate));
-        out.report.final_lufs = v2.integrated_lufs;
-        out.report.final_dbtp = v2.true_peak_dbtp;
+    out.report.ceiling_exceeded = v.true_peak_dbtp > tp_dbtp + kCeilingSlackDb;
+    const bool reached = std::isfinite(v.integrated_lufs) &&
+        std::fabs(v.integrated_lufs - target_lufs) <= kReachedLu;
+    if (!reached) {
+        out.report.shortfall = (gain >= kMaxNormalizeGainDb - 1e-9)
+            ? NormalizeShortfall::GainCapped : NormalizeShortfall::Ceiling;
     }
 
     out.report.skipped = NormalizeSkipped::None;

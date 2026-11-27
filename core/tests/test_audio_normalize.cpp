@@ -192,7 +192,13 @@ TEST_CASE("normalize: stereo sine converges to the social target") {
         CHECK(r.report.skipped == NormalizeSkipped::None);
         CHECK(r.report.iterations <= 2);
         CHECK(std::isfinite(r.report.final_lufs));
-        CHECK(std::fabs(r.report.final_lufs - (-14.0)) <= 0.1);
+        if (r.report.measured_lufs + 12.0 < -14.0 - 0.1) {
+            // +12 dB gain cap: the target is out of reach and says so.
+            CHECK(r.report.applied_gain_db == doctest::Approx(12.0));
+            CHECK(r.report.shortfall == rawedit::NormalizeShortfall::GainCapped);
+        } else {
+            CHECK(std::fabs(r.report.final_lufs - (-14.0)) <= 0.1);
+        }
         // A sine's TP sits at its sample level: starts at -12 must NOT
         // need the ceiling (−12 + 2 = −10 ≤ −1), starts at -23 needs
         // +9 dB → −14 dBTP, still inside.
@@ -216,7 +222,13 @@ TEST_CASE("normalize: pink-like noise converges, mono and stereo") {
         INFO("channels " << ch);
         CHECK(r.report.skipped == NormalizeSkipped::None);
         CHECK(r.report.iterations <= 2);
-        CHECK(std::fabs(r.report.final_lufs - (-14.0)) <= 0.1);
+        if (r.report.measured_lufs + 12.0 < -14.0 - 0.1) {
+            // +12 dB gain cap: the target is out of reach and says so.
+            CHECK(r.report.applied_gain_db == doctest::Approx(12.0));
+            CHECK(r.report.shortfall == rawedit::NormalizeShortfall::GainCapped);
+        } else {
+            CHECK(std::fabs(r.report.final_lufs - (-14.0)) <= 0.1);
+        }
         // Pink noise at the −14 target needs the ceiling at −1: the
         // hard clip may trade a little loudness, but the peak holds.
         CHECK(r.report.final_dbtp <= -1.0 + 0.5);
@@ -251,8 +263,9 @@ TEST_CASE("normalize: target-exceeding TP clamps the gain") {
     NormalizeResult r = normalizePcm(pcm, 48000, 2, -14.0, -1.0);
     CHECK(r.report.skipped == NormalizeSkipped::None);
     CHECK(r.report.iterations <= 2);
-    // The gain must be the clamped one, never the wanted one.
-    CHECK(r.report.applied_gain_db < 4.0);
+    // The limiter handles the spikes, so the gain may now exceed the
+    // old peak clamp; it stays far below the +12 dB cap.
+    CHECK(r.report.applied_gain_db < 6.0);
     // The honest result: TP at/under the ceiling, I short of the target.
     CHECK(r.report.final_dbtp <= -1.0 + 0.6);
     CHECK(r.report.final_lufs < -14.0);
@@ -310,4 +323,94 @@ TEST_CASE("normalize: iterations never exceed the plan's bound") {
         CHECK(r.report.iterations <= 2);
         CHECK(r.report.iterations >= 1);
     }
+}
+
+// ---- limiter chain (feat-loudness-limiter) ----
+
+namespace {
+std::vector<int16_t> quietMix(double seconds, double sr, int ch) {
+    // Sine + deterministic noise, low level (~-41 LUFS, low peak).
+    const std::size_t frames = static_cast<std::size_t>(std::llround(seconds * sr));
+    Rng rng(99);
+    std::vector<int16_t> pcm(frames * static_cast<std::size_t>(ch));
+    const double a = std::pow(10.0, -43.0 / 20.0);
+    for (std::size_t i = 0; i < frames; ++i) {
+        const double x = a * std::sin(2.0 * kPi * 997.0 * static_cast<double>(i) / sr) +
+                         a * 0.2 * rng.uniform();
+        const int16_t v = static_cast<int16_t>(std::lround(x * 32768.0));
+        for (int c = 0; c < ch; ++c) pcm[i * static_cast<std::size_t>(ch) + c] = v;
+    }
+    return pcm;
+}
+} // namespace
+
+TEST_CASE("normalize: quiet clip is capped at +12 dB and says so") {
+    for (int ch : {1, 2}) {
+        auto pcm = quietMix(10.0, kSr, ch);
+        NormalizeResult r = normalizePcm(pcm, 48000, ch, -14.0, -1.0);
+        INFO("channels " << ch << " I " << r.report.measured_lufs << " -> "
+             << r.report.final_lufs << " TP " << r.report.final_dbtp);
+        CHECK(r.report.skipped == NormalizeSkipped::None);
+        CHECK(r.report.measured_lufs < -30.0);
+        CHECK(r.report.applied_gain_db <= 12.0 + 1e-9);
+        CHECK(r.report.applied_gain_db == doctest::Approx(12.0));
+        CHECK(r.report.shortfall == rawedit::NormalizeShortfall::GainCapped);
+        CHECK(r.report.final_lufs ==
+              doctest::Approx(r.report.measured_lufs + 12.0).epsilon(0.01));
+        CHECK(r.report.final_dbtp <= -1.0 + 0.05);
+        CHECK(!r.report.ceiling_exceeded);
+        CHECK(r.pcm.size() == pcm.size());
+    }
+}
+
+TEST_CASE("normalize: little headroom reaches the target through the limiter") {
+    // Sine at -18 dBFS with brief peaks at -1.8 dBFS: +4 dB wanted, a
+    // hard clamp would give well under that.
+    auto pcm = stereoSine(20.0, 997.0, -18.0, kSr);
+    const std::size_t frames = pcm.size() / 2;
+    const double pk = std::pow(10.0, -1.8 / 20.0) * 32767.0;
+    for (std::size_t k = 0; (k + 1) * 24000 < frames; ++k) {
+        const std::size_t b = k * 24000;
+        for (std::size_t j = 0; j < 6; ++j) {
+            const int16_t v = static_cast<int16_t>(std::lround(pk * (1.0 - 0.1 * static_cast<double>(j))));
+            pcm[2 * (b + j)] = v;
+            pcm[2 * (b + j) + 1] = v;
+        }
+    }
+    NormalizeResult r = normalizePcm(pcm, 48000, 2, -14.0, -1.0);
+    INFO("I " << r.report.measured_lufs << " TP " << r.report.measured_dbtp << " -> "
+         << r.report.final_lufs << " / " << r.report.final_dbtp << " gain "
+         << r.report.applied_gain_db << " it " << r.report.iterations);
+    CHECK(r.report.skipped == NormalizeSkipped::None);
+    CHECK(r.report.iterations <= 2);
+    CHECK(r.report.applied_gain_db > 3.0);
+    CHECK(std::fabs(r.report.final_lufs - (-14.0)) <= 0.2);
+    CHECK(r.report.final_dbtp <= -1.0 + 0.05);
+    CHECK(r.report.shortfall == rawedit::NormalizeShortfall::None);
+    CHECK(r.pcm.size() == pcm.size());
+}
+
+TEST_CASE("normalize: limiter chain is deterministic and length-exact") {
+    auto pcm = quietMix(3.0, kSr, 2);
+    NormalizeResult a = normalizePcm(pcm, 48000, 2, -20.0, -1.0);
+    NormalizeResult b = normalizePcm(pcm, 48000, 2, -20.0, -1.0);
+    CHECK(a.pcm.size() == pcm.size());
+    CHECK(bitIdentical(a.pcm, b.pcm));
+}
+
+TEST_CASE("normalize: limiter output stays aligned with the input") {
+    // A non-limiting chain must not shift the signal: lag 0 correlates best.
+    auto pcm = stereoSine(2.0, 440.0, -23.0, kSr);
+    NormalizeResult r = normalizePcm(pcm, 48000, 2, -20.7, -1.0);
+    const std::size_t frames = pcm.size() / 2;
+    auto corr = [&](int lag) {
+        double s = 0;
+        for (std::size_t i = 4800; i + 4800 < frames; ++i) {
+            const std::size_t j = static_cast<std::size_t>(static_cast<long>(i) + lag);
+            s += static_cast<double>(pcm[2 * i]) * static_cast<double>(r.pcm[2 * j]);
+        }
+        return s;
+    };
+    CHECK(corr(0) >= corr(-1));
+    CHECK(corr(0) >= corr(1));
 }

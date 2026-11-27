@@ -185,4 +185,29 @@ class ExportRowModelTest {
             ExportRowModel.detailLines(report("video/hevc", listOf("fix:x", "surface->cpu"))),
         )
     }
+
+    @Test
+    fun loudness_outcome_lines_show_only_with_a_final_measurement() {
+        val base = report("video/hevc")
+        val capped = base.copy(audioLufs = -30.1, audioDbtp = -25.8, audioTargetNotReached = "gain-cap")
+        assertEquals(
+            listOf(ExportRowModel.DetailLine.ENCODER, ExportRowModel.DetailLine.LOUDNESS_CAPPED),
+            ExportRowModel.detailLines(capped),
+        )
+        val ceiling = base.copy(
+            audioLufs = -16.0, audioDbtp = -0.9, audioTargetNotReached = "ceiling", audioCeilingExceeded = true,
+        )
+        assertEquals(
+            listOf(
+                ExportRowModel.DetailLine.ENCODER, ExportRowModel.DetailLine.LOUDNESS_CEILING,
+                ExportRowModel.DetailLine.TRUE_PEAK_OVER,
+            ),
+            ExportRowModel.detailLines(ceiling),
+        )
+        // No measurement, no loudness line (an old or skipped row).
+        assertEquals(
+            listOf(ExportRowModel.DetailLine.ENCODER),
+            ExportRowModel.detailLines(base.copy(audioTargetNotReached = "gain-cap")),
+        )
+    }
 }

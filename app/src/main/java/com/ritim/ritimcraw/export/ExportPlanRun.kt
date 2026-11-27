@@ -113,6 +113,17 @@ class ExportPlanRun(
         internal set
 
     /**
+     * Why the loudness target was not reached ("gain-cap": +12 dB limit,
+     * "ceiling": the true-peak ceiling); null when reached or not run.
+     */
+    var audioTargetNotReached: String? = null
+        internal set
+
+    /** True when the chain's final true peak is above the ceiling. */
+    var audioCeilingExceeded: Boolean = false
+        internal set
+
+    /**
      * (E5-B, night G1) The output audio shape the export really encoded
      * — the clip's own rate/channels, or the reshaped choice. Written by
      * the pipeline's audio-preparation point whenever the clip has an

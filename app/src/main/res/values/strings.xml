@@ -368,6 +368,9 @@
     <string name="exports_report_bitrate_asked">Video bitrate: asked %1$s Mbps</string>
     <string name="exports_report_fixed">The encoder refused the first setup. The export retried once with adjusted settings.</string>
     <string name="exports_report_cpu">The GPU path was unavailable; this export used the CPU path.</string>
+    <string name="exports_report_loudness_capped">Loudness target not reached: the gain is capped at +12 dB. Result %1$s LUFS, true peak %2$s dBTP.</string>
+    <string name="exports_report_loudness_ceiling">Loudness target not reached: the true-peak ceiling limits it. Result %1$s LUFS, true peak %2$s dBTP.</string>
+    <string name="exports_report_tp_over">The true peak is above the ceiling: %1$s dBTP.</string>
     <!-- Export sheet: MP4 settings (E1c) -->
     <string name="export_settings_title">MP4 settings</string>
     <string name="export_preset_compatible">Compatible</string>
