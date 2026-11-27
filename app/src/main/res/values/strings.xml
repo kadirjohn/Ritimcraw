@@ -444,6 +444,11 @@
     <string name="export_bit_depth">Bit depth</string>
     <string name="export_ten_bit_needs">10-bit needs the original size, no crop or straighten, a grade the GPU path supports and a 10-bit encoder. It is made on the GPU path only.</string>
     <string name="export_help_bit_depth">10-bit (HEVC Main10) keeps smooth gradients like skies without banding. It is rendered on the GPU path at the original size. Players need to support 10-bit HEVC.</string>
+    <string name="export_dynamic_range">Dynamic range</string>
+    <string name="export_help_dynamic_range">SDR plays everywhere. HLG (Hybrid Log-Gamma) keeps the full brightness range for HDR screens; it uses HEVC 10-bit and a short test encode runs first when this phone only has the fallback check.</string>
+    <string name="export_dynamic_range_sdr_hint">Plays on every screen</string>
+    <string name="export_dynamic_range_hlg_hint">HDR screens show the full range; HEVC 10-bit</string>
+    <string name="export_dynamic_range_unavailable">HLG is not available on this phone. The file will be SDR.</string>
     <string name="exports_report_ten_bit_dropped">10-bit was asked for but not available for this export. The file is 8-bit.</string>
     <string name="exports_job_open">Open</string>
     <string name="exports_open_missing_title">Export not available</string>

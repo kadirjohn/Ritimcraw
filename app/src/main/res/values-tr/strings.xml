@@ -441,6 +441,11 @@
     <string name="export_bit_depth">Bit derinliği</string>
     <string name="export_ten_bit_needs">10-bit için özgün boyut, kırpma ve düzeltme olmaması, GPU yolunun desteklediği bir ayar ve 10-bit kodlayıcı gerekir. Yalnızca GPU yolunda üretilir.</string>
     <string name="export_help_bit_depth">10-bit (HEVC Main10) gökyüzü gibi yumuşak geçişleri bantlaşma olmadan korur. Özgün boyutta GPU yolunda üretilir. Oynatıcının 10-bit HEVC desteklemesi gerekir.</string>
+    <string name="export_dynamic_range">Dinamik aralık</string>
+    <string name="export_help_dynamic_range">SDR her yerde oynar. HLG (Hibrit Log-Gamma) tüm parlaklık aralığını HDR ekranlar için korur; HEVC 10-bit kullanır ve bu telefonun yalnızca yedek denetimi varsa önce kısa bir deneme kodlaması çalışır.</string>
+    <string name="export_dynamic_range_sdr_hint">Her ekranda oynar</string>
+    <string name="export_dynamic_range_hlg_hint">HDR ekranlar tüm aralığı gösterir; HEVC 10-bit</string>
+    <string name="export_dynamic_range_unavailable">HLG bu telefonda kullanılamıyor. Dosya SDR olacak.</string>
     <string name="exports_report_ten_bit_dropped">10-bit istendi ama bu dışa aktarma için kullanılamadı. Dosya 8-bit.</string>
     <string name="exports_job_open">Aç</string>
     <string name="exports_open_missing_title">Dışa aktarım kullanılamıyor</string>

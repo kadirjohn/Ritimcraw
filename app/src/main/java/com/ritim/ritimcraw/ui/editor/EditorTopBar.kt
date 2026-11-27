@@ -69,6 +69,7 @@ import androidx.compose.ui.platform.LocalContext
 import com.ritim.ritimcraw.export.DeviceEncoderFacts
 import com.ritim.ritimcraw.export.EncoderFacts
 import com.ritim.ritimcraw.export.ExportFps
+import com.ritim.ritimcraw.export.HevcProbeSource
 import com.ritim.ritimcraw.export.ExportSettings
 import com.ritim.ritimcraw.export.ExportSettingsPrefs
 import com.ritim.ritimcraw.export.ExportSheetModel
@@ -400,7 +401,20 @@ private fun ExportSheet(
         cropFull = CropState.isFull(CropState.RectF(grade.cropX, grade.cropY, grade.cropW, grade.cropH)),
         straightenZero = grade.straightenDeg == 0f,
         gradeOnGpu = gradeOnGpu,
-    )
+    ).let { ctx ->
+        // G4 (E2 wiring): the HLG gate's probed facts for the subject's
+        // shape — the same fold the export runs (HevcProbeSource), from
+        // the facts the sheet already loaded. Null (no facts / no
+        // subject) keeps the E1 wall and the row's honest "not available"
+        // state; the fold never queries the device itself.
+        val gate = subject?.let { s ->
+            val f = facts
+            if (f.isEmpty()) null else HevcProbeSource.fromFacts(
+                f, s.width, s.height, s.fps, android.os.Build.VERSION.SDK_INT,
+            )
+        }
+        ctx.copy(hlgGate = gate)
+    }
     val plan = subject?.let { ExportSheetModel.plan(settings, it, facts, exportContext) }
 
     var tab by remember { mutableStateOf(ExportSheetState.Tab.MP4) }
