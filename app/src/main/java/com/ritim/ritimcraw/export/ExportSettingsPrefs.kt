@@ -26,9 +26,22 @@ object ExportSettingsPrefs {
         }
     }
 
+    /**
+     * What a reopened sheet starts from: the remembered settings, except the
+     * target frame rate. A target rate is a choice about THIS clip (what a
+     * 30 fps clip should become is not what a 60 fps clip should); restored
+     * for every clip it silently re-timed them (a 60 fps clip came up as
+     * "30 fps" because an earlier export had picked 30). It starts at
+     * Source, which follows the clip's own measured rate.
+     */
+    fun forNewSheet(remembered: ExportSettings): ExportSettings =
+        remembered.copy(targetFps = TargetFps.SOURCE)
+
     fun load(context: Context): ExportSettings =
-        runCatching { decode(context.getSharedPreferences(FILE, Context.MODE_PRIVATE).getString(KEY, null)) }
-            .getOrNull() ?: ExportSheetModel.defaultSettings()
+        forNewSheet(
+            runCatching { decode(context.getSharedPreferences(FILE, Context.MODE_PRIVATE).getString(KEY, null)) }
+                .getOrNull() ?: ExportSheetModel.defaultSettings(),
+        )
 
     fun save(context: Context, s: ExportSettings) {
         runCatching {
