@@ -190,6 +190,7 @@ class ClipThumbnails(
             // retries) — the open itself carried the recorded dimensions.
             val first = s.framePtsUs(0)
             val last = if (s.frames > 1) s.framePtsUs(s.frames - 1) else -1L
+            clip.onOrientation(s.orientationDeg)
             clip.onStats(
                 s.width,
                 s.height,
@@ -256,6 +257,7 @@ class ClipThumbnails(
                                 // clip hides its duration, never fakes one).
                                 val first = mp4Session.framePts(info.handle, 0)
                                 val last = if (info.frameCount > 1) mp4Session.framePts(info.handle, info.frameCount - 1) else -1L
+                                clip.onOrientation(info.orientationDeg)
                                 clip.onStats(
                                     info.width,
                                     info.height,
@@ -326,6 +328,8 @@ class ClipThumbnails(
         val path: SourcePath,
         val fdProvider: () -> Int,
         val onStats: (width: Int, height: Int, frameCount: Int, durationUs: Long) -> Unit,
+        /** The open session's container orientation, called just before [onStats]. */
+        val onOrientation: (orientationDeg: Int) -> Unit = {},
     )
 }
 

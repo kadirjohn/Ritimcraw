@@ -33,7 +33,8 @@ object ThumbnailRules {
      * per composition.
      */
     fun needsThumbnail(source: MediaSource, hasFile: Boolean): Boolean =
-        !hasFile && source.access == Access.OK
+        source.access == Access.OK &&
+            (!hasFile || (source.width > 0 && source.containerOrientationDeg < 0))
 
     /**
      * The bounded backfill batch (owner request: the pass is bounded so a

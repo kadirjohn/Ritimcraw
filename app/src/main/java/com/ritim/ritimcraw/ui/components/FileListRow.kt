@@ -99,6 +99,7 @@ fun FileListRow(
     frameWidth: Int = 0,
     frameHeight: Int = 0,
     manualRotationDeg: Int = 0,
+    containerOrientationDeg: Int = -1,
 ) {
     Column(modifier.fillMaxWidth()) {
         Row(
@@ -121,8 +122,8 @@ fun FileListRow(
             ClipThumbnail(
                 path = thumbnailPath,
                 accessLost = accessLost,
-                placeholderAspect = ThumbnailRow.placeholderAspect(
-                    frameWidth, frameHeight, manualRotationDeg,
+                placeholderAspect = ThumbnailRow.effectiveAspect(
+                    frameWidth, frameHeight, containerOrientationDeg, manualRotationDeg,
                 ),
                 // The thumbnail carries the screen's 16dp gutter (owner
                 // request 2026-11-14: the icons sat flush against the left
@@ -351,6 +352,27 @@ internal object ThumbnailRow {
         val swapped = Math.floorMod(manualRotationDeg / 90, 2) == 1
         return if (swapped) height.toFloat() / width else width.toFloat() / height
     }
+
+    /**
+     * The clip's EFFECTIVE aspect: the stored [width]x[height] turned by the
+     * container orientation plus the manual rotation
+     * ([RotationState.effectiveDeg]; an unknown container, < 0, counts as 0).
+     * The one rule the grid rows, the tiles' placeholders and the thumbnail
+     * slot share, so a row's height can never disagree with its tiles.
+     */
+    fun effectiveAspect(
+        width: Int,
+        height: Int,
+        containerOrientationDeg: Int,
+        manualRotationDeg: Int,
+    ): Float = placeholderAspect(
+        width,
+        height,
+        com.ritim.ritimcraw.data.RotationState.effectiveDeg(
+            maxOf(0, containerOrientationDeg),
+            manualRotationDeg,
+        ),
+    )
 }
 
 /**
