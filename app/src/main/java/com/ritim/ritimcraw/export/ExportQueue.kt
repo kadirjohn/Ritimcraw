@@ -103,6 +103,20 @@ class ExportQueue(
      * compiles and runs unchanged.
      */
     private val foreground: ExportForeground = ExportForeground.processDefault(),
+    /**
+     * (CinemaDNG sequence export, night E-F) the sequence exporter
+     * factory, when the app wires one — the FOLDER is per-job (the job's
+     * cinemaDng snapshot carries the SAF tree URI), so the queue resolves
+     * the exporter from the settings at dispatch, never at construction.
+     * Null keeps every legacy construction compiling and makes a sequence
+     * job (a job whose [ExportJob.cinemaDng] snapshot is set) fail
+     * HONESTLY at dispatch (the timeline-marker rule): "CinemaDNG export
+     * unavailable" with a recovery, never a silent skip or a wrong
+     * per-clip export of the row. The dispatch checks the marker BEFORE
+     * the target `when`, so a sequence job never falls into the per-clip
+     * exporters whatever its target is.
+     */
+    private val cinemaDng: ((CinemaDngSettings) -> CinemaDngExporter)? = null,
 ) {
 
     /**
@@ -399,6 +413,29 @@ class ExportQueue(
                 } else {
                     exporter.export(job, out, onProgress)
                 }
+            } else if (job.cinemaDng != null) {
+                // CinemaDNG sequence dispatch (night E-F): the marker
+                // owns the routing BEFORE the target `when` (the
+                // timeline rule) — a sequence job renders THE SEQUENCE,
+                // never the per-clip exporters. The exporter is resolved
+                // FROM THE JOB'S SETTINGS (the folder is per-job: the
+                // snapshot's SAF tree URI); the app-cache [out] file is
+                // simply never written (harmless, kept for the uniform
+                // acquire-then-finally fd shape).
+                val settings = job.cinemaDng
+                val exporter = cinemaDng?.invoke(settings)
+                if (exporter == null) {
+                    job.copy(
+                        state = State.FAILED,
+                        detail = "CinemaDNG export failed (stage: dispatch): " +
+                            "no CinemaDNG exporter is wired — recovery: " +
+                            "update the app and retry the export",
+                        framesDone = null,
+                        framesTotal = null,
+                    )
+                } else {
+                    exporter.export(job, fd, settings, onProgress)
+                }
             } else when (job.target) {
                 // The DNG arm now passes the job's frame index (RAW-11): a
                 // picker-queued DNG develops the picked frame, and every
@@ -457,12 +494,25 @@ class ExportQueue(
             val terminal = if (requested && result.state != State.DONE) {
                 ExportStaging.discard(out) // no final file behind a cancel
                 ExportStaging.discard(ExportStaging.partial(out)) // nor a partial
-                result.copy(
-                    state = State.CANCELLED,
-                    detail = null,
-                    framesDone = null,
-                    framesTotal = null,
-                )
+                if (job.cinemaDng != null) {
+                    // A CinemaDNG sequence job's cancel KEEPS the honest
+                    // partial report (the plan's own rule: "yazılan kareler
+                    // korunur, sessizce silme YOK" — the frames live in the
+                    // USER'S SAF folder, out was never written) — the detail
+                    // carries the count the exporter already framed.
+                    result.copy(
+                        state = State.CANCELLED,
+                        framesDone = null,
+                        framesTotal = null,
+                    )
+                } else {
+                    result.copy(
+                        state = State.CANCELLED,
+                        detail = null,
+                        framesDone = null,
+                        framesTotal = null,
+                    )
+                }
             } else {
                 result.copy(framesDone = null, framesTotal = null)
             }

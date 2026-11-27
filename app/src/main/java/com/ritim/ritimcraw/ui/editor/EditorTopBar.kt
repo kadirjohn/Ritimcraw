@@ -80,6 +80,8 @@ import com.ritim.ritimcraw.data.GradeK
 import com.ritim.ritimcraw.engine.BackendRules
 import com.ritim.ritimcraw.export.NativeGpuDevelop
 import com.ritim.ritimcraw.data.GradePreset
+import com.ritim.ritimcraw.data.GyroTree
+import com.ritim.ritimcraw.export.CinemaDngSheetState
 import com.ritim.ritimcraw.export.ExportResolution
 import com.ritim.ritimcraw.export.Target
 import com.ritim.ritimcraw.ui.components.AppSegmentedControl
@@ -181,6 +183,12 @@ fun EditorTopBar(
     canRedo: Boolean = false,
     onUndo: () -> Unit = {},
     onRedo: () -> Unit = {},
+    // ---- CinemaDNG sequence export (night E-F) ----
+    // The sequence's queue action: a job whose cinemaDng snapshot is set
+    // routes to the sequence exporter (a marker field, not a Target — the
+    // persisted-format pattern). Default no-op keeps every call site
+    // without the feature working.
+    onExportCinemaDng: (com.ritim.ritimcraw.export.CinemaDngSettings) -> Unit = {},
 ) {
     var exportSheetOpen by remember { mutableStateOf(false) }
     var infoSheetOpen by remember { mutableStateOf(false) }
@@ -256,6 +264,7 @@ fun EditorTopBar(
                 exportSheetOpen = false
                 onExport(target, resolutionW, resolutionH, settings)
             },
+            onExportCinemaDng = onExportCinemaDng,
             onDevelopFrame = {
                 exportSheetOpen = false
                 onDevelopFrame()
@@ -334,6 +343,9 @@ private fun ExportSheet(
     // only and 10-bit stays off (see the tabs list and the context below).
     encodedSource: Boolean = false,
     onExport: (Target, Int?, Int?, ExportSettings?) -> Unit,
+    // (Night E-F) the sequence's queue action (the marker field's queue
+    // route; default no-op keeps every call site without the feature).
+    onExportCinemaDng: (com.ritim.ritimcraw.export.CinemaDngSettings) -> Unit = {},
     onDevelopFrame: () -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -444,11 +456,36 @@ private fun ExportSheet(
     var tab by remember { mutableStateOf(ExportSheetState.Tab.MP4) }
     // (E0) an encoded (Mi-Log / MP4) clip offers MP4 only: DNG and Linear
     // DNG are RAW deliverables and v1 has no encoded frame picker, so
-    // their tabs are gone, not disabled.
+    // their tabs are gone, not disabled. (Night E-F) CINEMA_DNG is
+    // MCRAW-only too — an encoded clip has no CFA to sequence.
     val tabs = if (encodedSource) {
         listOf(ExportSheetState.Tab.MP4)
     } else {
         ExportSheetState.Tab.entries.toList()
+    }
+    // (Night E-F) the CinemaDNG section's own folder pick: the persisted
+    // SAF tree grant, the SAME launcher shape the gyro folder uses
+    // (OpenDocumentTree + takePersistableUriPermission with the write
+    // flag — a sequence WRITES into the folder, so the grant needs
+    // FLAG_GRANT_WRITE_URI_PERMISSION too). The URI lives in the sheet's
+    // state and travels into the job's cinemaDng snapshot at queue time.
+    var cinemaFolderUri by remember { mutableStateOf<String?>(null) }
+    val cinemaFolderPicker = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.OpenDocumentTree()
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult // user backed out
+        try {
+            context.contentResolver.takePersistableUriPermission(
+                uri,
+                android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                    android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
+            )
+        } catch (e: SecurityException) {
+            // Non-fatal: the export will fail honestly at run time if the
+            // grant really is unusable (the same contract as a lost clip
+            // grant — the folder stays selected and the user can re-pick).
+        }
+        cinemaFolderUri = uri.toString()
     }
     // P2: the sheet opens full height (no half-way stop) so the default list fits without scrolling.
     // The sub-page lives here so the system back can close it first. The
@@ -550,6 +587,16 @@ private fun ExportSheet(
                                 R.string.exports_format_photo,
                                 stringResource(R.string.export_photo_detail),
                             )
+                            // (Night E-F) the CinemaDNG section: the
+                            // folder/estimate/warn rows + the raw note. The
+                            // section is its own body (no MP4 plan rows
+                            // apply — the sequence has no encoder plan).
+                            ExportSheetState.Tab.CINEMA_DNG -> CinemaDngSection(
+                                clipInfo = clipInfo,
+                                folderUri = cinemaFolderUri,
+                                folderLabel = cinemaFolderUri?.let { GyroTree.folderLabel(it) },
+                                onPickFolder = { cinemaFolderPicker.launch(null) },
+                            )
                         }
                     },
                 )
@@ -572,7 +619,27 @@ private fun ExportSheet(
             // The one action of the chosen target, always visible. MP4 queues
             // the job with the SELECTED bound and a snapshot of the settings; a
             // plan the device cannot make (ERROR) cannot be queued - its issue
-            // says why and offers the fix.
+            // says why and offers the fix. CINEMA_DNG queues the sequence job
+            // with the folder + range snapshot (the button's gate is the
+            // section's storage verdict — a LOCK refuses here too).
+            val cinemaCanStart = if (tab == ExportSheetState.Tab.CINEMA_DNG && !encodedSource) {
+                CinemaDngSheetState.canStart(
+                    CinemaDngSheetState.verdict(
+                        folderUri = cinemaFolderUri,
+                        clipFrameCount = clipInfo.frameCount,
+                        firstFrame = 0,
+                        lastFrame = -1,
+                        width = clipInfo.width,
+                        height = clipInfo.height,
+                        // The sheet's own free-space probe: unknown (-1)
+                        // never locks (the plan's rule) — the honest
+                        // mid-write exhaustion is the backstop.
+                        freeBytes = -1L,
+                    )
+                )
+            } else {
+                true
+            }
             Button(
                 onClick = {
                     when (tab) {
@@ -583,9 +650,35 @@ private fun ExportSheet(
                         ExportSheetState.Tab.DNG -> onExport(Target.DNG, null, null, null)
                         ExportSheetState.Tab.LINEAR -> onExport(Target.LINEAR, null, null, null)
                         ExportSheetState.Tab.PHOTO -> onDevelopFrame()
+                        ExportSheetState.Tab.CINEMA_DNG -> {
+                            // The sequence job's snapshot: the folder pick,
+                            // the whole-clip default range, the exact source
+                            // fps rational (the FrameRate tag's own value —
+                            // the clip's measured rate snapped to the common
+                            // grid, 30000/1001 for 29.97, never a 1e6
+                            // approximation), the default start timecode,
+                            // and the clip facts the plan needs. The grade
+                            // is snapshotted by the queue like every job.
+                            val fps = if (clipInfo.fps > 0f) clipInfo.fps.toDouble() else 30.0
+                            val (num, den) = cinemaFpsRational(fps)
+                            onExportCinemaDng(
+                                com.ritim.ritimcraw.export.CinemaDngSettings(
+                                    folderUri = cinemaFolderUri ?: "",
+                                    firstFrame = 0,
+                                    lastFrame = -1,
+                                    fpsNum = num,
+                                    fpsDen = den,
+                                    clipFrameCount = clipInfo.frameCount,
+                                    frameWidth = clipInfo.width,
+                                    frameHeight = clipInfo.height,
+                                    audioSampleRate = 0, // resolved at run time (the honest no-audio skips the WAV)
+                                    audioChannels = 0,
+                                )
+                            )
+                        }
                     }
                 },
-                enabled = tab != ExportSheetState.Tab.MP4 || plan?.ok != false,
+                enabled = (tab != ExportSheetState.Tab.MP4 || plan?.ok != false) && cinemaCanStart,
                 modifier = Modifier
                     .fillMaxWidth()
                     .heightIn(min = 48.dp)
@@ -599,6 +692,7 @@ private fun ExportSheet(
                             ExportSheetState.Tab.DNG -> R.string.editor_export_dng
                             ExportSheetState.Tab.LINEAR -> R.string.export_action_linear
                             ExportSheetState.Tab.PHOTO -> R.string.export_photo_action
+                            ExportSheetState.Tab.CINEMA_DNG -> R.string.cinema_dng_action
                         }
                     )
                 )
@@ -606,6 +700,35 @@ private fun ExportSheet(
         }
     }
 }
+
+/**
+ * (Night E-F) The exact fps rational the FrameRate tag carries: the
+ * common rate families map to their canonical pairs (29.97 -> 30000/
+ * 1001), everything else keeps the measured integer rate with den 1.
+ * Pure; JVM-tested (the sheet's one call site, the plan's "kare hızı
+ * kaynak hızı" rule).
+ */
+internal fun cinemaFpsRational(fps: Double): Pair<Int, Int> = when {
+    kotlin.math.abs(fps - 24000.0 / 1001.0) < 1e-6 -> Pair(24000, 1001)
+    kotlin.math.abs(fps - 24000.0) < 1e-6 -> Pair(24, 1)
+    kotlin.math.abs(fps - 25000.0 / 1001.0) < 1e-6 -> Pair(25000, 1001)
+    kotlin.math.abs(fps - 25.0) < 1e-6 -> Pair(25, 1)
+    kotlin.math.abs(fps - 30000.0 / 1001.0) < 1e-6 -> Pair(30000, 1001)
+    kotlin.math.abs(fps - 30000.0) < 1e-6 -> Pair(30, 1)
+    kotlin.math.abs(fps - 48000.0 / 1001.0) < 1e-6 -> Pair(48000, 1001)
+    kotlin.math.abs(fps - 48.0) < 1e-6 -> Pair(48, 1)
+    kotlin.math.abs(fps - 50000.0 / 1001.0) < 1e-6 -> Pair(50000, 1001)
+    kotlin.math.abs(fps - 50.0) < 1e-6 -> Pair(50, 1)
+    kotlin.math.abs(fps - 60000.0 / 1001.0) < 1e-6 -> Pair(60000, 1001)
+    kotlin.math.abs(fps - 60.0) < 1e-6 -> Pair(60, 1)
+    else -> {
+        val n = kotlin.math.round(fps).toInt().coerceAtLeast(1)
+        Pair(n, 1)
+    }
+}
+
+/** The test seam for [cinemaFpsRational] (the JVM suite's export-package test). */
+internal fun cinemaFpsRationalForTest(fps: Double): Pair<Int, Int> = cinemaFpsRational(fps)
 
 /** A non-MP4 target's one-glance description (title + the file contract). */
 @Composable

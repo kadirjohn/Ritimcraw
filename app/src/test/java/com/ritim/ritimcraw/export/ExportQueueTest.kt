@@ -1487,4 +1487,118 @@ class ExportQueueTest {
         assertEquals(0, queue.runAll())
         assertEquals(State.CANCELLED, store.all()[0].state)
     }
+
+    // ---- CinemaDNG sequence dispatch (night E-F) ----
+
+    /**
+     * A fake sequence io: every frame write succeeds, the WAV's stream is
+     * a ByteArrayOutputStream (the write itself is the exporter's own
+     * pure code, tested in CinemaDngExporterTest — this only needs the
+     * queue-level contract).
+     */
+    private class FakeCinemaDngIo : CinemaDngIo {
+        val log = mutableListOf<String>()
+        override fun writeFrame(
+            sourceFd: Int, frameIndex: Int,
+            fpsNum: Int, fpsDen: Int,
+            tcHour: Int, tcMinute: Int, tcSecond: Int, tcFrame: Int,
+            frameOffset: Int, outFd: Int,
+        ): Boolean {
+            log.add("frame:$frameIndex")
+            return true
+        }
+
+        override fun code(): Int = 0
+        override fun stage(): Int = 0
+        override fun detail(): String? = null
+        override fun openChildWriteFd(name: String): Int {
+            log.add("open:$name")
+            return 100
+        }
+
+        override fun closeFd(fd: Int) {}
+        override fun deleteChild(name: String): Boolean = true
+        override fun freeBytes(): Long = Long.MAX_VALUE
+        override fun audioInfo(sourceFd: Int): IntArray? = null
+        override fun readAudio(sourceFd: Int): ShortArray? = null
+        override fun openChildStream(name: String): java.io.OutputStream? =
+            object : java.io.ByteArrayOutputStream() {}
+    }
+
+    @Test
+    fun cinema_dng_job_dispatches_to_the_sequence_exporter() = runBlocking {
+        // The marker owns the routing (the timeline rule): a job whose
+        // cinemaDng snapshot is set renders THE SEQUENCE, never the
+        // per-clip exporters — the DNG render is never called.
+        val store = store()
+        store.add(
+            job("j1", "clip1").copy(
+                cinemaDng = CinemaDngSettings(
+                    folderUri = "content://tree/x",
+                    clipFrameCount = 2,
+                    frameWidth = 64,
+                    frameHeight = 48,
+                    fpsNum = 25,
+                    fpsDen = 1,
+                ),
+            )
+        )
+        val log = mutableListOf<String>()
+        val io = FakeCinemaDngIo()
+        // The queue resolves the exporter FROM THE JOB'S SETTINGS (the
+        // folder is per-job): the factory receives the snapshot and the
+        // settings reach the io's folder decision.
+        var seenFolder: String? = null
+        val queue = ExportQueue(
+            store, DngExporter(FakeDngRender(log), freshEngine()),
+            Mp4Exporter(FakeMp4Session(log), { FakeWriter() }, freshEngine()),
+            PhotoExporter(FakeMp4Session(log), FakePngWriter(log), freshEngine()),
+            RecordingIo(tmp),
+            cinemaDng = { settings ->
+                seenFolder = settings.folderUri
+                CinemaDngExporter(io, freshEngine())
+            },
+        )
+        assertEquals(1, queue.runAll())
+        val row = store.all().single()
+        assertEquals(State.DONE, row.state)
+        // The fake io carries no audio: the DONE detail names the absent
+        // WAV (the run-time audio resolution + honest wording, the
+        // auditor's RED fix).
+        assertEquals("2/2 frames · no audio", row.detail)
+        // The sequence ran (2 frames) and the per-clip DNG arm never did.
+        assertEquals(2, io.log.count { it.startsWith("frame:") })
+        assertTrue(log.isEmpty())
+        assertEquals("content://tree/x", seenFolder)
+    }
+
+    @Test
+    fun cinema_dng_job_without_an_exporter_fails_honestly() = runBlocking {
+        // No sequence exporter wired (the null-default construction): the
+        // job is FAILED with the reason, never a silent skip and never a
+        // wrong per-clip export.
+        val store = store()
+        store.add(
+            job("j1", "clip1").copy(
+                cinemaDng = CinemaDngSettings(
+                    folderUri = "content://tree/x",
+                    clipFrameCount = 1,
+                    frameWidth = 64,
+                    frameHeight = 48,
+                ),
+            )
+        )
+        val log = mutableListOf<String>()
+        val queue = ExportQueue(
+            store, DngExporter(FakeDngRender(log), freshEngine()),
+            Mp4Exporter(FakeMp4Session(log), { FakeWriter() }, freshEngine()),
+            PhotoExporter(FakeMp4Session(log), FakePngWriter(log), freshEngine()),
+            RecordingIo(tmp),
+        )
+        assertEquals(1, queue.runAll())
+        val row = store.all().single()
+        assertEquals(State.FAILED, row.state)
+        assertTrue(row.detail!!.contains("no CinemaDNG exporter is wired"))
+        assertTrue(log.isEmpty())
+    }
 }

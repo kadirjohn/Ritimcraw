@@ -943,6 +943,11 @@ fun ClipEditorScreen(
     // before the picker produced. DNG/LINEAR taps pass nulls (no
     // resolution seam); the MP4 tap carries the selected bound.
     onExport: (Target, Int?, Int?, com.ritim.ritimcraw.export.ExportSettings?) -> Unit = { _, _, _, _ -> },
+    // (Night E-F, CinemaDNG sequence) the sequence's queue action: the
+    // sheet's CINEMA_DNG tap hands the settings snapshot (folder + range +
+    // timecode + the clip facts) up to the shell, which enqueues the
+    // marker job. Default no-op keeps every existing caller working.
+    onExportCinemaDng: (com.ritim.ritimcraw.export.CinemaDngSettings) -> Unit = {},
     // (E1c) the device's last measured export speed, for the export sheet's time estimate.
     exportRate: com.ritim.ritimcraw.export.ExportSheetModel.Rate? = null,
     sourceFd: Int = -1,
@@ -5385,6 +5390,9 @@ fun ClipEditorScreen(
                     onRenameClip = onRenameClip,
                     onBack = onBack,
                     onExport = onExport,
+                    // (Night E-F) the CinemaDNG sequence's queue action rides
+                    // the same top-bar sheet; the screen is a pass-through.
+                    onExportCinemaDng = onExportCinemaDng,
                     exportRate = exportRate,
                     exportEnabled = sourceFd >= 0,
                     encodedSource = sourcePath == SourcePath.ENCODED,

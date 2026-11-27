@@ -74,7 +74,9 @@ add_library(rawedit STATIC
     src/Yuv.cpp
     src/CubeExport.cpp
     src/AudioNormalize.cpp
-    src/AudioReshape.cpp)
+    src/AudioReshape.cpp
+    src/DngSequenceWriter.cpp
+    src/WavWriter.cpp)
 # Yuv.cpp is the byte-exact twin of export/YuvConverter.kt: its chroma
 # multiply-add chain must round exactly where the Kotlin float ops round,
 # so this TU alone opts out of FMA contraction (-ffp-contract=off).

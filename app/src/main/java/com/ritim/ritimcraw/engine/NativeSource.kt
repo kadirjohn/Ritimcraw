@@ -1778,6 +1778,89 @@ class NativeSource private constructor(
         ): Boolean =
             nativeLinearDngExport(fd, frameIndex, manualRotationDeg, cropX, cropY, cropW, cropH, outPath)
 
+        // ---- CinemaDNG sequence export JNI (night E-F, docs/CINEMADNG_EXPORT_PLAN.md) ----
+
+        /**
+         * Writes ONE sequence frame's CFA DNG straight to the SAF child
+         * document's WRITE fd [outFd] (no path, no byte[] across the seam —
+         * a 4K frame is ~16-17 MB). The frame's TimeCodes (51043) derive
+         * from the sequence's START timecode ([tcHour]/[tcMinute]/
+         * [tcSecond]/[tcFrame], default 00:00:00:00) plus [frameOffset] at
+         * the EXACT fps rational ([fpsNum]/[fpsDen] — 30000/1001 for
+         * 29.97), and FrameRate (51044) carries the same rational. NO
+         * grade: the CFA is the raw mosaic (the feature's own scope).
+         * [outFd] is owned and closed by the CALLER; on false the
+         * thread-local error accessors say why and whatever was written
+         * stays (the caller deletes the document). Must run on the export
+         * engine thread (thread-local error state + one decoder).
+         */
+        @JvmStatic private external fun nativeCinemaDngExportFrame(
+            sourceFd: Int,
+            frameIndex: Int,
+            fpsNum: Int,
+            fpsDen: Int,
+            tcHour: Int,
+            tcMinute: Int,
+            tcSecond: Int,
+            tcFrame: Int,
+            frameOffset: Int,
+            outFd: Int,
+        ): Boolean
+
+        /** JNI bridge: see [nativeCinemaDngExportFrame]. Throws IllegalStateException when the .so is absent. */
+        internal fun jniCinemaDngExportFrame(
+            sourceFd: Int,
+            frameIndex: Int,
+            fpsNum: Int,
+            fpsDen: Int,
+            tcHour: Int,
+            tcMinute: Int,
+            tcSecond: Int,
+            tcFrame: Int,
+            frameOffset: Int,
+            outFd: Int,
+        ): Boolean {
+            if (!nativeAvailable) {
+                throw IllegalStateException(nativeUnavailableMessage)
+            }
+            return nativeCinemaDngExportFrame(
+                sourceFd, frameIndex, fpsNum, fpsDen,
+                tcHour, tcMinute, tcSecond, tcFrame, frameOffset, outFd,
+            )
+        }
+
+        /**
+         * CinemaDNG sequence audio (night E-F): [sampleRate, channels] of
+         * the clip behind the ONE-SHOT fd (no session handle — the
+         * sequence path is fd-based), or null when the clip has no audio /
+         * the open failed. The MP4 exporter's handle-based seam stays
+         * untouched.
+         */
+        @JvmStatic private external fun nativeAudioInfoForFd(fd: Int): IntArray?
+
+        /** See [nativeAudioInfoForFd]. Throws IllegalStateException when the .so is absent. */
+        internal fun jniAudioInfoFor(fd: Int): IntArray? {
+            if (!nativeAvailable) {
+                throw IllegalStateException(nativeUnavailableMessage)
+            }
+            return nativeAudioInfoForFd(fd)
+        }
+
+        /**
+         * CinemaDNG sequence audio: the whole clip's PCM (interleaved,
+         * 16-bit) behind the ONE-SHOT fd, or null on failure / no audio
+         * (the caller treats empty/null as the honest no-audio state).
+         */
+        @JvmStatic private external fun nativeReadAudioForFd(fd: Int): ShortArray?
+
+        /** See [nativeReadAudioForFd]. Throws IllegalStateException when the .so is absent. */
+        internal fun jniReadAudioFor(fd: Int): ShortArray? {
+            if (!nativeAvailable) {
+                throw IllegalStateException(nativeUnavailableMessage)
+            }
+            return nativeReadAudioForFd(fd)
+        }
+
         /**
          * JNI bridge: see nativeExportFrameParcel. Expression-bodied with
          * NO nativeAvailable guard — the caller (Mp4Exporter) goes through

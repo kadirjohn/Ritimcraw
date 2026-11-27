@@ -179,6 +179,20 @@ data class ExportJob(
      */
     val report: ExportReport? = null,
     /**
+     * (CinemaDNG sequence export, night E-F) the sequence's choices,
+     * snapshotted at ENQUEUE time exactly like the grade: a later sheet
+     * change must not alter an in-flight export, and Retry re-exports
+     * the SAME sequence (folder, range, naming, timecode). NULL = the
+     * job is not a CinemaDNG sequence (every pre-feature row and every
+     * other target) — omitted from project.json so old rows stay
+     * byte-identical. A PRESENT value this build cannot read (a newer
+     * wire version) fails the row honestly, never a silent legacy run
+     * (the settings-unreadable rule). A SEPARATE field from [settings]:
+     * the MP4 wire chain (v1..v4) and this wire (its own v1 under the
+     * job row) never meet in one merge.
+     */
+    val cinemaDng: CinemaDngSettings? = null,
+    /**
      * F1-6 (color model v2): the snapshot record's v2 node chain wire,
      * decoded at parse time (IN MEMORY ONLY — the persisted record is
      * [snapshot]'s own wire bytes; this field never renders). Null = a

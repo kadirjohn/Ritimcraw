@@ -14,8 +14,13 @@ import java.util.Locale
  */
 internal object ExportSheetState {
 
-    /** The sheet's top segmented control; one target's settings are visible at a time. */
-    enum class Tab { MP4, DNG, LINEAR, PHOTO }
+    /**
+     * The sheet's top segmented control; one target's settings are visible
+     * at a time. CINEMA_DNG (night E-F) is MCRAW-only (the encoded-source
+     * sheet does not list it) and its section carries its own folder/
+     * estimate rows (no MP4 plan rows apply).
+     */
+    enum class Tab { MP4, DNG, LINEAR, PHOTO, CINEMA_DNG }
 
     /**
      * The resolution entries the menu lists: the ladder with every entry

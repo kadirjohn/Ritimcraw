@@ -671,7 +671,13 @@ private fun ExportJobCard(
                 // the headline.
                 Text(
                     stringResource(
-                        when (job.target) {
+                        // (Night E-F) a CinemaDNG sequence job carries the
+                        // DNG target name but its own row wording — the marker
+                        // (job.cinemaDng) owns the label, the same routing
+                        // rule the queue's dispatch uses.
+                        if (job.cinemaDng != null) {
+                            R.string.exports_format_cinema_dng
+                        } else when (job.target) {
                             Target.DNG -> R.string.exports_format_dng
                             Target.PHOTO -> R.string.exports_format_photo
                             Target.MP4 -> R.string.exports_format_mp4
@@ -777,7 +783,11 @@ private fun DoneJobCard(
                             stringResource(R.string.exports_format_codec_mp4, codec)
                         } else {
                             stringResource(
-                                when (job.target) {
+                                // (Night E-F) the sequence job's own wording
+                                // (the marker owns the label).
+                                if (job.cinemaDng != null) {
+                                    R.string.exports_format_cinema_dng
+                                } else when (job.target) {
                                     Target.DNG -> R.string.exports_format_dng
                                     Target.PHOTO -> R.string.exports_format_photo
                                     Target.MP4 -> R.string.exports_format_mp4
