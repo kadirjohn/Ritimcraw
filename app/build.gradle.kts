@@ -39,7 +39,21 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            // E5 release-readiness branch: R8 minification is ON for the
+            // first time (main keeps isMinifyEnabled = false; merging this
+            // is the owner's call). The rules that make it safe live in
+            // proguard-rules.pro: the JNI bridge's symbol-named native
+            // methods (NativeSource), the classes it constructs through
+            // FindClass (FrameInfoK, ContainerIdentityK), the Runnable
+            // listener it invokes, and every wire enum persisted BY NAME
+            // (ExportSettingsWire, ExportStore rows, metadata records,
+            // timeline tracks, proxy signature — renamed constants would
+            // silently re-stale every proxy and refuse old project files).
+            isMinifyEnabled = true
+            // Resource shrinking rides along: the debug-only screens are
+            // BuildConfig.DEBUG-gated, so the R8 tree-shaker prunes their
+            // code paths and the unused strings go with them.
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
