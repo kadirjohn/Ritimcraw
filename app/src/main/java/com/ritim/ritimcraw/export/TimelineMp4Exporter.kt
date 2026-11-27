@@ -116,6 +116,12 @@ class TimelineMp4Exporter(
     private val encoderFacts: () -> List<EncoderFacts> = { DeviceEncoderFacts.all() },
     /** (E1b) Where the plan trail goes: the "ritim-export" log. A failing sink never fails an export. */
     private val planLog: (String) -> Unit = { line -> runCatching { android.util.Log.i("ritim-export", line) } },
+    /**
+     * (G4/E2) The device's API level — the HLG gate's guard data. The
+     * default reads Build.VERSION.SDK_INT (JVM tests inject a fixed value;
+     * the Mp4Exporter seam's twin).
+     */
+    private val apiLevel: () -> Int = { android.os.Build.VERSION.SDK_INT },
 ) {
 
     /**
@@ -263,7 +269,22 @@ class TimelineMp4Exporter(
             if (planRun != null) {
                 // E1b: the project fps and the timeline's output size are the
                 // plan's inputs (never settings).
-                val ep = planRun.planFor(plan.width, plan.height, plan.fps.toDouble())
+                // G4 (E2 wiring): the HLG gate's probed facts for THIS
+                // timeline's shape, the same fold the per-clip export runs
+                // (null when the request is not HLG or the facts are empty
+                // — the E1 wall then stands, today's behavior).
+                val hlgGate = if (planRun.current.dynamicRange == ExportDynamicRange.HLG) {
+                    val facts = planRun.currentFacts()
+                    if (facts.isEmpty()) null else HevcProbeSource.fromFacts(
+                        facts, plan.width, plan.height, plan.fps.toDouble(), apiLevel(),
+                    )
+                } else {
+                    null
+                }
+                val ep = planRun.planFor(
+                    plan.width, plan.height, plan.fps.toDouble(),
+                    ExportContext(tenBitPathAvailable = false, hlgGate = hlgGate),
+                )
                 planRun.durationSec = plan.totalFrames / plan.fps.toDouble()
                 if (!ep.ok) throw IllegalStateException(ep.errorMessage())
                 writer.expectVideoConfig()

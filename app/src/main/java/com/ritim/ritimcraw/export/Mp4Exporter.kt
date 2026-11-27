@@ -16,6 +16,11 @@ import com.ritim.ritimcraw.engine.GpuParityRules
 import com.ritim.ritimcraw.engine.GradeParcel
 import com.ritim.ritimcraw.engine.NativeSource
 import com.ritim.ritimcraw.engine.RenderBackend
+import com.ritim.ritimcraw.export.hevc.HevcTrialCache
+import com.ritim.ritimcraw.export.hevc.HevcTrialEncode
+import com.ritim.ritimcraw.export.hevc.HevcTrialKey
+import com.ritim.ritimcraw.export.hevc.HevcTrialRunner
+import com.ritim.ritimcraw.export.hevc.HevcProfile
 import java.io.File
 import java.util.Locale
 import java.util.concurrent.ExecutorService
@@ -1393,6 +1398,29 @@ class ExportPipeline(
      * ([Mp4Session.encoderSurfaceCapable]) are affected at all.
      */
     private val allowSessionSurface: Boolean = true,
+    /**
+     * (G4/E2) The device's API level — the HLG gate's guard data
+     * (HevcFeatureGate.requiredApiLevel) and the trial key's component.
+     * The default reads Build.VERSION.SDK_INT; JVM tests inject a fixed
+     * value (the Mp4Exporter seam's twin, threaded through exportOnce).
+     */
+    private val apiLevel: () -> Int = { android.os.Build.VERSION.SDK_INT },
+    /**
+     * (G4/E2) The trial-encode runner — the device seam the API-34
+     * fallback consults when the plan carries HLG_TRIAL_REQUIRED. The
+     * default is the REAL MediaCodec trial ([MediaCodecHevcTrialRunner],
+     * device-gated); JVM tests inject a fake so the DECISION layer's
+     * cache/no-reheat/refusal-fallback rules are JVM-tested.
+     */
+    private val hlgTrialRunner: HevcTrialRunner =
+        com.ritim.ritimcraw.export.hevc.MediaCodecHevcTrialRunner(),
+    /**
+     * (G4) The process-lifetime trial cache — threaded from the EXPORTER
+     * (one per exporter, NOT per pipeline attempt: a whole-export
+     * restart re-enters a fresh pipeline and must not re-heat a trial
+     * the process already answered).
+     */
+    private val hlgTrialCache: HevcTrialCache = HevcTrialCache(),
 ) {
 
     private fun stabPathFor(info: Mp4SessionInfo, grade: GradeK, attachedGyroPath: String?): String? {
@@ -1413,6 +1441,82 @@ class ExportPipeline(
             )
         }
         return WarpResolver.imageArg()
+    }
+
+    /**
+     * (G4/E2) The trial-encode step between the plan and the writer's
+     * configuration: when the plan resolved HLG through the API-34
+     * fallback gate it carries HLG_TRIAL_REQUIRED, and the trial is what
+     * turns the claimed support into a proven one BEFORE any real encode
+     * work. The pure decision ([HevcTrialEncode.decide]) consults the
+     * process-lifetime cache first (a refused trial never re-heats); the
+     * runner is the device seam ([hlgTrialRunner], the default being the
+     * real MediaCodec trial; JVM tests inject a fake). A REFUSED trial
+     * degrades the plan to SDR through the run's ONE plan fix
+     * ([ExportPlanRun.fixHlgTrialRefused]) and re-plans — never a silent
+     * fallback (the issue rides the report) and never a mid-stream
+     * depth/range switch (the trial ran before the first frame).
+     */
+    private fun verifyHlgTrial(
+        plan: ExportPlan,
+        run: ExportPlanRun,
+        width: Int,
+        height: Int,
+        fps: Double,
+    ): ExportPlan {
+        if (plan.issues.none { it.kind == ExportIssue.Kind.HLG_TRIAL_REQUIRED }) return plan
+        val key = HevcTrialKey.of(
+            profile = HevcProfile.HLG,
+            width = width, height = height,
+            apiLevel = apiLevel(),
+            codecName = plan.encoderName ?: "video/hevc",
+            buildId = hlgBuildId(),
+        )
+        val result = HevcTrialEncode.decide(
+            verdict = hlgTrialVerdict(),
+            key = key,
+            cache = hlgTrialCache,
+            runTrial = {
+                hlgTrialRunner.run(
+                    HevcTrialRunner.Request(
+                        profile = HevcProfile.HLG,
+                        width = width, height = height,
+                        bitrateBps = plan.bitrateBps,
+                        fps = fps,
+                        iFrameIntervalSec = 1f,
+                        encoderName = plan.encoderName,
+                    ),
+                )
+            },
+        )
+        return when (result) {
+            HevcTrialEncode.Result.NotRequired, HevcTrialEncode.Result.Passed -> plan
+            is HevcTrialEncode.Result.Refused -> {
+                run.note("hlg trial: refused (${result.reason})")
+                if (!run.fixHlgTrialRefused(result.reason)) return plan
+                run.planFor(width, height, fps, ExportContext(tenBitPathAvailable = false))
+            }
+        }
+    }
+
+    /** The API-34 fallback's Supported verdict (the trial's requirement comes from the PLAN's issue, decided there). */
+    private fun hlgTrialVerdict(): com.ritim.ritimcraw.export.hevc.HevcPreflight.HevcVerdict.Supported =
+        com.ritim.ritimcraw.export.hevc.HevcPreflight.HevcVerdict.Supported(
+            profile = HevcProfile.HLG,
+            codecName = "trial",
+            paths = listOf(
+                com.ritim.ritimcraw.export.hevc.HevcPreflight.HevcInputPath.SURFACE,
+            ),
+            trialEncodeRequired = true,
+        )
+
+    /** Build.ID — the trial key's ROM component (read defensively; see the exporter's own KDoc). */
+    private fun hlgBuildId(): String = try {
+        @Suppress("UNNECESSARY_SAFE_CALL")
+        val id = android.os.Build.ID
+        if (id.isNullOrEmpty()) "unknown" else id
+    } catch (e: Throwable) {
+        "unknown"
     }
 
     /**
@@ -1765,15 +1869,28 @@ class ExportPipeline(
                             "encoderSurface=$encoderDrawEligible available=$tenBitPath"
                     )
                 }
+                // G4 (E2 wiring): the HLG gate's probed facts, built HERE
+                // where the encode size and fps are finally known (the
+                // probe's size/rate stage is judged on this job's own
+                // shape). Only when the request is HLG at all — an SDR
+                // request never pays the probe fold. The gate is null
+                // (today's wall) when the device gave no encoder facts.
+                val hlgGate = if (run.current.dynamicRange == ExportDynamicRange.HLG) {
+                    val facts = run.currentFacts()
+                    if (facts.isEmpty()) null else HevcProbeSource.fromFacts(facts, encodeDims.width, encodeDims.height, fps, apiLevel())
+                } else {
+                    null
+                }
                 val plan = run.planFor(
                     encodeDims.width, encodeDims.height, fps,
-                    ExportContext(tenBitPathAvailable = tenBitPath),
+                    ExportContext(tenBitPathAvailable = tenBitPath, hlgGate = hlgGate),
                 )
+                val verified = verifyHlgTrial(plan, run, encodeDims.width, encodeDims.height, fps)
                 run.durationSec = (videoPts.last() / 1_000_000.0) + 1.0 / fps
-                tenBit = plan.bitDepth == 10
-                if (!plan.ok) throw IllegalStateException(plan.errorMessage())
+                tenBit = verified.bitDepth == 10
+                if (!verified.ok) throw IllegalStateException(verified.errorMessage())
                 writer.expectVideoConfig()
-                writer.configureVideo(plan)
+                writer.configureVideo(verified)
             }
             writer.start(outPath, encodeDims.width, encodeDims.height, 0, sampleRate, channels)
             run?.encoder = writer.encoderIdentity()
@@ -2571,6 +2688,31 @@ class Mp4Exporter(
     private val encodedSessionFactory: () -> Mp4Session = {
         EncodedMp4Session(log = { line -> runCatching { android.util.Log.i("ritim-export", line) } })
     },
+    /**
+     * (G4/E2) The device's API level — threaded into the pipeline's HLG
+     * gate fold (the [ExportPipeline.apiLevel] seam's source). The default
+     * reads Build.VERSION.SDK_INT; JVM tests inject a fixed value.
+     */
+    private val apiLevel: () -> Int = { android.os.Build.VERSION.SDK_INT },
+    /**
+     * (G4/E2) The HLG trial-encode runner, threaded into the pipeline
+     * ([ExportPipeline.hlgTrialRunner]). The default is the real
+     * MediaCodec trial; JVM tests inject a fake to pin the fallback's
+     * honesty (a refused trial degrades the plan to SDR with the reason
+     * on the report, never a silent fallback).
+     */
+    private val hlgTrialRunner: com.ritim.ritimcraw.export.hevc.HevcTrialRunner =
+        com.ritim.ritimcraw.export.hevc.MediaCodecHevcTrialRunner(),
+    /**
+     * (G4) The process-lifetime trial cache (HevcTrialCache's own
+     * contract): one per EXPORTER, threaded into every pipeline attempt
+     * — a retry/restart (a fresh pipeline) must NOT re-heat a trial the
+     * process already answered. The default is the real store; JVM tests
+     * share one instance across their exporter's exports to pin the
+     * no-reheat rule.
+     */
+    private val hlgTrialCache: com.ritim.ritimcraw.export.hevc.HevcTrialCache =
+        com.ritim.ritimcraw.export.hevc.HevcTrialCache(),
 ) {
 
     /**
@@ -2837,6 +2979,9 @@ class Mp4Exporter(
             imageAnalysisPath = imageAnalysisPath,
             chainWire = chainWire,
             allowSessionSurface = allowSessionSurface,
+            apiLevel = { apiLevel() },
+            hlgTrialRunner = hlgTrialRunner,
+            hlgTrialCache = hlgTrialCache,
         ).run(
             sourceFd, grade, outPath, lutPath, gyroPath, manualRotationDeg, onProgress
         )
