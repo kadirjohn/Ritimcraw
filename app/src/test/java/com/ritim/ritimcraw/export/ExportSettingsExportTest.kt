@@ -208,6 +208,27 @@ class ExportSettingsExportTest {
     }
 
     @Test
+    fun the_target_not_reached_fields_ride_the_report_and_omit_when_absent() {
+        val with = ExportReport(
+            "c2.a.hevc", true, "video/hevc", 1080, 1920, 30.0, 8, "VBR", null, 1f, 6_000_000, 192,
+            123_456L, 10.5, listOf("plan: x"), emptyList(),
+            audioLufs = -30.1, audioDbtp = -25.8, audioGainDb = 12.0,
+            audioTargetNotReached = "gain-cap", audioCeilingExceeded = true,
+        )
+        val job = job(ExportSettings()).copy(state = State.DONE, report = with)
+        val text = ExportStore.renderExports(listOf(job))
+        assertTrue(text, text.contains("\"audioTargetNotReached\":\"gain-cap\""))
+        assertTrue(text, text.contains("\"audioCeilingExceeded\":true"))
+        val back = ExportStore.parseExports("{\"exports\":$text}").single()
+        assertEquals(with, back.report)
+        val plain = ExportStore.renderExports(
+            listOf(job.copy(report = with.copy(audioTargetNotReached = null, audioCeilingExceeded = false))),
+        )
+        assertFalse(plain, plain.contains("audioTargetNotReached"))
+        assertFalse(plain, plain.contains("audioCeilingExceeded"))
+    }
+
+    @Test
     fun the_g1_audio_report_fields_ride_the_report_and_omit_when_absent() {
         // (E5/E5-B, night G1) The applied gain, the honest skip reason and
         // the output audio shape ride the report the same way — and omit
