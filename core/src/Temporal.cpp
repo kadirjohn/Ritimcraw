@@ -92,6 +92,55 @@ inline float sigmaDiff(const NoiseProfile* a, const NoiseProfile* b,
     return std::sqrt(varOf(a, signal, slot) + varOf(b, signal, slot));
 }
 
+// D4 (night-e6b) merge-loop speed path: the same variance arithmetic
+// with the profile's POINTER LOADS and the valid-FLAG loads folded out
+// of the per-pixel loop. A NoiseProfile is immutable for the duration of
+// the merge (the caller owns it; the merge never writes), so reading
+// s[slot]/o[slot]/valid once per merge and keeping them in a small
+// per-slot table changes WHERE the loads happen, never the values:
+// varOfPrepared performs exactly varOf's expression order —
+//   valid slot:  v = s*signal + o; v > 1e-9 ? v : fallback^2
+//   invalid:     fallback^2 (varOf's fall-through, constant)
+// — the same fmadd, the same compare, the same result bits. Bit-identity
+// is pinned by merge_rows_ab_bit_identical against the frozen reference
+// (which keeps the per-pixel varOf over the raw pointers).
+struct PreparedVarProfile {
+    float s[4];
+    float o[4];
+    bool valid[4];
+};
+
+inline PreparedVarProfile prepareVarProfile(const NoiseProfile* np) {
+    PreparedVarProfile p{};
+    for (int slot = 0; slot < 4; ++slot) {
+        p.valid[slot] = np && np->valid;
+        if (p.valid[slot]) {
+            p.s[slot] = np->s[slot];
+            p.o[slot] = np->o[slot];
+        }
+    }
+    return p;
+}
+
+inline float varOfPrepared(const PreparedVarProfile& p, float signal,
+                           int slot) {
+    if (p.valid[slot]) {
+        const float v = p.s[slot] * signal + p.o[slot];
+        if (v > 1e-9f)
+            return v;
+    }
+    const float f = temporalFallbackSigma();
+    return f * f;
+}
+
+// sqrt(va + vn) on the prepared tables — sigmaDiff's exact op order.
+inline float sigmaDiffPrepared(const PreparedVarProfile& a,
+                               const PreparedVarProfile& b,
+                               float signal, int slot) {
+    return std::sqrt(varOfPrepared(a, signal, slot)
+                     + varOfPrepared(b, signal, slot));
+}
+
 // Weight taper on the block residual (in units of sigma): full at/below
 // kResidualTaperFull, zero at/above kResidualTaperZero, linear between.
 inline float residualTaper(float r) {
@@ -640,6 +689,14 @@ void temporalMergeRows(const uint16_t* center, const uint16_t* prev,
     // from the innermost loop without touching any arithmetic order.
     std::vector<ColumnCandidates> cols;
     fillColumnCandidates(cols, w, maxBx);
+    // D4 idea 2 (precompute) on the noise profiles: fold the per-pixel
+    // pointer loads + valid-flag loads of sigmaDiff's varOf into per-slot
+    // tables filled once per merge (see PreparedVarProfile). Same values,
+    // same expression order — bit-identity pinned by the A/B test.
+    const PreparedVarProfile varCenter =
+        prepareVarProfile(settings.centerNoise);
+    const PreparedVarProfile varPrev = prepareVarProfile(settings.prevNoise);
+    const PreparedVarProfile varNext = prepareVarProfile(settings.nextNoise);
     parallelForRows(h, [&](size_t rowBegin, size_t rowEnd) {
     for (uint32_t y = static_cast<uint32_t>(rowBegin); y < static_cast<uint32_t>(rowEnd); ++y) {
         double wSumPrev = 0.0;
@@ -660,10 +717,10 @@ void temporalMergeRows(const uint16_t* center, const uint16_t* prev,
             const float cSignal = normSignal(center[row + x], meta, slot);
             // Per-pixel guard sigma (same for every candidate block of
             // this pixel: it depends only on the center sample).
-            const float sigP = sigmaDiff(settings.centerNoise, settings.prevNoise,
-                                         cSignal, slot);
-            const float sigN = sigmaDiff(settings.centerNoise, settings.nextNoise,
-                                         cSignal, slot);
+            const float sigP = sigmaDiffPrepared(varCenter, varPrev,
+                                                 cSignal, slot);
+            const float sigN = sigmaDiffPrepared(varCenter, varNext,
+                                                 cSignal, slot);
             float acc = cSignal; // weight 1.0 center, always
             float wsum = 1.0f;
             if (anyPrev) {
