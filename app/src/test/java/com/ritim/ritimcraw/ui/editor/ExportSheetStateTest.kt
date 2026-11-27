@@ -41,16 +41,26 @@ class ExportSheetStateTest {
     }
 
     @Test
-    fun a_measured_rate_shows_as_the_nearest_standard_one() {
-        assertEquals(29.97, ExportSheetState.displayFps(29.826), 0.0)
-        assertEquals(30.0, ExportSheetState.displayFps(30.02), 0.0)
-        assertEquals(23.976, ExportSheetState.displayFps(23.9), 0.0)
-        assertEquals(59.94, ExportSheetState.displayFps(59.9), 0.0)
-        assertEquals(24.0, ExportSheetState.displayFps(24.1), 0.0)
+    fun a_measured_rate_shows_raw_never_snapped_to_a_standard() {
+        // TEST CHANGE (K6, plan E1F §1.2/§1.4): the old bde227d test pinned
+        // the snap-within-1 % behavior this change REMOVES. The owner's
+        // later ruling (2026-11-24): a measured 29.83 reads "29.83", a
+        // near-standard 29.826 reads "29.83" too — rounding to 29.97 would
+        // lie about what the phone recorded. The measured value is shown
+        // at 2 decimals, never snapped.
+        assertEquals(29.83, ExportSheetState.displayFps(29.826), 0.0)
+        assertEquals(29.83, ExportSheetState.displayFps(29.83), 0.0)
+        assertEquals(30.02, ExportSheetState.displayFps(30.02), 0.0)
+        assertEquals(30.0, ExportSheetState.displayFps(30.0), 0.0)
+        assertEquals(23.98, ExportSheetState.displayFps(23.976), 0.0)
+        assertEquals(59.9, ExportSheetState.displayFps(59.9), 0.0)
+        assertEquals(24.1, ExportSheetState.displayFps(24.1), 0.0)
         // far from every standard rate: rounded, not snapped
         assertEquals(37.12, ExportSheetState.displayFps(37.1234), 0.0)
-        assertEquals("29.97", ExportSheetState.fpsText(29.826))
-        assertEquals("30", ExportSheetState.fpsText(29.99))
+        assertEquals("29.83", ExportSheetState.fpsText(29.826))
+        assertEquals("29.83", ExportSheetState.fpsText(29.83))
+        assertEquals("29.99", ExportSheetState.fpsText(29.99))
+        assertEquals("30", ExportSheetState.fpsText(29.999999))
     }
 
     @Test
@@ -58,7 +68,8 @@ class ExportSheetStateTest {
         val subject = ExportSheetModel.Subject(3840, 2160, 29.826, 60.0)
         val plan = ExportSheetModel.plan(ExportSheetModel.defaultSettings(), subject, emptyList())
         val line = ExportSheetState.summaryLine(plan, "523 MB")
-        assertTrue(line, line.startsWith("3840×2160 · 29.97 fps · H.264 8-bit · "))
+        // TEST CHANGE (K6): the measured 29.826 shows raw (29.83), never snapped.
+        assertTrue(line, line.startsWith("3840×2160 · 29.83 fps · H.264 8-bit · "))
         assertTrue(line, line.contains(" Mb/s"))
         assertTrue(line, line.endsWith(" · ~523 MB"))
         assertFalse(ExportSheetState.summaryLine(plan, null).contains("~"))
@@ -76,12 +87,13 @@ class ExportSheetStateTest {
         val subject = ExportSheetModel.Subject(3840, 2160, 29.826, 60.0)
         val plan = ExportSheetModel.plan(ExportSheetModel.defaultSettings(), subject, emptyList())
         assertEquals(
-            "MP4 · 3840×2160 · 29.97 fps · H.264 8-bit · ≈ 420 MB",
+            // TEST CHANGE (K6): the measured 29.826 shows raw (29.83).
+            "MP4 · 3840×2160 · 29.83 fps · H.264 8-bit · ≈ 420 MB",
             ExportSheetState.compactSummaryLine(plan, "420 MB"),
         )
         // Unknown length: the size part drops, nothing is guessed.
         assertEquals(
-            "MP4 · 3840×2160 · 29.97 fps · H.264 8-bit",
+            "MP4 · 3840×2160 · 29.83 fps · H.264 8-bit",
             ExportSheetState.compactSummaryLine(plan, null),
         )
     }
@@ -130,4 +142,5 @@ class ExportSheetStateTest {
             ro.toSet(),
         )
     }
+
 }

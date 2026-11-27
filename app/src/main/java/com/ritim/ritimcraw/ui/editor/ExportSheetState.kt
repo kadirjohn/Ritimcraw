@@ -4,7 +4,6 @@ import com.ritim.ritimcraw.export.ExportPlan
 import com.ritim.ritimcraw.export.ExportResolution
 import com.ritim.ritimcraw.export.ExportText
 import java.util.Locale
-import kotlin.math.abs
 
 /**
  * Pure state and format rules of the export sheet (E1c-polish). The
@@ -33,25 +32,25 @@ internal object ExportSheetState {
 
     // ---- frame rate display ----
 
-    private val STANDARD = doubleArrayOf(
-        23.976, 24.0, 25.0, 29.97, 30.0, 47.952, 48.0, 50.0, 59.94, 60.0,
-        95.904, 96.0, 100.0, 119.88, 120.0, 239.76, 240.0,
-    )
-
-    /** How far a measured rate may sit from a standard one (relative) and still be shown as it. */
+    /**
+     * How far a measured rate may sit from a standard one (relative) and still be shown as it.
+     */
     const val FPS_DISPLAY_TOLERANCE = 0.01
 
     /**
-     * The rate the sheet SHOWS for a measured one: the nearest standard rate
-     * within [FPS_DISPLAY_TOLERANCE] (1 %), else the measured value rounded
-     * to 2 decimals. Display only: it is never the value the encoder or the
-     * plan receives (a clip that dropped frames measures 29.826 and is shown
-     * as 29.97; what the file's header says is a separate, documented matter).
+     * The rate the sheet SHOWS for a measured one: the MEASURED value
+     * rounded to 2 decimals, never snapped to a standard rate. The
+     * owner's ruling (2026-11-24, plan E1F §1.2/K6): a clip that measures
+     * 29.83 fps reads "29.83 fps (source)" — rounding it to the standard
+     * 29.97 would lie about what the phone recorded, and the E1f-2 frame
+     * rate row's honest Source context rides on the same rule. The old
+     * snap-within-[FPS_DISPLAY_TOLERANCE] behavior (e1c-polish bde227d)
+     * predates the ruling and is removed by it (K6's decision, adopted).
+     * Display only: it is never the value the encoder or the plan
+     * receives (the map and the plan use the measured rate as-is).
      */
     fun displayFps(measured: Double): Double {
         if (measured <= 0.0) return measured
-        val near = STANDARD.minByOrNull { abs(it - measured) }
-        if (near != null && abs(near - measured) / near <= FPS_DISPLAY_TOLERANCE) return near
         return Math.round(measured * 100.0) / 100.0
     }
 
