@@ -229,7 +229,11 @@ class StaticA11yAuditTest {
         // label argument on the Icon call's second position, OR a Text
         // inside the content slot (the button's own visible copy merges
         // into the node for screen readers — OperationButton's shape).
-        val namedLabel = Regex("""contentDescription\s*=\s*(?!null\b)""")
+        // The `\S` after the null-lookahead is the reviewer's fix: the
+        // bare lookahead backtracks and matches AT the empty position,
+        // so `contentDescription = null` itself read as "label present";
+        // a guarded form cannot.
+        val namedLabel = Regex("""contentDescription\s*=\s*(?!null\b)\S""")
         val positionalLabel = Regex("""Icon\(\s*[A-Za-z_][^,]*,\s*(stringResource|null)[^)]*\)""")
         val textContent = Regex("""\bText\(""")
         val hits = mutableListOf<Triple<String, Int, String>>()
@@ -560,19 +564,38 @@ class StaticA11yAuditTest {
     // ---- scan 7: clickable rows/cards carry a label or text -----------------
 
     /**
-     * Plain `.clickable { ... }` call sites (raw rows/cards, not stock
+     * Plain `.clickable` call sites (raw rows/cards, not stock
      * components) must carry a label one of three ways within their
      * 16-line window: a `Text(...)` (the row's own visible copy — TalkBack
      * merges the row's text), an `onClickLabel = `, or a
      * `semantics { ... contentDescription` block, or an exception entry.
+     *
+     * CALL-SITE SHAPES (reviewer finding): the codebase writes BOTH
+     * `.clickable { ... }` (trailing lambda, NO argument parens) and
+     * `.clickable(role = ...) { ... }` (parens + trailing lambda). The
+     * detector therefore makes the parens OPTIONAL —
+     * `\.clickable\s*(?:\([^)]*\))?\s*\{` — so neither shape escapes. The
+     * original shipped form (literal `(` required) matched ZERO call sites
+     * on the whole tree: the scan body never ran and its pass was vacuous
+     * (proven by the reviewer's unlabeled-probe mutation going green).
+     *
+     * The label lookaheads carry the same backtracking trap the reviewer
+     * flagged on scan-2: `onClickLabel\s*=\s*(?!null)` accepts
+     * `onClickLabel = null` itself (the lookahead matches at the empty
+     * position before "null"), so a row whose ONLY affordance is an
+     * explicitly-nulled onClickLabel would read as labelled. The `\S`
+     * guard closes that blind spot; `label\s*=` (the plain generic form)
+     * is kept because no call site uses a `label = null` argument.
      *
      * This is the widest and noisiest scan; its exception list carries the
      * reasoned cases (image-tile rows whose label is the row's merged
      * content, selection cards whose checkbox state reads, etc.).
      */
     private fun plainClickablesWithoutAnyLabel(): List<Triple<String, Int, String>> {
-        val plainClickable = Regex("""\.clickable\(\s*\{""")
-        val textContent = Regex("""\bText\(|headlineContent|label\s*=|onClickLabel\s*=\s*(?!null)""")
+        val plainClickable = Regex("""\.clickable\s*(?:\([^)]*\))?\s*\{""")
+        val textContent = Regex(
+            """\bText\(|headlineContent|label\s*=|onClickLabel\s*=\s*(?!null\b)\S"""
+        )
         val semanticsLabel = Regex("""semantics\s*\{""")
         val hits = mutableListOf<Triple<String, Int, String>>()
         for (file in uiSources()) {
@@ -598,6 +621,15 @@ class StaticA11yAuditTest {
         // lambda after the clickable chain — the scan window cuts off
         // before it; the row IS labelled (the file's name).
         "AppNav.kt:2674" to "gyro-ambiguous candidate ListItem; the headline Text(doc.displayName) follows past the window",
+        // The DONE export card's two tap wirings (select-mode toggle /
+        // open): the clickable rides the CARD modifier while the label —
+        // the source filename headline Text — sits in the card's content
+        // lambda ~14 lines below, past the window. TalkBack merges the
+        // card's texts into the row focus (the reviewer-probed same
+        // pattern), so the node is labelled at runtime; the entries keep
+        // the LIVE scan honest about the two shapes it sees.
+        "ExportsScreen.kt:539" to "DONE export card, select-mode toggle branch: the card's filename headline Text (content lambda) labels the merged row focus",
+        "ExportsScreen.kt:541" to "DONE export card, open branch: the card's filename headline Text (content lambda) labels the merged row focus",
     )
 
     @Test
