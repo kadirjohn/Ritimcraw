@@ -138,9 +138,60 @@ class ExportSheetStateTest {
     fun only_the_clip_derived_rows_are_read_only() {
         val ro = ExportSheetState.Row.entries.filter { ExportSheetState.isReadOnly(it) }
         assertEquals(
-            setOf(ExportSheetState.Row.FRAME_RATE, ExportSheetState.Row.AUDIO_FORMAT),
+            setOf(ExportSheetState.Row.AUDIO_FORMAT),
             ro.toSet(),
         )
     }
 
+    // ---- E1f-2 (G2): the FRAME_RATE row is the fps target's picker ----
+
+    @Test
+    fun the_frame_rate_row_is_openable_and_the_audio_format_row_stays_read_only() {
+        // The row's purpose changed with E1f-2: FRAME_RATE is the fps
+        // target's picker (the Source choice keeps the source's own pts),
+        // so it left the read-only set — the AUDIO_FORMAT row (G1) is the
+        // clip-derived row that stays read-only. Pinned so the picker can
+        // never silently become read-only again.
+        assertFalse(ExportSheetState.isReadOnly(ExportSheetState.Row.FRAME_RATE))
+        assertTrue(ExportSheetState.isReadOnly(ExportSheetState.Row.AUDIO_FORMAT))
+    }
+
+    @Test
+    fun the_frame_rate_value_is_the_target_or_the_honest_source_context() {
+        // A ladder target shows its own label; SOURCE shows the clip's own
+        // MEASURED rate as context (never a snapped standard); an unknown
+        // rate says just "Source" — never a guess.
+        val ladder = com.ritim.ritimcraw.export.TargetFps.entries
+            .filter { it != com.ritim.ritimcraw.export.TargetFps.SOURCE }
+        assertEquals(ladder, ExportSheetState.fpsLadder())
+        for (t in ladder) {
+            assertEquals(
+                "target $t",
+                ExportSheetState.FrameRateValue.TARGET,
+                ExportSheetState.frameRateValue(t, 29.83),
+            )
+        }
+        assertEquals(
+            ExportSheetState.FrameRateValue.SOURCE_WITH_FPS,
+            ExportSheetState.frameRateValue(com.ritim.ritimcraw.export.TargetFps.SOURCE, 29.83),
+        )
+        assertEquals(
+            ExportSheetState.FrameRateValue.SOURCE_WITH_FPS,
+            ExportSheetState.frameRateValue(com.ritim.ritimcraw.export.TargetFps.SOURCE, 30.0),
+        )
+        // Unknown rate: just "Source" — the honest label, not a guessed
+        // number.
+        assertEquals(
+            ExportSheetState.FrameRateValue.SOURCE_UNKNOWN,
+            ExportSheetState.frameRateValue(com.ritim.ritimcraw.export.TargetFps.SOURCE, null),
+        )
+        assertEquals(
+            ExportSheetState.FrameRateValue.SOURCE_UNKNOWN,
+            ExportSheetState.frameRateValue(com.ritim.ritimcraw.export.TargetFps.SOURCE, 0.0),
+        )
+        // The measured display keeps the owner's no-snapping rule: 29.83
+        // shows as 29.83 (the nearest-standard tolerance only catches
+        // near-exact rates like 29.826, which reads 29.97).
+        assertEquals("29.83", ExportSheetState.fpsText(29.83))
+    }
 }

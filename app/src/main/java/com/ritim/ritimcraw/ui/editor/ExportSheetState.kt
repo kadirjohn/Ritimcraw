@@ -3,6 +3,7 @@ package com.ritim.ritimcraw.ui.editor
 import com.ritim.ritimcraw.export.ExportPlan
 import com.ritim.ritimcraw.export.ExportResolution
 import com.ritim.ritimcraw.export.ExportText
+import com.ritim.ritimcraw.export.TargetFps
 import java.util.Locale
 
 /**
@@ -96,8 +97,34 @@ internal object ExportSheetState {
     fun advancedRows(): List<Row> =
         listOf(Row.BITRATE, Row.RATE_MODE, Row.KEYFRAME, Row.PROFILE, Row.AUDIO, Row.AUDIO_FORMAT)
 
-    /** Read-only rows show a value but have no chevron and open nothing. */
-    fun isReadOnly(row: Row): Boolean = row == Row.FRAME_RATE || row == Row.AUDIO_FORMAT
+    /**
+     * Read-only rows show a value but have no chevron and open nothing.
+     * FRAME_RATE was one of these before E1f-2 — it is the fps target's
+     * picker now (the row still shows the SOURCE's measured rate as its
+     * value context, never a rounded standard).
+     */
+    fun isReadOnly(row: Row): Boolean = row == Row.AUDIO_FORMAT
+
+    // ---- frame rate picker (E1f-2) ----
+
+    /** What the FRAME_RATE row's value text says. */
+    enum class FrameRateValue { TARGET, SOURCE_WITH_FPS, SOURCE_UNKNOWN }
+
+    /**
+     * The FRAME_RATE row's honest value choice (E1f-2, pure — the composable
+     * only localizes it): a ladder target shows its own label; SOURCE shows
+     * the clip's MEASURED rate as its context (never a snapped standard,
+     * the owner's rule) and, when the rate is unknown, says just "Source" —
+     * never a guess.
+     */
+    fun frameRateValue(target: TargetFps, sourceFps: Double?): FrameRateValue = when {
+        target != TargetFps.SOURCE -> FrameRateValue.TARGET
+        sourceFps != null && sourceFps > 0.0 -> FrameRateValue.SOURCE_WITH_FPS
+        else -> FrameRateValue.SOURCE_UNKNOWN
+    }
+
+    /** The fps target ladder the sub-page lists, in the E1f-1 enum's order. */
+    fun fpsLadder(): List<TargetFps> = TargetFps.entries.filter { it != TargetFps.SOURCE }
 
     /**
      * The summary's first line: "MP4 · 3840×2160 · 30 fps · HEVC 10-bit · ≈ 420 MB".

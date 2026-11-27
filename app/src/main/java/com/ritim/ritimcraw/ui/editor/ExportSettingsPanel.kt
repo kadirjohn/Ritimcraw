@@ -58,6 +58,7 @@ import com.ritim.ritimcraw.export.ExportSettings
 import com.ritim.ritimcraw.export.ExportSheetModel
 import com.ritim.ritimcraw.export.ExportText
 import com.ritim.ritimcraw.export.KeyframeInterval
+import com.ritim.ritimcraw.export.TargetFps
 import com.ritim.ritimcraw.ui.theme.Tnum
 import java.util.Locale
 
@@ -78,7 +79,7 @@ import java.util.Locale
  * decision 2026-11-23): the clip's own rate and the source audio format are
  * carried through.
  */
-internal enum class ExportPage { FORMAT, PRESET, RESOLUTION, CODEC, BIT_DEPTH, BITRATE, RATE_MODE, KEYFRAME, PROFILE, AUDIO }
+internal enum class ExportPage { FORMAT, PRESET, RESOLUTION, FRAME_RATE, CODEC, BIT_DEPTH, BITRATE, RATE_MODE, KEYFRAME, PROFILE, AUDIO }
 
 /** One resolution choice as the sub-page lists it (built by [rememberResolutionUi]). */
 internal class ResolutionChoiceUi(
@@ -116,6 +117,14 @@ internal fun ExportBody(
     targetDetail: @Composable () -> Unit,
     page: ExportPage?,
     onPage: (ExportPage?) -> Unit,
+    /**
+     * (E1f-2) The clip's own MEASURED fps as the FRAME_RATE row's honest
+     * context ("Source (29.83 fps)"): the subject may carry the converted
+     * OUTPUT rate for the summary, but the row's value text is the clip's
+     * real rate — never a snapped standard, per the owner's rule. Null =
+     * unknown: the row then says just "Source", never a guess.
+     */
+    sourceFps: Double? = null,
 ) {
     var advanced by remember { mutableStateOf(false) }
 
@@ -147,6 +156,7 @@ internal fun ExportBody(
                 advanced = advanced,
                 onAdvanced = { advanced = it },
                 onOpen = { onPage(it) },
+                sourceFps = sourceFps,
                 targetDetail = targetDetail,
             )
         } else {
@@ -164,6 +174,7 @@ internal fun ExportBody(
                 resolution = resolution,
                 onPickResolution = { onPickResolution(it); onPage(null) },
                 onCustomResolution = onCustomResolution,
+                sourceFps = sourceFps,
                 onBack = { onPage(null) },
                 onDone = { onPage(null) },
             )
@@ -192,6 +203,7 @@ private fun MainList(
     advanced: Boolean,
     onAdvanced: (Boolean) -> Unit,
     onOpen: (ExportPage) -> Unit,
+    sourceFps: Double?,
     targetDetail: @Composable () -> Unit,
 ) {
     val hevcOk = ExportSheetModel.hevcAvailable(facts)
@@ -225,8 +237,23 @@ private fun MainList(
                 )
                 ExportSheetState.Row.FRAME_RATE -> if (subject != null) SettingRow(
                     label = stringResource(R.string.export_frame_rate),
-                    value = stringResource(R.string.export_frame_rate_value, ExportSheetState.fpsText(subject.fps)),
-                    onClick = null,
+                    // The honest value (the pure choice, localized here): the
+                    // ladder target when one is chosen; the clip's own
+                    // MEASURED rate as the Source context — never a snapped
+                    // standard, the owner's rule; unknown fps says just
+                    // "Source", never a guess.
+                    value = when (
+                        ExportSheetState.frameRateValue(settings.targetFps, sourceFps)
+                    ) {
+                        ExportSheetState.FrameRateValue.TARGET -> settings.targetFps.label
+                        ExportSheetState.FrameRateValue.SOURCE_WITH_FPS -> stringResource(
+                            R.string.export_frame_rate_value,
+                            ExportSheetState.fpsText(sourceFps!!),
+                        )
+                        ExportSheetState.FrameRateValue.SOURCE_UNKNOWN ->
+                            stringResource(R.string.export_frame_rate_source)
+                    },
+                    onClick = { onOpen(ExportPage.FRAME_RATE) },
                 )
                 ExportSheetState.Row.CODEC -> SettingRow(
                     label = stringResource(R.string.export_codec),
@@ -496,6 +523,7 @@ private fun SubPage(
     resolution: ResolutionUi?,
     onPickResolution: (ExportResolution.Kind) -> Unit,
     onCustomResolution: () -> Unit,
+    sourceFps: Double?,
     onBack: () -> Unit,
     onDone: () -> Unit,
 ) {
@@ -573,6 +601,49 @@ private fun SubPage(
                     selected = resolution.selectedKind == ExportResolution.Kind.CUSTOM,
                     enabled = true,
                 ) { onCustomResolution() }
+            }
+        }
+        ExportPage.FRAME_RATE -> PageFrame(stringResource(R.string.export_frame_rate), stringResource(R.string.export_help_frame_rate), onBack) {
+            // Source first, with the clip's own MEASURED rate as its hint
+            // (never a snapped standard; unknown fps says so, never a
+            // guess), then the ladder — the E1f-1 TargetFps enum order.
+            val sourceHint = if (sourceFps != null && sourceFps > 0.0) {
+                stringResource(R.string.export_frame_rate_source_hint, ExportSheetState.fpsText(sourceFps))
+            } else {
+                stringResource(R.string.export_frame_rate_source_unknown_hint)
+            }
+            OptionRow(
+                stringResource(R.string.export_frame_rate_source),
+                sourceHint,
+                selected = settings.targetFps == TargetFps.SOURCE,
+                enabled = true,
+            ) { apply(settings.copy(targetFps = TargetFps.SOURCE)) }
+            for (t in ExportSheetState.fpsLadder()) {
+                val next = settings.copy(targetFps = t)
+                // What a target REALLY makes, from the plan (never our own
+                // estimate): the honest size at the converted duration.
+                val size = sizeOf(planFor(next))
+                OptionRow(
+                    t.label,
+                    if (size != null) {
+                        stringResource(R.string.export_frame_rate_target_hint, t.label) + " · " + size
+                    } else {
+                        stringResource(R.string.export_frame_rate_target_hint, t.label)
+                    },
+                    selected = settings.targetFps == t,
+                    enabled = true,
+                ) { apply(next) }
+            }
+            // The honest lossy warning, visible whenever a conversion is
+            // the choice (never a promise of quality — the mechanism is
+            // drop/duplicate and the text says so).
+            if (settings.targetFps != TargetFps.SOURCE) {
+                Text(
+                    stringResource(R.string.export_frame_rate_lossy_warning),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                )
             }
         }
         ExportPage.CODEC -> PageFrame(stringResource(R.string.export_codec), stringResource(R.string.export_help_codec), onBack) {
