@@ -200,7 +200,8 @@ enum class Destination(
 data class EditorRoute(val sourceId: String)
 
 /** The FileProvider authority for opening finished exports (manifest). */
-private const val EXPORT_FILE_PROVIDER_AUTHORITY = "com.ritim.ritimcraw.fileprovider"
+// Matches the manifest's ${applicationId}.fileprovider (staging has a suffix).
+private val EXPORT_FILE_PROVIDER_AUTHORITY = BuildConfig.APPLICATION_ID + ".fileprovider"
 
 /**
  * App shell wiring: owns the stores (files/project.json), the source list,
