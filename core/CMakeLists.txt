@@ -72,7 +72,8 @@ add_library(rawedit STATIC
     src/Dynamics.cpp
     src/Ducking.cpp
     src/Yuv.cpp
-    src/CubeExport.cpp)
+    src/CubeExport.cpp
+    src/AudioNormalize.cpp)
 # Yuv.cpp is the byte-exact twin of export/YuvConverter.kt: its chroma
 # multiply-add chain must round exactly where the Kotlin float ops round,
 # so this TU alone opts out of FMA contraction (-ffp-contract=off).
@@ -108,6 +109,12 @@ set_source_files_properties(src/Resample.cpp PROPERTIES
 set_source_files_properties(src/Dynamics.cpp PROPERTIES
     COMPILE_OPTIONS "-ffp-contract=off")
 set_source_files_properties(src/Ducking.cpp PROPERTIES
+    COMPILE_OPTIONS "-ffp-contract=off")
+# AudioNormalize.cpp (E5 normalize chain, night D2): the gain/requantize
+# loop feeds the E5-A meter and pins bit-identical determinism in its
+# tests; the NDK build must round the same way the desktop script does
+# (the Loudness.cpp / Yuv.cpp precedent).
+set_source_files_properties(src/AudioNormalize.cpp PROPERTIES
     COMPILE_OPTIONS "-ffp-contract=off")
 target_include_directories(rawedit PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(rawedit PUBLIC motioncam_decoder vqf)
@@ -224,6 +231,13 @@ if(PROJECT_NAME STREQUAL "rawedit" AND RAWEDIT_TESTS)
     add_executable(test_cube_export tests/test_cube_export.cpp)
     target_include_directories(test_cube_export PRIVATE ${DOCTEST_DIR})
     target_link_libraries(test_cube_export PRIVATE rawedit)
+    # test_audio_normalize: E5 loudness normalization chain (night D2) —
+    # synthetic signals only, no cwd needs. The opt-out matches the
+    # AudioNormalize.cpp build (desktop tools/build-desktop.sh parity).
+    add_executable(test_audio_normalize tests/test_audio_normalize.cpp)
+    target_include_directories(test_audio_normalize PRIVATE ${DOCTEST_DIR})
+    target_link_libraries(test_audio_normalize PRIVATE rawedit)
+    target_compile_options(test_audio_normalize PRIVATE -ffp-contract=off)
     # bench_develop: M1 developCpu serial-vs-parallel measurement on the
     # real clip (RAWEDIT_REALCLIP-gated, mirrors tools/build-desktop.sh);
     # asserts byte-exactness, reports (never asserts) the speedup.

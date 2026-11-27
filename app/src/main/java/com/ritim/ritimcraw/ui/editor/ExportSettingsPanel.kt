@@ -78,7 +78,7 @@ import java.util.Locale
  * decision 2026-11-23): the clip's own rate and the source audio format are
  * carried through.
  */
-internal enum class ExportPage { FORMAT, PRESET, RESOLUTION, CODEC, BIT_DEPTH, BITRATE, RATE_MODE, KEYFRAME, PROFILE, AUDIO }
+internal enum class ExportPage { FORMAT, PRESET, RESOLUTION, CODEC, BIT_DEPTH, BITRATE, RATE_MODE, KEYFRAME, PROFILE, AUDIO, LOUDNESS }
 
 /** One resolution choice as the sub-page lists it (built by [rememberResolutionUi]). */
 internal class ResolutionChoiceUi(
@@ -301,6 +301,15 @@ private fun MainList(
                             stringResource(R.string.export_audio),
                             "${settings.audioKbps} kbps",
                             onClick = { onOpen(ExportPage.AUDIO) },
+                        )
+                        // (E5, night D2) The loudness target row, the AUDIO
+                        // row's pattern: the value is "Off" or the target
+                        // number; the sub-page offers the plan's ladder
+                        // (§6.4). Görsel doğrulanmadı (night D2).
+                        ExportSheetState.Row.LOUDNESS -> SettingRow(
+                            stringResource(R.string.export_loudness),
+                            valLoudness(settings),
+                            onClick = { onOpen(ExportPage.LOUDNESS) },
                         )
                         ExportSheetState.Row.AUDIO_FORMAT -> SettingRow(
                             stringResource(R.string.export_audio_format),
@@ -527,7 +536,7 @@ private fun SubPage(
             }
         }
         ExportPage.PRESET -> PageFrame(stringResource(R.string.export_row_preset), stringResource(R.string.export_help_presets), onBack) {
-            val presets = listOf(ExportPreset.COMPATIBLE, ExportPreset.SMALLER, ExportPreset.QUALITY)
+            val presets = listOf(ExportPreset.COMPATIBLE, ExportPreset.SMALLER, ExportPreset.QUALITY, ExportPreset.SOCIAL)
             for (p in presets) {
                 val next = ExportSheetModel.applyPreset(settings, p, facts, tenBitAvailable)
                 val what = stringResource(presetHint(p))
@@ -655,6 +664,36 @@ private fun SubPage(
                 OptionRow("$k kbps", null, selected = settings.audioKbps == k, enabled = true) { apply(settings.copy(audioKbps = k)) }
             }
         }
+        // (E5, night D2) The loudness target page — the plan §6.4 ladder:
+        // Off / Social −14 / Podcast −16 / Broadcast −23. A target sets
+        // ONLY the loudness pair (the Social number matches the SOCIAL
+        // preset's audio side; picking it here does not claim the preset
+        // — the codec/bitrate rows are untouched, so the preset row may
+        // honestly read Custom). Selecting a target never claims
+        // platform compliance (the plan §5 naming rule); Off restores the
+        // bit-identical default export. Görsel doğrulanmadı (night D2):
+        // the owner checks the row on the device.
+        ExportPage.LOUDNESS -> PageFrame(stringResource(R.string.export_loudness), stringResource(R.string.export_help_loudness), onBack) {
+            OptionRow(
+                stringResource(R.string.export_loudness_off),
+                stringResource(R.string.export_loudness_off_hint),
+                selected = settings.loudnessTargetLufs == null,
+                enabled = true,
+            ) { apply(settings.copy(loudnessTargetLufs = null)) }
+            for (target in listOf(-14f, -16f, -23f)) {
+                val name = when (target) {
+                    -14f -> stringResource(R.string.export_loudness_social)
+                    -16f -> stringResource(R.string.export_loudness_podcast)
+                    else -> stringResource(R.string.export_loudness_broadcast)
+                }
+                OptionRow(
+                    name,
+                    stringResource(R.string.export_loudness_target_hint),
+                    selected = settings.loudnessTargetLufs == target,
+                    enabled = true,
+                ) { apply(settings.copy(loudnessTargetLufs = target, truePeakDbtp = -1f)) }
+            }
+        }
     }
 }
 
@@ -777,6 +816,7 @@ private fun presetName(p: ExportPreset): Int = when (p) {
     ExportPreset.COMPATIBLE -> R.string.export_preset_compatible
     ExportPreset.SMALLER -> R.string.export_preset_smaller
     ExportPreset.QUALITY -> R.string.export_preset_quality
+    ExportPreset.SOCIAL -> R.string.export_preset_social
     ExportPreset.CUSTOM -> R.string.export_preset_custom
 }
 
@@ -784,6 +824,7 @@ private fun presetHint(p: ExportPreset): Int = when (p) {
     ExportPreset.COMPATIBLE -> R.string.export_preset_compatible_hint
     ExportPreset.SMALLER -> R.string.export_preset_smaller_hint
     ExportPreset.QUALITY -> R.string.export_preset_quality_hint
+    ExportPreset.SOCIAL -> R.string.export_preset_social_hint
     ExportPreset.CUSTOM -> R.string.export_preset_custom_hint
 }
 
@@ -808,5 +849,13 @@ private fun keyframeName(k: KeyframeInterval): String = when (k) {
 @Composable
 private fun profileText(s: ExportSettings): String =
     s.profile?.let { ExportSheetModel.profileName(s.codec, it) } ?: stringResource(R.string.export_auto)
+
+/** The loudness row's value: "Off" or "−14 LUFS" (the number is Locale.ROOT). */
+@Composable
+private fun valLoudness(s: ExportSettings): String {
+    val n = ExportSheetState.loudnessValue(s.loudnessTargetLufs)
+    return if (n == null) stringResource(R.string.export_loudness_off)
+    else stringResource(R.string.export_loudness_value, n)
+}
 
 private fun fmt1(v: Double): String = String.format(Locale.ROOT, "%.1f", v).removeSuffix(".0")

@@ -36,6 +36,17 @@ data class ExportReport(
     val issues: List<String>,
     /** Wall-clock milliseconds the export took (feeds the next sheet's time estimate); null = unknown. */
     val wallMs: Long? = null,
+    /**
+     * (E5, night D2) The loudness the export REALLY produced (the chain's
+     * final measurement, not the requested target), when the
+     * normalization ran; null when it did not (no target in the
+     * settings, no audio track, or an honestly skipped measurement).
+     * Omitted from the wire when null — a pre-E5 report row parses
+     * exactly as it always did.
+     */
+    val audioLufs: Double? = null,
+    /** [audioLufs]'s true-peak pair in dBTP; null together with it. */
+    val audioDbtp: Double? = null,
 ) {
     /** The whole file's real bit rate (video + audio + container), or null without size/duration. */
     val actualTotalBps: Long?
@@ -68,6 +79,8 @@ data class ExportReport(
             steps = run.steps.takeLast(MAX_STEPS),
             issues = plan.issues.map { it.kind.name + ":" + it.args.joinToString(",") },
             wallMs = wallMs,
+            audioLufs = run.audioMeasuredLufs,
+            audioDbtp = run.audioMeasuredDbtp,
         )
 
         const val MAX_STEPS = 12
@@ -95,6 +108,10 @@ object ExportReportWire {
         if (r.fileBytes != null) sb.append(",\"fileBytes\":").append(r.fileBytes)
         if (r.durationSec != null) sb.append(",\"durationSec\":").append(num(r.durationSec))
         if (r.wallMs != null) sb.append(",\"wallMs\":").append(r.wallMs)
+        // (E5, night D2) The measured loudness pair, omit-when-absent: a
+        // report row without them parses exactly as it always did.
+        if (r.audioLufs != null) sb.append(",\"audioLufs\":").append(r.audioLufs)
+        if (r.audioDbtp != null) sb.append(",\"audioDbtp\":").append(r.audioDbtp)
         sb.append(",\"steps\":").append(strings(r.steps)).append(",\"issues\":").append(strings(r.issues)).append('}')
         return sb.toString()
     }
@@ -131,6 +148,8 @@ object ExportReportWire {
             steps = strs("steps"),
             issues = strs("issues"),
             wallMs = d("wallMs")?.toLong(),
+            audioLufs = d("audioLufs"),
+            audioDbtp = d("audioDbtp"),
         )
     }
 }

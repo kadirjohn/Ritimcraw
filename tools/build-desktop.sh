@@ -84,6 +84,12 @@ CORE_OBJS+=("$BUILD/core_Resample.o")
 CORE_OBJS+=("$BUILD/core_Dynamics.o")
 "$CXX" "${FLAGS[@]}" -ffp-contract=off "${INCLUDES[@]}" -c "$ROOT/core/src/Ducking.cpp" -o "$BUILD/core_Ducking.o"
 CORE_OBJS+=("$BUILD/core_Ducking.o")
+# AudioNormalize.cpp (E5 normalize chain, night D2): the gain apply /
+# requantize loop must round the same on every target (its tests pin
+# bit-identical determinism), and it feeds the E5-A meter (Loudness.cpp,
+# already opted out). Same opt-out, same reason.
+"$CXX" "${FLAGS[@]}" -ffp-contract=off "${INCLUDES[@]}" -c "$ROOT/core/src/AudioNormalize.cpp" -o "$BUILD/core_AudioNormalize.o"
+CORE_OBJS+=("$BUILD/core_AudioNormalize.o")
 # Yuv.cpp is the byte-exact twin of export/YuvConverter.kt: its chroma
 # multiply-add chain must round exactly where the Kotlin float ops round,
 # so this TU alone opts out of FMA contraction (-ffp-contract=off).
@@ -344,6 +350,12 @@ echo "== building tests =="
 # expected values round the same way the port does (Yuv.cpp precedent).
 "$CXX" "${FLAGS[@]}" -ffp-contract=off "${INCLUDES[@]}" "$ROOT/core/tests/test_loudness.cpp" \
   "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_loudness"
+# test_audio_normalize: E5 loudness normalization chain (night D2) —
+# target convergence, honest skips, the peak-limited clamp and
+# determinism, on synthetic signals. -ffp-contract=off matches the
+# AudioNormalize.cpp build (the Loudness.cpp precedent).
+"$CXX" "${FLAGS[@]}" -ffp-contract=off "${INCLUDES[@]}" "$ROOT/core/tests/test_audio_normalize.cpp" \
+  "${CORE_OBJS[@]}" "${DECODED_OBJS[@]}" -o "$BUILD/test_audio_normalize"
 # test_develop_stripes: the striped encoded-develop proofs (night A7,
 # 2026-11-26) — stripe plan coverage, stripes == whole frame bit-exact at
 # every stripe size with the full windowed stage set, the margin's
@@ -443,6 +455,8 @@ echo "== running test_node_chain_wire =="
 "$BUILD/test_node_chain_wire"
 echo "== running test_loudness =="
 "$BUILD/test_loudness"
+echo "== running test_audio_normalize =="
+"$BUILD/test_audio_normalize"
 echo "== running test_develop_stripes =="
 "$BUILD/test_develop_stripes"
 echo "== running test_resample =="

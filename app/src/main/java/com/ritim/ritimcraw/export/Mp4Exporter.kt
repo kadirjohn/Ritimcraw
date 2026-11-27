@@ -1393,6 +1393,15 @@ class ExportPipeline(
      * ([Mp4Session.encoderSurfaceCapable]) are affected at all.
      */
     private val allowSessionSurface: Boolean = true,
+    /**
+     * (E5, night D2) The loudness normalization seam. The chain runs ONLY
+     * when the job's settings carry a loudness target (plan §4.2); a null
+     * target — the default, every pre-E5 job and every OFF choice — never
+     * calls it, keeping the encoded audio bytes BIT-IDENTICAL to before
+     * this feature. The default is the native chain; JVM tests inject a
+     * fake and count calls.
+     */
+    private val normalizer: AudioNormalizer = NativeAudioNormalizer,
 ) {
 
     private fun stabPathFor(info: Mp4SessionInfo, grade: GradeK, attachedGyroPath: String?): String? {
@@ -1503,10 +1512,34 @@ class ExportPipeline(
         if (audio != null && audio.size >= 2 && audio[0] > 0 && audio[1] > 0) {
             sampleRate = audio[0]
             channels = audio[1]
-            val pcm = session.readAudio(info.handle)
+            var pcm = session.readAudio(info.handle)
                 ?: throw IllegalStateException(
                     Mp4ExportErrors.message(session.code(), session.stage(), session.detail())
                 )
+            // (E5, night D2) The loudness normalization hook — the plan
+            // §4.2 audio-preparation point: the whole clip's PCM is in
+            // memory, the blocks have not been cut yet, and the pts math
+            // depends only on the block COUNT, which the chain never
+            // changes. The chain runs ONLY when the job's settings carry
+            // a target; a null target (the default, every pre-E5 job)
+            // keeps this path bit-identical — the code below is the only
+            // audio change this feature can make.
+            val plan = planRun
+            val loudnessTarget = plan?.settings?.loudnessTargetLufs
+            if (loudnessTarget != null) {
+                val tp = plan!!.settings.truePeakDbtp
+                val result = normalizer.normalize(pcm, sampleRate, channels, loudnessTarget, tp)
+                pcm = result.pcm
+                val r = result.report
+                plan.note(
+                    "loudness: target=${loudnessTarget}db tp=${tp}dbtp " +
+                        "measuredI=${fmtLufs(r.measuredLufs)} measuredTP=${fmtLufs(r.measuredDbtp)} " +
+                        "gain=${"%.2f".format(java.util.Locale.ROOT, r.appliedGainDb)}db " +
+                        "iterations=${r.iterations} skipped=${skipName(r.skipped)}"
+                )
+                plan.audioMeasuredLufs = r.finalLufs
+                plan.audioMeasuredDbtp = r.finalDbtp
+            }
             blocks = chunk(pcm, channels)
             audioPts = (0 until blocks.size).map {
                 PtsTimeline.audioBlockPts(it, AAC_BLOCK_FRAMES, sampleRate)
@@ -2487,6 +2520,17 @@ class ExportPipeline(
         }
         return out
     }
+
+    /** The honest loudness number for the stage-log line; null (unmeasurable) names itself, never a guess. */
+    private fun fmtLufs(v: Double?): String =
+        if (v != null) String.format(java.util.Locale.ROOT, "%.2f", v) else "unmeasurable"
+
+    /** The skip code's own name (the report trail reads the same vocabulary as the core enum). */
+    private fun skipName(skipped: Int): String = when (skipped) {
+        AudioNormalizeSkips.TOO_SHORT -> "too-short"
+        AudioNormalizeSkips.SILENT -> "silent"
+        else -> "none"
+    }
 }
 
 /**
@@ -2512,8 +2556,7 @@ class Mp4Exporter(
     private val writerFactory: () -> Mp4MediaWriter = { MediaCodecMp4Writer() },
     private val engine: ExecutorService = ExportEngine.thread,
     private val lutPathFor: (String?) -> String? = { null },
-    private val gyroPathFor: (String) -> String? = { null },
-    /**
+    private val gyroPathFor: (String) -> String? = { null },    /**
      * AUD-02's link-state seam (the lut/gyro pattern again): turns the
      * job's sourceId into the source's CURRENT audio link state. The app
      * wires it to the AudioStore's record (AudioProject.link — an absent
@@ -2571,6 +2614,13 @@ class Mp4Exporter(
     private val encodedSessionFactory: () -> Mp4Session = {
         EncodedMp4Session(log = { line -> runCatching { android.util.Log.i("ritim-export", line) } })
     },
+    /**
+     * (E5, night D2) The loudness normalization seam, threaded through to
+     * every ExportPipeline attempt (the [gpuDevelop] threading rule): the
+     * default is the native chain, JVM tests inject a fake. Only a job
+     * whose settings carry a loudness target ever reaches it.
+     */
+    private val normalizer: AudioNormalizer = NativeAudioNormalizer,
 ) {
 
     /**
@@ -2837,6 +2887,7 @@ class Mp4Exporter(
             imageAnalysisPath = imageAnalysisPath,
             chainWire = chainWire,
             allowSessionSurface = allowSessionSurface,
+            normalizer = normalizer,
         ).run(
             sourceFd, grade, outPath, lutPath, gyroPath, manualRotationDeg, onProgress
         )

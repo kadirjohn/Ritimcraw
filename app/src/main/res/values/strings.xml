@@ -373,6 +373,7 @@
     <string name="export_preset_compatible">Compatible</string>
     <string name="export_preset_smaller">Smaller</string>
     <string name="export_preset_quality">Quality</string>
+    <string name="export_preset_social">Social</string>
     <string name="export_preset_custom">Custom</string>
     <string name="export_preset_quality_note">Quality uses HEVC at the highest bitrate level. It becomes 10-bit when this export can use the GPU path.</string>
     <string name="export_produced_title">What will be produced</string>
@@ -416,6 +417,15 @@
     <string name="export_frame_rate_value">%1$s fps (from the clip)</string>
     <string name="export_audio_format">Audio sample rate and channels</string>
     <string name="export_audio_format_value">Same as the clip</string>
+    <string name="export_loudness">Loudness target</string>
+    <string name="export_loudness_value">%1$s LUFS</string>
+    <string name="export_loudness_off">Off</string>
+    <string name="export_loudness_off_hint">The clip\'s audio is exported unchanged</string>
+    <string name="export_loudness_social">Social −14</string>
+    <string name="export_loudness_podcast">Podcast −16</string>
+    <string name="export_loudness_broadcast">Broadcast −23</string>
+    <string name="export_loudness_target_hint">Normalizes the audio to this level, true peak at −1 dBTP</string>
+    <string name="export_help_loudness">Sets how loud the exported audio is. Off keeps the clip exactly as it is. The others normalize to the target level and keep the true peak under −1 dBTP.</string>
     <string name="export_issue_fix">Use these settings</string>
     <string name="export_issue_fix_resolution">Use %1$s × %2$s</string>
     <string name="export_issue_no_encoder">No %1$s video encoder on this phone can make this export.</string>
@@ -694,6 +704,7 @@
     <string name="export_preset_compatible_hint">H.264, plays on almost every device</string>
     <string name="export_preset_smaller_hint">HEVC at a low bitrate</string>
     <string name="export_preset_quality_hint">HEVC at the highest bitrate level</string>
+    <string name="export_preset_social_hint">Vertical 1080×1920, loudness −14 LUFS</string>
     <string name="export_preset_custom_hint">Your own settings match no preset</string>
     <string name="export_option_unavailable">Not available on this phone</string>
     <string name="export_codec_avc_hint">Plays on almost every device</string>
