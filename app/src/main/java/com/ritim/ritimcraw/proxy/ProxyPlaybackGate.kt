@@ -29,7 +29,41 @@ package com.ritim.ritimcraw.proxy
 class ProxyPlaybackGate(
     private val cache: ProxyCache,
     private val inUse: ProxyInUse,
+    /**
+     * The proxy feature flag (FeatureFlags.proxyEnabled): while false the gate
+     * answers "original" to everything, so proxies that were generated earlier
+     * are NOT used either (owner rule: flag off = consistent, no hidden state).
+     */
+    private val enabled: () -> Boolean = { true },
 ) {
+    /**
+     * A build for this session's clip landed while the session was running on
+     * the original. The session does NOT swap now (never mid-playback, never
+     * under the user's eyes): it reopens on the proxy at the NEXT seek/play
+     * ([takePendingSwitch]).
+     */
+    @Volatile var switchPending: Boolean = false
+        private set
+
+    /** The runtime's terminal-Ready kick for this clip: mark the screen state. */
+    fun onBuildLanded() {
+        if (!enabled() || signature == null || onProxy) return
+        switchPending = true
+    }
+
+    /**
+     * Called by the screen at the next seek/play after [onBuildLanded]: the
+     * switch TARGET (the screen reopens on it and reports [swapped]) or null
+     * when nothing is pending / the proxy is gone. [maybeSwitch] is used with
+     * playing = false: a seek/play trigger is the boundary (the old session is
+     * closed and a new one opened, not live-swapped).
+     */
+    fun takePendingSwitch(): ProxyEntry? {
+        if (!switchPending) return null
+        switchPending = false
+        return maybeSwitch(playing = false, lastPresentedPtsUs = 0)
+    }
+
     /** The signature this session's clip would build under. */
     private var signature: ProxySignature? = null
 
@@ -40,7 +74,7 @@ class ProxyPlaybackGate(
     val onProxy: Boolean get() = openedEntry != null
 
     /** The playable proxy entry the session should OPEN, or null = open the original. */
-    fun resolve(sig: ProxySignature): ProxyEntry? = cache.playable(sig)
+    fun resolve(sig: ProxySignature): ProxyEntry? = if (enabled()) cache.playable(sig) else null
 
     /**
      * The session's open decision: the playable entry (the session acquires
@@ -50,6 +84,7 @@ class ProxyPlaybackGate(
     fun open(sig: ProxySignature): ProxyEntry? {
         close()
         signature = sig
+        if (!enabled()) return null
         val entry = cache.playable(sig) ?: return null
         openedEntry = entry
         inUse.acquire(entry.key)
@@ -64,6 +99,7 @@ class ProxyPlaybackGate(
      * nothing): the caller reopens through it and reports back with [swapped].
      */
     fun maybeSwitch(playing: Boolean, lastPresentedPtsUs: Long): ProxyEntry? {
+        if (!enabled()) return null
         val sig = signature ?: return null
         val entry = cache.playable(sig) ?: return null
         if (entry.key == openedEntry?.key) return null // already on it
@@ -80,6 +116,7 @@ class ProxyPlaybackGate(
     fun swapped(entry: ProxyEntry) {
         openedEntry?.let { inUse.release(it.key) }
         openedEntry = entry
+        switchPending = false
         inUse.acquire(entry.key)
     }
 
@@ -88,5 +125,6 @@ class ProxyPlaybackGate(
         openedEntry?.let { inUse.release(it.key) }
         openedEntry = null
         signature = null
+        switchPending = false
     }
 }

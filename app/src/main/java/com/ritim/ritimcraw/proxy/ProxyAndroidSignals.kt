@@ -115,6 +115,10 @@ class ProxyRuntime(
     private val clipInfoFor: (String) -> ProxyClipInfo?,
     /** The signature the build runs under + its build spec, resolved per fingerprint. */
     private val jobFor: (String) -> Pair<ProxySignature, ProxyBuildSpec>?,
+    /** The proxy flag (FeatureFlags.proxyEnabled); off = generated proxies are not played either. */
+    private val playbackEnabled: () -> Boolean = { true },
+    /** A build for this fingerprint reached Ready (the screen marks its switch-pending state). */
+    private val onProxyReady: (fingerprint: String) -> Unit = {},
 ) {
     val queue = ProxyStateMap()
     val cache: ProxyCache
@@ -142,6 +146,12 @@ class ProxyRuntime(
             encoder = encoder,
             specFor = { key -> jobFor(key.fingerprint)?.takeIf { it.first.key() == key }?.second },
             pacer = { if (slowPace) Thread.sleep(SLOW_SLICE_MS) },
+            onTerminal = { key, state, _ ->
+                if (state == ProxyState.Ready) {
+                    synchronized(gates) { gates[key.fingerprint] }?.onBuildLanded()
+                    onProxyReady(key.fingerprint)
+                }
+            },
         )
         // Crash-leftover sweep (plan section 3.3): every *.tmp and every
         // manifest-less .mp4 goes, before any job can run.
@@ -209,8 +219,9 @@ class ProxyRuntime(
      * [closePlaybackProxy] releases it.
      */
     fun openPlaybackProxy(fingerprint: String): Int {
+        if (!playbackEnabled()) return -1
         val job = jobFor(fingerprint) ?: return -1
-        val gate = synchronized(gates) { gates.getOrPut(fingerprint) { ProxyPlaybackGate(cache, inUse) } }
+        val gate = synchronized(gates) { gates.getOrPut(fingerprint) { ProxyPlaybackGate(cache, inUse, playbackEnabled) } }
         val entry = gate.open(job.first) ?: return -1
         return try {
             android.os.ParcelFileDescriptor.open(
@@ -219,6 +230,27 @@ class ProxyRuntime(
             ).detachFd()
         } catch (e: Exception) {
             gate.close()
+            -1
+        }
+    }
+
+    /**
+     * The in-session switch (called at the next seek/play after a build landed):
+     * a detached fd of the proxy via the gate's [ProxyPlaybackGate.takePendingSwitch]
+     * (maybeSwitch), or -1 = stay on the current file. The caller reopens its
+     * session on the fd; the gate's in-use protection moves with [ProxyPlaybackGate.swapped].
+     */
+    fun switchPlaybackProxy(fingerprint: String): Int {
+        val gate = synchronized(gates) { gates[fingerprint] } ?: return -1
+        val entry = gate.takePendingSwitch() ?: return -1
+        return try {
+            val fd = android.os.ParcelFileDescriptor.open(
+                entry.file,
+                android.os.ParcelFileDescriptor.MODE_READ_ONLY,
+            ).detachFd()
+            gate.swapped(entry)
+            fd
+        } catch (e: Exception) {
             -1
         }
     }

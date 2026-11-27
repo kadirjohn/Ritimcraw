@@ -41,5 +41,32 @@ object FeatureFlags {
      * leftovers) but never started, no clip is ever auto-enqueued, and the
      * storage page renders read-only (no delete/cancel actions).
      */
-    const val PROXY_PRODUCTION_ENABLED = false
+    const val PROXY_PRODUCTION_DEFAULT = false
+
+    /**
+     * The proxy flag as the app reads it: the compiled default, or, in DEBUG
+     * builds only, `adb shell setprop debug.ritim.proxy 1` for a device test
+     * (read once per process; staging/release never read the property, the
+     * same rule as the native debug.ritim.* switches). One flag governs the
+     * runtime start, the auto-enqueue AND playback use of proxies: off means
+     * already-generated proxies are ignored too.
+     */
+    val proxyEnabled: Boolean by lazy {
+        resolveProxyEnabled(
+            PROXY_PRODUCTION_DEFAULT,
+            com.ritim.ritimcraw.BuildConfig.DEBUG,
+        ) { readSystemProperty("debug.ritim.proxy") }
+    }
+
+    /** Pure resolution (JVM-testable): the property can only ever TURN ON, and only in debug. */
+    fun resolveProxyEnabled(default: Boolean, isDebug: Boolean, prop: () -> String?): Boolean =
+        default || (isDebug && prop() == "1")
+
+    private fun readSystemProperty(name: String): String? = runCatching {
+        // Debug-only path (isDebug gate above); loadClass, not Class.forName, so no R8 keep rule is needed:
+        // release/staging never reach this line.
+        ClassLoader.getSystemClassLoader().loadClass("android.os.SystemProperties")
+            .getMethod("get", String::class.java, String::class.java)
+            .invoke(null, name, "") as? String
+    }.getOrNull()
 }

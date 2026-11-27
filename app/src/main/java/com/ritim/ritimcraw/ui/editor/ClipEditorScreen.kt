@@ -159,6 +159,7 @@ import com.ritim.ritimcraw.engine.RenderBackend
 import com.ritim.ritimcraw.engine.RenderGate
 import com.ritim.ritimcraw.engine.RenderRequest
 import com.ritim.ritimcraw.engine.PreviewTiers.RenderClass
+import com.ritim.ritimcraw.proxy.ProxyPlaybackPolicy
 import com.ritim.ritimcraw.engine.SliderTiers
 import com.ritim.ritimcraw.engine.RenderDebounce
 import com.ritim.ritimcraw.engine.ScrubFramesAndroid
@@ -963,6 +964,12 @@ fun ClipEditorScreen(
     // the file). Null (the default) = the flag-off path, byte-identical to
     // the pre-G3 open: every existing caller keeps sourceFdProvider.
     proxyOpenFd: () -> Int = { -1 },
+    // In-session switch (owner rule): [proxyLandedTick] bumps when a build for
+    // this clip lands; the session reopens on the proxy at the NEXT seek/play
+    // (ProxyPlaybackPolicy.shouldReopen), never mid-playback, through
+    // [proxySwitchFd] (the gate's maybeSwitch; -1 = stay).
+    proxyLandedTick: Int = 0,
+    proxySwitchFd: () -> Int = { -1 },
     // The ORIGINAL clip's audio facts (sampleRate to channels) when the
     // session opened the clip's PROXY — a video-only file (plan: "ses
     // orijinalden çalar, proxy'de ses yok"); without them the session's own
@@ -1582,6 +1589,12 @@ fun ClipEditorScreen(
         // (EditorPreviewSession): MCRAW and encoded clips open through the
         // SAME interface, so the pump/transport below never branch on kind.
         var session by remember(sourceId) { mutableStateOf<EditorPreviewSession?>(null) }
+        // G3 proxy playback: non-null ONLY while [session] runs on the clip's
+        // PROXY. It is the ORIGINAL's session, kept for the paused full-
+        // resolution frame (SETTLE renders; ProxyPlaybackPolicy.sourceFor) —
+        // the proxy serves playback and scrubbing only. Null = [session]
+        // is the original and serves everything.
+        var originalSession by remember(sourceId) { mutableStateOf<EditorPreviewSession?>(null) }
         var sessionRender by remember(sourceId) { mutableStateOf(false) }
         // ---- GPU preview session (M4 commit b) ----
         // One GPU session per editor open, keyed to the clip like the CPU
@@ -2451,9 +2464,58 @@ fun ClipEditorScreen(
                 // First frame auto-visible (owner request §1).
                 requestRender(0, grade, PreviewTiers.PAUSED_MAX_DIM)
                 positionFrame = 0
+                // Opened on a proxy: the paused frame still comes from the
+                // ORIGINAL, so open its session beside the proxy's.
+                if (openedFromProxy) {
+                    originalSession = PreviewSessions.open(
+                        path = sourcePath,
+                        fdProvider = sourceFdProvider,
+                        engine = PreviewRenderer.previewEngine,
+                    ).getOrNull()
+                    if (originalSession != null) requestRender(0, grade, PreviewTiers.PAUSED_MAX_DIM)
+                }
             } else {
                 errorText = opened.exceptionOrNull()?.message
                 lastRenderFailed = true
+            }
+        }
+
+        // In-session proxy switch (owner rule): a build that landed for this
+        // clip only MARKS the state (proxyLandedTick); the session reopens on
+        // the proxy at the NEXT seek or play — never while playing. The
+        // current (original) session is kept as [originalSession] for the
+        // paused frame, the new proxy session takes playback/scrub.
+        LaunchedEffect(sourceId, proxyLandedTick) {
+            if (proxyLandedTick <= 0) return@LaunchedEffect
+            var prevPlaying = isPlaying
+            var prevFrame = positionFrame
+            snapshotFlow { isPlaying to positionFrame }.collect { (playing, frame) ->
+                val fire = ProxyPlaybackPolicy.shouldReopen(
+                    pending = true,
+                    wasPlaying = prevPlaying,
+                    prevFrame = prevFrame,
+                    playing = playing,
+                    frame = frame,
+                )
+                prevPlaying = playing
+                prevFrame = frame
+                if (!fire || originalSession != null || session == null) return@collect
+                val fd = proxySwitchFd()
+                if (fd < 0) return@collect
+                val opened = PreviewSessions.open(
+                    path = sourcePath,
+                    fdProvider = { fd },
+                    engine = PreviewRenderer.previewEngine,
+                    audioFacts = { proxyAudioFacts },
+                )
+                val ns = opened.getOrNull()
+                if (ns != null) {
+                    originalSession = session
+                    session = ns
+                    requestRender(positionFrame, grade, PreviewTiers.PAUSED_MAX_DIM)
+                }
+                // One attempt per landed build: stop watching either way.
+                throw kotlinx.coroutines.CancellationException("proxy switch done")
             }
         }
 
@@ -2734,6 +2796,7 @@ fun ClipEditorScreen(
                 // them too.
                 scrub?.close()
                 session?.close()
+                originalSession?.close()
                 gpuSession?.close()
                 audio.release()
                 // G3 (additive): the proxy session's in-use protection goes
@@ -2940,7 +3003,12 @@ fun ClipEditorScreen(
                     // (monotonic publication is safe) and its full-res follow-up
                     // below was never queued (it would fail the same way).
                     try {
-                        val s = session
+                        // Paused full-res frame = ORIGINAL; the proxy (when the
+                        // session is on one) serves only DRAG/PLAYBACK renders.
+                        val s = if (
+                            ProxyPlaybackPolicy.sourceFor(req.renderClass, originalSession != null) ==
+                            ProxyPlaybackPolicy.FrameSource.ORIGINAL
+                        ) originalSession ?: session else session
                         // COL-07: the request's grade carries the selected LUT id;
                         // the resolved path travels with the render (null = no
                         // LUT, the old look). Resolved per request so an import
