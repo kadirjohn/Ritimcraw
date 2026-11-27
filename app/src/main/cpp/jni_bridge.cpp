@@ -42,6 +42,7 @@
 #include <rawedit/RawStats.h>
 #include <rawedit/Source.h>
 #include <rawedit/Stabilization.h>
+#include <rawedit/CubeExport.h>
 #include <thread>
 #include <unistd.h>
 #include <rawedit/Sync.h>
@@ -3716,6 +3717,115 @@ bool readGradeParcel(JNIEnv* env, jfloatArray parcel, gles::DevelopGrade* out,
         env->GetFloatArrayRegion(parcel, 0, len, buf);
     }
     return gles::decodeGradeParcel(buf, len, out, error);
+}
+
+// .cube LUT export (E7 core + G5 wiring) ---------------------------------------
+//
+// Bakes the CURRENT grade's color chain into an n x n x n .cube and returns
+// the file's bytes — the stateless shape of nativeLutProbe (no handle, no
+// CFA, no render cache; the thread-local gLut/gBinding caches are reused
+// verbatim, so a cube export after a render with the same stage-24 LUT is a
+// cache hit). The WRITE is the Kotlin adapter's (SAF): this door only
+// produces bytes, so a failed save leaves no partial file.
+//
+// The bake itself is rawedit::exportGradeCube (core/include/rawedit/CubeExport.h
+// — E7). WHAT IS BAKED: the legacy tone stages 9-20 (applyToneColorStagesCpu,
+// the same code developCpu runs), the v2 node chain (applyNodes over the
+// wire's decoded GradeNodes), and the output the WIRE declares: outputMode 0 =
+// the legacy tonemap+LUT pair (applyManagedLutStage with this door's
+// lutPath/binding), outputMode 1 = the OpenDRT transform (the wire's tail
+// block). NOT carried (the bake zeroes them): denoise, sharpening, geometry —
+// a 3D LUT cannot represent spatial work, stated in the UI note.
+//
+// INPUT SPACE: inputMode 0 = scene-referred LINEAR Rec.709 (the default, the
+// space developCpu hands stage 9 — the E7 owner decision), 1 = display-encoded
+// Rec.709 (CubeExportInput::Rec709Code, the video convention for consumers
+// that expect it).
+JNIEXPORT jbyteArray JNICALL
+Java_com_ritim_ritimcraw_engine_NativeSource_nativeExportGradeCube(
+        JNIEnv* env, jclass,
+        jfloatArray gradeParcel,
+        jint n, jint inputMode,
+        jfloatArray chainWire,
+        jstring lutPath, jfloat lutStrength,
+        jint lutRole, jint lutInGamut, jint lutInTransfer,
+        jint lutOutGamut, jint lutOutTransfer,
+        jstring title) {
+    gLastErrorCode = 0;
+    gLastErrorStage = kStageDevelop;
+    // 1. The grade parcel — the same decode + fold as nativeExportFrameParcel
+    //    (a refusal fails the export honestly, never a silent neutral bake).
+    gles::DevelopGrade decoded;
+    std::string parcelError;
+    if (!readGradeParcel(env, gradeParcel, &decoded, &parcelError)) {
+        setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageDevelop,
+                 parcelError);
+        return nullptr;
+    }
+    rawedit::Grade grade;
+    gles::applyGradeToRawedit(decoded, &grade);
+    grade.lutStrength = lutStrength;
+    // 2. The v2 chain — null = the legacy fast path (a v1 grade's cube);
+    //    a decode failure refuses (the honest error, the same door as ever).
+    std::unique_ptr<gles::NodeChainDecoded> chain;
+    if (!v2ChainFor(env, chainWire, &chain)) return nullptr;
+    // 3. The stage-24 LUT + binding (only the legacy output reads them; the
+    //    resolveLut/resolveBinding pair IS the render's own cache seam).
+    const rawedit::Lut* lut = nullptr;
+    if (!resolveLut(env, lutPath, &lut)) return nullptr;
+    const rawedit::CompiledLutBinding* binding = nullptr;
+    resolveBinding(lut, lutRole, lutInGamut, lutInTransfer,
+                   lutOutGamut, lutOutTransfer, &binding);
+    // 4. The spec: the core's own struct, fed from the decoded pieces.
+    rawedit::CubeExportSpec spec;
+    spec.grade = grade;
+    spec.input = inputMode == 1 ? rawedit::CubeExportInput::Rec709Code
+                                : rawedit::CubeExportInput::Rec709Linear;
+    spec.output = (chain != nullptr && chain->outputMode == 1)
+        ? rawedit::CubeExportOutput::OpenDrt
+        : rawedit::CubeExportOutput::LegacyTonemapLut;
+    spec.lut = lut;
+    spec.binding = binding;
+    if (spec.output == rawedit::CubeExportOutput::OpenDrt) {
+        spec.drt.look = chain->drtLook;
+        spec.drt.tonescale = chain->drtTonescale;
+        spec.drt.cwp = chain->drtCwp;
+        spec.drt.cwpLimit = chain->drtCwpLimit;
+        spec.drt.grey = chain->drtGrey;
+        spec.drt.display = chain->drtDisplay == 2 ? rawedit::OpenDrtDisplay::Hlg1000
+            : chain->drtDisplay == 1 ? rawedit::OpenDrtDisplay::SdrRec1886
+            : rawedit::OpenDrtDisplay::SdrSrgb22;
+    }
+    if (title != nullptr) {
+        const char* chars = env->GetStringUTFChars(title, nullptr);
+        if (chars != nullptr) {
+            spec.title = chars;
+            env->ReleaseStringUTFChars(title, chars);
+        }
+    }
+    // 5. Bake + render. An EMPTY text is the bake's own honest refusal
+    //    (an invalid grid, a chain past the N1 caps — bakeGradeCube
+    //    returns n = 0), surfaced with the recovery message; never a
+    //    silent empty file.
+    std::string text = rawedit::exportGradeCube(spec, n);
+    if (text.empty()) {
+        char buf[96];
+        std::snprintf(buf, sizeof(buf),
+                      "cube export: the bake refused (grid %d) "
+                      "(recovery: pick the 33 or 65 grid, cap the chain at 8 nodes)",
+                      static_cast<int>(n));
+        setError(static_cast<int>(rawedit::ErrorCode::Unsupported), kStageDevelop,
+                 std::string(buf));
+        return nullptr;
+    }
+    // 6. The bytes out (the whole .cube is ASCII; one copy at the seam).
+    jbyteArray out = env->NewByteArray(static_cast<jsize>(text.size()));
+    if (out == nullptr) return nullptr; // OOM pending exception propagates
+    if (!text.empty()) {
+        env->SetByteArrayRegion(out, 0, static_cast<jsize>(text.size()),
+                                reinterpret_cast<const jbyte*>(text.data()));
+    }
+    return out;
 }
 
 // The CPU export's frame develop (GRADE PARCEL, commit a + b): the 29
