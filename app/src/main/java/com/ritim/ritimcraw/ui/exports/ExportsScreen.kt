@@ -49,6 +49,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -58,7 +59,13 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
@@ -109,20 +116,23 @@ import com.ritim.ritimcraw.util.Format
  * DELETE (owner request 2026-11-26: individual export rows): a TERMINAL
  * row (DONE/FAILED/CANCELLED — never the two live states; a live job
  * can only be cancelled, deleting one would orphan the encoder) is
- * deletable two ways: a swipe LEFT or RIGHT dismisses it
+ * deletable two ways: a swipe LEFT or RIGHT arms a delete
  * (material3 1.3.0's [SwipeToDismissBox], the verified API on this
- * classpath, both directions anchored to delete through the state's
- * confirmValueChange) and the header's Select icon opens multi-select
- * mode — checkboxes on the deletable rows, trash deletes the checked
- * set. Both land in [onDelete] -> the store's delete(ids), which
- * removes the job RECORD only, exactly like Clear-all (the output file
- * under files/exports and the published media-store row are never
- * touched; see ExportStore.delete). Deletion is irreversible; NO undo
- * snackbar was added — a true undo needs position-true re-insertion
- * this append-only store cannot do, and the owner did not ask. In
- * select mode the swipe is disabled (a tap toggles the checkbox
- * instead, the LibrarySelection behavior); a DONE row's tap keeps its
- * open behavior outside select mode.
+ * classpath, both directions) and the header's Select icon opens
+ * multi-select mode — checkboxes on the deletable rows, trash deletes
+ * the checked set. The swipe ARMS, never deletes (owner request
+ * 2026-11-27: a page-turn swipe must not lose an export — the
+ * confirmValueChange VETO below rolls the row back and opens the
+ * confirm dialog; see [ExportsDeleteConfirm]); the dialog's Delete, or
+ * the selection trash, lands in [onDelete] -> the store's delete(ids),
+ * which removes the job RECORD only, exactly like Clear-all (the
+ * output file under files/exports and the published media-store row
+ * are never touched; see ExportStore.delete). Deletion is
+ * irreversible; NO undo snackbar was added — a true undo needs
+ * position-true re-insertion this append-only store cannot do, and the
+ * owner did not ask. In select mode the swipe is disabled (a tap
+ * toggles the checkbox instead, the LibrarySelection behavior); a
+ * DONE row's tap keeps its open behavior outside select mode.
  */
 @Composable
 fun ExportsScreen(
@@ -161,6 +171,19 @@ fun ExportsScreen(
     val selection = ExportsSelection.prune(selectedIds, jobs.map { it.id }.toSet())
     if (selection != selectedIds) selectedIds = selection
     val selecting = selection.isNotEmpty()
+
+    // Swipe-delete confirmation (owner request 2026-11-27: "silmeden
+    // önce pop up çıkıp onay sorulmalı"): the armed row's id, or null
+    // when no delete is pending. The pure [ExportsDeleteConfirm] rules
+    // carry the transitions; this is only the state the dialog renders
+    // from. Pruned like the selection: a row that vanished while its
+    // dialog was open (another delete path raced) leaves the dialog
+    // composing NOTHING rather than offering to delete a ghost.
+    var pendingDeleteId by remember { mutableStateOf<String?>(null) }
+    if (pendingDeleteId != null && pendingDeleteId !in jobs.map { it.id }) {
+        pendingDeleteId = null
+    }
+    val pendingDeleteJob = pendingDeleteId?.let { id -> jobs.firstOrNull { it.id == id } }
 
     // Back (the LibrarySelection.onBack rule): back while rows are
     // checked exits SELECTION mode — the screen stays.
@@ -310,6 +333,7 @@ fun ExportsScreen(
                             onOpen = onOpen,
                             onCancel = onCancel,
                             onDelete = onDelete,
+                            onSwipeArm = { pendingDeleteId = ExportsDeleteConfirm.arm(pendingDeleteId, job) },
                             exportDir = exportDir,
                             thumbnailStore = thumbnailStore,
                         )
@@ -340,6 +364,49 @@ fun ExportsScreen(
                 }
             }
         }
+
+        // The swipe-delete confirm dialog (owner request 2026-11-27:
+        // "silmeden önce pop up çıkıp onay sorulmalı" — the Library's E2
+        // confirm dialog precedent): the armed row asks before its
+        // record leaves. The body names WHAT leaves — the output file
+        // for a DONE row, the source clip otherwise (the pure
+        // [ExportsDeleteConfirm.subjectLine]) — plus the record-only
+        // meaning, so the user knows the exported FILE stays on disk.
+        // Delete re-runs the still-deletable check at the press (the
+        // pure confirmIds — a Retry racing the swipe re-queued the row
+        // and nothing routes); Cancel/dismiss clears the arm and the
+        // row has already rolled back at the veto, so no extra reset.
+        if (pendingDeleteJob != null) {
+            AlertDialog(
+                onDismissRequest = { pendingDeleteId = ExportsDeleteConfirm.cancel(pendingDeleteId) },
+                title = { Text(stringResource(R.string.exports_delete_title)) },
+                text = {
+                    Text(
+                        stringResource(
+                            R.string.exports_delete_message,
+                            ExportsDeleteConfirm.subjectLine(pendingDeleteJob, sourceNames),
+                        )
+                    )
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            onDelete(ExportsDeleteConfirm.confirmIds(pendingDeleteId, jobs))
+                            pendingDeleteId = null
+                        },
+                    ) {
+                        Text(stringResource(R.string.exports_delete_confirm))
+                    }
+                },
+                dismissButton = {
+                    TextButton(
+                        onClick = { pendingDeleteId = ExportsDeleteConfirm.cancel(pendingDeleteId) },
+                    ) {
+                        Text(stringResource(R.string.exports_delete_cancel))
+                    }
+                },
+            )
+        }
     }
 }
 
@@ -347,14 +414,24 @@ fun ExportsScreen(
  * A terminal row wrapped in the swipe-to-delete box (owner request
  * 2026-11-26): SwipeToDismissBox — material3 1.3.0, the verified API on
  * this classpath — with BOTH directions enabled, so a swipe left OR
- * right on a finished/cancelled/failed row deletes it. The background
- * reveals the trash glyph in the theme's error role as the row slides
- * (start side for a rightward swipe, end side for a leftward one —
- * the [SwipeToDismissBoxState.dismissDirection] read); the delete fires
- * through the state's [confirmValueChange] returning true, the row's
- * own gate of the store's live-guard. The row's tap behavior is
- * unchanged (a DONE row opens; FAILED keeps Retry) — the box only adds
- * the horizontal gesture.
+ * right on a finished/cancelled/failed row ARMS its delete. The
+ * background reveals the trash glyph in the theme's error role as the
+ * row slides (start side for a rightward swipe, end side for a
+ * leftward one — the [SwipeToDismissBoxState.dismissDirection] read).
+ *
+ * ARM-THEN-CONFIRM (owner request 2026-11-27: a page-turn swipe must
+ * not lose an export): the delete does NOT fire at the dismiss
+ * threshold. The state's [confirmValueChange] VETOES every target
+ * (returns false) — material3 1.3.0's own AnchoredDraggableState.settle
+ * then rolls the row back to Settled with its rollback animation —
+ * and the veto calls [onSwipeArm], which opens the confirm dialog.
+ * Only the dialog's Delete lands in [onDelete] (re-checked there for
+ * still-terminal); Cancel/dismiss deletes nothing, and the row is
+ * already back in place from the veto's rollback. The veto must stay
+ * unconditional (false for every value, including Settled) so the
+ * settle paths can never strand the row between anchors; the row's
+ * tap behavior is unchanged (a DONE row opens; FAILED keeps Retry) —
+ * the box only adds the horizontal gesture.
  *
  * Deleting is IRREVERSIBLE and there is no undo snackbar: the store's
  * delete removes the RECORD only (exactly what clear-all does — the
@@ -370,6 +447,7 @@ private fun DismissableJobCard(
     onOpen: (ExportJob) -> Unit,
     onCancel: (ExportJob) -> Unit,
     onDelete: (Set<String>) -> Unit,
+    onSwipeArm: () -> Unit,
     exportDir: File?,
     thumbnailStore: ThumbnailStore?,
 ) {
@@ -387,27 +465,32 @@ private fun DismissableJobCard(
     // settled is the right outcome anyway.
     val density = LocalDensity.current
     val threshold = SwipeToDismissBoxDefaults.positionalThreshold
+    // Fresh-callback trampoline (the ThemeSlider / TabSwipeUi pattern):
+    // the state below restarts only on its keys, but its arm callback
+    // must always be the CURRENT composition's — the caller rebuilds
+    // its lambdas every recomposition (AppNav's onDelete/pending state
+    // capture), so a remembered stale capture would arm the dialog with
+    // an outdated pending id.
+    val armCallback by rememberUpdatedState(onSwipeArm)
     val state = remember(job.id, density) {
         SwipeToDismissBoxState(
             initialValue = SwipeToDismissBoxValue.Settled,
             density = density,
-            // The delete rides confirmValueChange: it runs exactly when
-            // the swipe crosses the dismiss threshold (or a fling
-            // targets the anchor) and the box settles into the dismissed
-            // anchor — the row then leaves with the store's write. The
-            // lambda returns TRUE for every value (the settle/finally
-            // paths in the box's internal AnchoredDraggableState treat
-            // a veto as a rollback, and vetoing Settled can strand the
-            // row between anchors with the gesture disabled): a swipe
-            // that settles back never reaches the delete, and a delete
-            // the store's live-guard refuses simply unwraps the row —
-            // the next jobs refresh recomposes it as the plain live
-            // card with a fresh state.
-            confirmValueChange = { value ->
-                if (value != SwipeToDismissBoxValue.Settled) {
-                    onDelete(setOf(job.id))
-                }
-                true
+            // ARM-THEN-CONFIRM (the veto): the confirmValueChange runs
+            // exactly when the swipe crosses the dismiss threshold (or
+            // a fling targets the anchor) — the moment the delete USED
+            // to fire. It now returns FALSE for every value, which
+            // material3's own settle treats as a veto: the row rolls
+            // back to Settled with the box's rollback animation (no
+            // stranding between anchors, no dead gesture), and the arm
+            // callback routes the row to the confirm dialog. The row's
+            // gate of the store's live-guard still holds: the ARM only
+            // happens on this terminal-only wrapper (the caller never
+            // composes it for a live row), and the DIALOG re-runs the
+            // still-deletable check before the store's own write.
+            confirmValueChange = { _ ->
+                armCallback()
+                false
             },
             positionalThreshold = threshold,
         )
