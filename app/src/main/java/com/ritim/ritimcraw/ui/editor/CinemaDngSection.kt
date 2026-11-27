@@ -37,6 +37,15 @@ import com.ritim.ritimcraw.export.CinemaDngSheetState
  *   - the warn/lock line when the storage rule fires (the pure
  *     [CinemaDngSheetState.verdict] decides the wording).
  *
+ * (Night I5) The enqueue-time storage gate: the SHEET measures the
+ * picked folder's free space when the section opens (the probe lives in
+ * the sheet, off the main thread) and hands the number in as
+ * [freeBytes]; the section renders the pure verdict's own line —
+ * locked (the error accent, the IssueBand precedent), warn, or the
+ * honest "free space unknown" wording. The Start button's gate reads
+ * the SAME verdict (the sheet's own cinemaCanStart), so the line and
+ * the button can never disagree.
+ *
  * THE ANIMATION RULE (the owner's brief): no new motion language. The
  * rows are static (the SettingRow precedent); nothing animates in this
  * section — the sheet's own tab swap is the existing AnimatedContent
@@ -52,6 +61,7 @@ internal fun CinemaDngSection(
     clipInfo: ClipInfo,
     folderUri: String?,
     folderLabel: String?,
+    freeBytes: Long,
     onPickFolder: () -> Unit,
 ) {
     Column(Modifier.fillMaxWidth()) {
@@ -124,6 +134,54 @@ internal fun CinemaDngSection(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
         )
+
+        // (Night I5) The enqueue-time storage verdict's own line: the
+        // pure [CinemaDngSheetState.verdict] -> [verdictMessage] mapping
+        // decides IF a line shows and WHAT it says; the section only
+        // renders it (the locked case takes the sheet's error accent —
+        // the IssueBand precedent; warn/unknown stay advisory colors).
+        // A null message shows nothing (a measured, roomy folder needs
+        // no line — the estimate row already said the size).
+        val verdict = CinemaDngSheetState.verdict(
+            folderUri = folderUri,
+            clipFrameCount = clipInfo.frameCount,
+            firstFrame = 0,
+            lastFrame = -1,
+            width = clipInfo.width,
+            height = clipInfo.height,
+            freeBytes = freeBytes,
+        )
+        CinemaDngSheetState.verdictMessage(verdict)?.let { line ->
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    painterResource(R.drawable.ic_warning),
+                    contentDescription = null,
+                    tint = if (CinemaDngSheetState.isErrorLine(verdict)) {
+                        MaterialTheme.colorScheme.error
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                    modifier = Modifier.size(20.dp),
+                )
+                Text(
+                    stringResource(line.messageRes, *line.args.toTypedArray()),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (CinemaDngSheetState.isErrorLine(verdict)) {
+                        MaterialTheme.colorScheme.error
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(horizontal = 12.dp, vertical = 4.dp),
+                )
+            }
+        }
 
         // The Pick action (a stock OutlinedButton, 48dp min — the
         // secondary-action shape; Start is the sheet's own sticky button).

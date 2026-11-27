@@ -397,6 +397,12 @@
     <string name="cinema_dng_estimate">Estimate: %1$s</string>
     <string name="cinema_dng_time_unknown">Time estimate unknown (no per-frame write measured yet)</string>
     <string name="cinema_dng_action">Export CinemaDNG sequence</string>
+    <!-- (night I5) The enqueue-time storage gate's verdict lines; the sheet
+         measures the picked folder when the section opens. -->
+    <string name="cinema_dng_no_folder_hint">Pick an output folder to export the sequence.</string>
+    <string name="cinema_dng_storage_locked">Not enough free space: %2$s free, %1$s needed. Shorten the range or free up space.</string>
+    <string name="cinema_dng_storage_warn">Free space is tight: %2$s free, %1$s needed. The export can still fail mid-way if space runs out.</string>
+    <string name="cinema_dng_free_space_unknown">Free space of the picked folder is unknown; the export checks space when it runs.</string>
     <string name="exports_format_cinema_dng">CinemaDNG sequence (RAW)</string>
     <string name="export_resolution_field">Resolution</string>
     <string name="export_custom_dialog_title">Custom resolution</string>

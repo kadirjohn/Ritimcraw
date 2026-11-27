@@ -120,4 +120,62 @@ object CinemaDngSheetState {
     /** The plan document's own table rows, verified against the formula. */
     fun estimateBytes(frames: Int, width: Int, height: Int): Long =
         ceil(frames.toDouble() * width * height * 2.0).toLong()
+
+    // ---- the verdict line (night I5: the enqueue-time storage gate) ----
+    //
+    // The pure verdict->message mapping, ImportErrors' shape: the sheet
+    // resolves the resource id, so the state stays free of Android
+    // imports and every visible wording is JVM-tested. NULL when the
+    // verdict shows no line (the sheet's own rows already cover it).
+
+    /**
+     * The line the section shows under the estimate for [verdict]:
+     *   - [Verdict.NoFolder]  -> the pick-a-folder hint
+     *   - [Verdict.Locked]    -> the lock reason (free < required) with
+     *     both sizes as args, the honest "shorten the range" fix wording
+     *   - [Verdict.Warn]      -> the warn line with both sizes
+     *   - [Verdict.Ok] with freeBytes < 0 -> the honest "free space
+     *     unknown" line (never a guessed verdict — the run-time gate is
+     *     the backstop, the wording says exactly that)
+     *   - [Verdict.Ok] with a measurable free space -> null (nothing to
+     *     say; the estimate line already carries the size)
+     */
+    fun verdictMessage(v: Verdict): Message? = when (v) {
+        is Verdict.NoFolder -> Message(
+            messageRes = com.ritim.ritimcraw.R.string.cinema_dng_no_folder_hint,
+            args = emptyList(),
+        )
+        is Verdict.Locked -> Message(
+            messageRes = com.ritim.ritimcraw.R.string.cinema_dng_storage_locked,
+            args = listOf(sizeText(v.requiredBytes), sizeText(v.freeBytes)),
+        )
+        is Verdict.Warn -> Message(
+            messageRes = com.ritim.ritimcraw.R.string.cinema_dng_storage_warn,
+            args = listOf(sizeText(v.requiredBytes), sizeText(v.freeBytes)),
+        )
+        is Verdict.Ok -> if (v.freeBytes < 0L) {
+            // Unknown free space (the SAF folder could not be measured):
+            // never a guessed lock — the honest wording, and the
+            // mid-write exhaustion path stays the backstop.
+            Message(
+                messageRes = com.ritim.ritimcraw.R.string.cinema_dng_free_space_unknown,
+                args = emptyList(),
+            )
+        } else {
+            null
+        }
+    }
+
+    /**
+     * One verdict line's payload: the message resource plus its format
+     * args (both already size-words — [sizeText] — never raw bytes).
+     */
+    data class Message(val messageRes: Int, val args: List<String>)
+
+    /**
+     * True when the verdict line renders as the sheet's error accent
+     * ([Verdict.Locked] — the button refuses; the ExportSettingsPanel
+     * IssueBand precedent: ERROR -> colorScheme.error).
+     */
+    fun isErrorLine(v: Verdict): Boolean = v is Verdict.Locked
 }
