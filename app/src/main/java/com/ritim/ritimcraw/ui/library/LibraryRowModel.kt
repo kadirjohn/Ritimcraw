@@ -101,7 +101,10 @@ object LibraryRowModel {
      * design did not name).
      */
     fun kindBadge(source: MediaSource): Badge? = when (source.kind) {
-        SourceKind.MCRAW -> Badge(BadgeStyle.HIGHLIGHTED, "MCRAW")
+        // The native format wears MotionCam's fixed blue (M2), constant
+        // across every theme — the kind's own style, not the shared
+        // highlighted treatment.
+        SourceKind.MCRAW -> Badge(BadgeStyle.MOTIONCAM, "MCRAW")
         // The encoded containers: the app's own token (VideoTree's
         // "MP4" precedents call every encoded container an MP4 badge —
         // mov/other containers share the same engine path, one token).
