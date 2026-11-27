@@ -304,4 +304,68 @@ class ExportSheetStateTest {
             ExportSheetState.frameRateValue(com.ritim.ritimcraw.export.TargetFps.SOURCE, 0.0),
         )
     }
+
+    // ---- hlgGateOpen: the row asks about the HLG REQUEST, not the current selection ----
+
+    private val hlgFacts = listOf(
+        com.ritim.ritimcraw.export.EncoderFacts(
+            "c2.qti.hevc.encoder", "video/hevc", hardware = true,
+            profiles = setOf(1, 2), colorFormats = setOf(0x7F000789, 54),
+            bitrateModes = setOf(1, 2), bitrateRangeBps = 1_000_000..160_000_000,
+            maxWidth = 8192, maxHeight = 8192,
+            features = setOf("hlg-editing"),
+        ),
+    )
+    private val hlgSubject = ExportSheetModel.Subject(width = 3840, height = 2160, fps = 30.0, durationSec = 10.0)
+
+    @Test
+    fun hlg_row_is_open_while_sdr_is_selected_when_the_device_supports_hlg() {
+        // The regression: the row used to read the plan of the CURRENT settings
+        // (SDR), which is SDR by construction, so HLG stayed greyed out on a
+        // phone whose encoder carries hlg-editing. SDR selected + probed gate = open.
+        val gate = com.ritim.ritimcraw.export.HevcProbeSource.fromFacts(hlgFacts, 3840, 2160, 30.0, 37)
+        val context = com.ritim.ritimcraw.export.ExportContext(tenBitPathAvailable = true, hlgGate = gate)
+        val sdr = ExportSettings() // dynamicRange = SDR (the default)
+        assertEquals(com.ritim.ritimcraw.export.ExportDynamicRange.SDR, sdr.dynamicRange)
+        assertTrue(ExportSheetState.hlgGateOpen(sdr, hlgSubject, hlgFacts, context))
+        // The old reading, pinned as the thing that was wrong: the SDR plan is not selectable.
+        assertFalse(ExportSheetState.hlgSelectable(ExportSheetModel.plan(sdr, hlgSubject, hlgFacts, context)))
+    }
+
+    @Test
+    fun hlg_row_stays_closed_without_a_gate_or_a_subject_or_hlg_support() {
+        val sdr = ExportSettings()
+        // No probed gate in the context: the planner's wall stands.
+        assertFalse(
+            ExportSheetState.hlgGateOpen(
+                sdr, hlgSubject, hlgFacts,
+                com.ritim.ritimcraw.export.ExportContext(tenBitPathAvailable = true),
+            ),
+        )
+        // No subject yet: never a guess.
+        val gate = com.ritim.ritimcraw.export.HevcProbeSource.fromFacts(hlgFacts, 3840, 2160, 30.0, 37)
+        assertFalse(
+            ExportSheetState.hlgGateOpen(
+                sdr, null, hlgFacts,
+                com.ritim.ritimcraw.export.ExportContext(tenBitPathAvailable = true, hlgGate = gate),
+            ),
+        )
+        // An encoder without the hlg-editing flag (and no hdr-editing fallback): closed.
+        val noHlg = listOf(
+            com.ritim.ritimcraw.export.EncoderFacts(
+                "c2.qti.hevc.encoder", "video/hevc", hardware = true,
+                profiles = setOf(1, 2), colorFormats = setOf(0x7F000789, 54),
+                bitrateModes = setOf(1, 2), bitrateRangeBps = 1_000_000..160_000_000,
+                maxWidth = 8192, maxHeight = 8192,
+                features = emptySet(),
+            ),
+        )
+        val noHlgGate = com.ritim.ritimcraw.export.HevcProbeSource.fromFacts(noHlg, 3840, 2160, 30.0, 37)
+        assertFalse(
+            ExportSheetState.hlgGateOpen(
+                sdr, hlgSubject, noHlg,
+                com.ritim.ritimcraw.export.ExportContext(tenBitPathAvailable = true, hlgGate = noHlgGate),
+            ),
+        )
+    }
 }
