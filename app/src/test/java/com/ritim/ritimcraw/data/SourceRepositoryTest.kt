@@ -557,6 +557,122 @@ class SourceRepositoryTest {
         assertEquals(imported.id, imported.displayOrId) // never a blank
     }
 
+    // ---- kind classification (owner request 2026-11-27, M1) ----
+
+    @Test
+    fun single_file_import_classifies_the_kind_from_the_name() {
+        // The single-file picker's path (AppNav passes NO kind): the name's
+        // own extension decides — an .mp4 pick lands ENCODED (the honest
+        // gray MP4 badge), an .mcraw pick MCRAW. This is the fix for the
+        // owner's report: an mp4 picked from the library + button wore
+        // the blue MCRAW badge because the default kind classified it.
+        val file = projectFile()
+        // Distinct blobs per uri: the fingerprint is bytes + size, so the
+        // three picks are three DIFFERENT files (a shared blob would
+        // dedupe all three onto one record).
+        val resolver = FakeResolver(
+            blobs = mapOf(
+                "content://clip/mp4" to "mp4-bytes".toByteArray(),
+                "content://clip/mov" to "mov-bytes".toByteArray(),
+                "content://clip/mcraw" to "mcraw-bytes".toByteArray(),
+            ),
+            names = mapOf(
+                "content://clip/mp4" to "beach.mp4",
+                "content://clip/mov" to "drive.MOV",
+                "content://clip/mcraw" to "sunset.mcraw",
+            ),
+        )
+        val repo = SourceRepository(resolver, file)
+
+        assertEquals(SourceKind.ENCODED, repo.import("content://clip/mp4").kind)
+        assertEquals(SourceKind.ENCODED, repo.import("content://clip/mov").kind)
+        assertEquals(SourceKind.MCRAW, repo.import("content://clip/mcraw").kind)
+        // Persisted: a fresh repository reads the same classifications.
+        val reloaded = SourceRepository(FakeResolver(), file).all()
+        assertEquals(
+            listOf(SourceKind.ENCODED, SourceKind.ENCODED, SourceKind.MCRAW),
+            reloaded.map { it.kind },
+        )
+    }
+
+    @Test
+    fun unresolvable_name_keeps_the_default_kind() {
+        // DISPLAY_NAME unknown: the kind falls back to the parameter's
+        // default (MCRAW) — today's behavior for an unnamed document, no
+        // crash, no invented extension.
+        val file = projectFile()
+        val imported = SourceRepository(FakeResolver("clip".toByteArray()), file)
+            .import("content://clip/1")
+
+        assertEquals(SourceKind.MCRAW, imported.kind)
+    }
+
+    @Test
+    fun explicit_kind_parameter_still_wins_for_an_unnamed_new_record() {
+        // The folder paths pass the kind they computed from the SAF
+        // document name (the SAME VideoTree.kindFor rule): the parameter
+        // stays an explicit override for a record the resolver here
+        // cannot name. (The production AndroidUriResolver names SAF
+        // documents; this test only pins the parameter's contract.)
+        val file = projectFile()
+        val imported = SourceRepository(FakeResolver("clip".toByteArray()), file)
+            .import("content://clip/1", SourceKind.ENCODED)
+
+        assertEquals(SourceKind.ENCODED, imported.kind)
+    }
+
+    @Test
+    fun reimport_self_heals_an_old_misclassified_record() {
+        // The owner's device carries records imported through the old
+        // default (an .mp4 classified MCRAW). Re-importing the same file
+        // (fingerprint match) must correct the kind: same bytes = the
+        // same file, so the name's rule is the truth. The id stays (the
+        // fingerprint is untouched), so the grade and history follow.
+        val file = projectFile()
+        // The old world: no name resolved, the default classified MCRAW.
+        val old = SourceRepository(FakeResolver("clip".toByteArray()), file)
+            .import("content://clip/first")
+        assertEquals(SourceKind.MCRAW, old.kind)
+
+        // Re-import of the same bytes, now with the real name available.
+        val named = FakeResolver(
+            "clip".toByteArray(),
+            names = mapOf("content://clip/second" to "beach.mp4"),
+        )
+        val reimported = SourceRepository(named, file).import("content://clip/second")
+
+        assertEquals(old.id, reimported.id)
+        assertEquals(SourceKind.ENCODED, reimported.kind)
+        // Persisted: a fresh repository reads the corrected kind.
+        assertEquals(
+            SourceKind.ENCODED,
+            SourceRepository(FakeResolver(), file).all().single().kind,
+        )
+    }
+
+    @Test
+    fun reimport_of_an_unnamed_file_never_overrides_the_existing_kind() {
+        // The dedupe branch's guard: a name the resolver cannot resolve
+        // (nameKind null) never rewrites the record's kind — the record
+        // keeps what it already knows (an unknown name is NO evidence,
+        // it must not drag an ENCODED record back to the MCRAW default).
+        val file = projectFile()
+        val named = FakeResolver(
+            "clip".toByteArray(),
+            names = mapOf("content://clip/1" to "beach.mp4"),
+        )
+        val repo = SourceRepository(named, file)
+        val imported = repo.import("content://clip/1")
+        assertEquals(SourceKind.ENCODED, imported.kind)
+
+        // Same bytes again, but the resolver cannot name the document now.
+        val reimported = SourceRepository(FakeResolver("clip".toByteArray()), file)
+            .import("content://clip/1")
+
+        assertEquals(imported.id, reimported.id)
+        assertEquals(SourceKind.ENCODED, reimported.kind)
+    }
+
     @Test
     fun reimport_backfills_the_display_name_and_keeps_the_id() {
         val file = projectFile()
