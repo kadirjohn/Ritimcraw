@@ -1929,12 +1929,20 @@ fun AppNav(
                         // The clip's playable proxy, resolved through the
                         // runtime's own gate at session open ([ProxyPlaybackGate]
                         // applies the E2 switch rule; the cache's playable is
-                        // the never-half gate). -1 = no proxy (the original fd),
-                        // and while the feature flag is off the runtime is
-                        // never started so nothing ever resolves — the
-                        // pre-G3 open, byte-identical. The fingerprint is
-                        // resolved LIVE (the queue's own rule: the session
-                        // must see the clip as it is when it opens).
+                        // the never-half gate). -1 = NO PLAYABLE PROXY (the
+                        // cache holds none for this clip's signature — or the
+                        // runtime has no job for it); the ORIGINAL fd opens.
+                        // NOTE (the auditor's finding 3): this seam is NOT
+                        // flag-conditional — while PROXY_PRODUCTION_ENABLED
+                        // is false the runtime is never started and no build
+                        // ever runs, so nothing resolves and the answer is -1
+                        // BECAUSE THE CACHE IS EMPTY; if the flag is turned
+                        // off again AFTER proxies were built, the built
+                        // proxies KEEP PLAYING (reading the cache is safe —
+                        // the never-half gate is the cache's own contract).
+                        // The fingerprint is resolved LIVE (the queue's own
+                        // rule: the session must see the clip as it is when
+                        // it opens).
                         proxyOpenFd = {
                             val rec = stores.sources.get(r.sourceId)
                             rec?.let { proxyRuntime.openPlaybackProxy(it.fingerprint) } ?: -1
